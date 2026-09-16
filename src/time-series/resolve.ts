@@ -242,6 +242,14 @@ function explicitBounds(spec: ChartSpec): DateBounds | null {
   return { start: explicitStart.getTime(), end: explicitEnd.getTime() };
 }
 
+/** Calendar range limits use the authored dates; observation filters include the final day. */
+function rangeDurationBounds(spec: ChartSpec, bounds: DateBounds): DateBounds {
+  const window = spec.viewport.dateWindow;
+  if (!window || !DATE_ONLY_PATTERN.test(window.start) || !DATE_ONLY_PATTERN.test(window.end)
+    || bounds.end !== inclusiveEndDate(window.end)?.getTime()) return bounds;
+  return { ...bounds, end: finiteDate(window.end)!.getTime() };
+}
+
 function requestedBounds(spec: ChartSpec, latestObservation: Date): DateBounds {
   const explicit = explicitBounds(spec);
   if (explicit) return explicit;
@@ -297,6 +305,7 @@ function requestResolution(
   sharedSupport: readonly ChartResolutionSupport[],
   provisionalSupport = false,
 ): ManualChartResolution {
+  const duration = rangeDurationBounds(spec, bounds);
   if (spec.viewport.resolution !== "auto") {
     const maxRange = getSupportMaxRange(sharedSupport, spec.viewport.resolution);
     // A placeholder list cannot rule out a manual pick; the real list decides
@@ -306,11 +315,11 @@ function requestResolution(
       || maxRange === "ALL"
       || (
         maxRange !== null
-        && bounds.start !== null
-        && bounds.end !== null
+        && duration.start !== null
+        && duration.end !== null
         && isDateWindowWithinTimeRange(
-          new Date(bounds.start),
-          new Date(bounds.end),
+          new Date(duration.start),
+          new Date(duration.end),
           maxRange,
         )
       );
@@ -327,10 +336,10 @@ function requestResolution(
     : null;
   const preferred = adaptive
     ?? getSupportedPresetResolution(
-      explicitBounds(spec) ? boundsRange(bounds) : spec.viewport.range,
+      explicitBounds(spec) ? boundsRange(duration) : spec.viewport.range,
       provisionalSupport ? [] : sharedSupport,
-      bounds.start !== null && bounds.end !== null
-        ? { start: new Date(bounds.start), end: new Date(bounds.end) }
+      duration.start !== null && duration.end !== null
+        ? { start: new Date(duration.start), end: new Date(duration.end) }
         : null,
     );
   const activeSeries = spec.series.filter((entry) => calculationSeriesIds.has(entry.id));
@@ -345,8 +354,9 @@ function calculationBounds(
   if (visibleBounds.start === null) return visibleBounds;
   const warmupPoints = maxStudyWarmupPoints(spec.studies);
 
-  const visibleEnd = visibleBounds.end ?? visibleBounds.start;
-  const bufferedRange = getNextBufferRange(boundsRange(visibleBounds));
+  const duration = rangeDurationBounds(spec, visibleBounds);
+  const visibleEnd = duration.end ?? visibleBounds.start;
+  const bufferedRange = getNextBufferRange(boundsRange(duration));
   let start = bufferedRange === "ALL"
     ? subtractTimeRange(new Date(visibleEnd), "ALL").getTime()
     : subtractTimeRange(new Date(visibleEnd), bufferedRange).getTime();
@@ -603,11 +613,12 @@ function historyIntersectsBounds(
 function clampHistoryBoundsToSupport(
   bounds: DateBounds,
   maxRange: TimeRange | null,
+  durationEnd: number | null = bounds.end,
 ): DateBounds {
   if (bounds.start === null || bounds.end === null || !maxRange || maxRange === "ALL") {
     return bounds;
   }
-  const supportedStart = subtractTimeRange(new Date(bounds.end), maxRange).getTime();
+  const supportedStart = subtractTimeRange(new Date(durationEnd ?? bounds.end), maxRange).getTime();
   return { start: Math.max(bounds.start, supportedStart), end: bounds.end };
 }
 
@@ -1194,7 +1205,8 @@ export async function resolveChartSpecData(
   ) => {
     const support = await loadResolutionSupport(source, priceOnly);
     const maxRange = getSupportMaxRange(support, initialResolution);
-    const historyBounds = clampHistoryBoundsToSupport(initialCalculationBounds, maxRange);
+    const historyBounds = clampHistoryBoundsToSupport(initialCalculationBounds, maxRange,
+      rangeDurationBounds(spec, initialCalculationBounds).end);
     const requestedFallbackRange = all
       ? "ALL"
       : trailingRangeForStart(historyBounds.start, referenceNow);
