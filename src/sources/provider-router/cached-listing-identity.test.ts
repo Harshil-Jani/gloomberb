@@ -110,3 +110,31 @@ test("public cache identity checks retain exact suffix aliases, unidentified sta
     }
   } finally { store.close(); }
 });
+
+test("legacy descriptive metadata stays symbol-less without bypassing its declared venue or other identities", () => {
+  const store = new AppPersistence(":memory:");
+  const descriptive = { currency: "USD", instrumentType: "Common Stock" } as TickerFinancials["quoteMetadata"];
+  const cases: Array<{ metadata: TickerFinancials["quoteMetadata"]; quote: TickerFinancials["quote"]; accepted: boolean }> = [
+    { metadata: descriptive, quote: value().quote, accepted: true },
+    { metadata: descriptive, quote: undefined, accepted: true },
+    { metadata: { ...descriptive!, listingExchangeName: "NMS" }, quote: undefined, accepted: true },
+    { metadata: { ...descriptive!, listingExchangeName: "TSX" }, quote: value().quote, accepted: false },
+    { metadata: { ...descriptive!, symbol: null } as never, quote: value().quote, accepted: false },
+    { metadata: descriptive, quote: { ...value().quote!, symbol: "OTHER" }, accepted: false },
+  ];
+  try {
+    for (const item of cases) {
+      const input = value({ quote: item.quote, quoteMetadata: item.metadata });
+      cacheRouterResource(store.resources, "financials", "SHOP", "exchange=NASDAQ", "provider:gloomberb-cloud", input, policy);
+      const records = listCachedResources<TickerFinancials>(store.resources, "financials", "SHOP", ["exchange=NASDAQ"], ["provider:gloomberb-cloud"], true);
+      expect(records.length).toBe(item.accepted ? 1 : 0);
+      if (item.accepted) {
+        expect(records[0]!.value).toEqual(input);
+        expect(records[0]!.value.quoteMetadata?.symbol).toBeUndefined();
+      }
+    }
+    cacheRouterResource(store.resources, "financials", "SHOP", "exchange=NASDAQ", "provider:gloomberb-cloud",
+      value({ quoteMetadata: descriptive, quoteContributions: { public: { ...value().quote!, symbol: "OTHER" } } }), policy);
+    expect(listCachedResources(store.resources, "financials", "SHOP", ["exchange=NASDAQ"], ["provider:gloomberb-cloud"], true)).toEqual([]);
+  } finally { store.close(); }
+});

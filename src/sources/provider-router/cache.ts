@@ -155,6 +155,17 @@ function hasUnverifiedLegacyAsmlValuation(record: CachedResourceRecord, value: T
   return !verifiedForeign;
 }
 
+function cachedProviderFinancialsMatchTarget(value: TickerFinancials, symbol: string, exchange?: string): boolean {
+  // Older cache metadata can contain only currency/type. Use the cache key
+  // solely to validate its remaining declarations; never write an inferred
+  // symbol into the returned metadata or bypass quote/contribution checks.
+  const metadata = value.quoteMetadata;
+  const checked = metadata && metadata.symbol === undefined
+    ? { ...value, quoteMetadata: { ...metadata, symbol } }
+    : value;
+  return providerFinancialsMatchTarget(checked, symbol, exchange);
+}
+
 export function listCachedResources<T>(
   resources: ResourceStore | undefined,
   kind: string,
@@ -180,7 +191,7 @@ export function listCachedResources<T>(
       // Check every declared identity before stale-quote sanitation or merging
       // can hide a conflicting symbol, metadata record or contribution.
       if (kind === "financials"
-        ? !providerFinancialsMatchTarget(record.value as TickerFinancials, entityKey, requestedExchange)
+        ? !cachedProviderFinancialsMatchTarget(record.value as TickerFinancials, entityKey, requestedExchange)
         : !providerQuoteMatchesTarget(record.value as Quote, entityKey, requestedExchange)) return false;
       const quote = kind === "quote" ? record.value as Quote : (record.value as TickerFinancials).quote;
       const metadata = kind === "financials" ? (record.value as TickerFinancials).quoteMetadata : undefined;
