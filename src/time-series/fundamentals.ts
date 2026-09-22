@@ -1,9 +1,12 @@
 import type {
   FinancialStatement,
+  ProviderOperatingField,
   TickerFinancials,
 } from "../types/financials";
 import { areNearbyFinancialPeriodEnds, completeAvailability, statementFieldAvailability } from "../utils/financial-statements";
 import { copyIncomeField, incomeFieldKnowledgeDate, incomeFieldOwner, isIncomeStatementField } from "../utils/income-statement";
+import { derivedOperatingObservation, mergeStatementOperatingResult, providerOperatingObservation, reportedOperatingCohort } from "../utils/operating-result";
+import { canAggregateOperatingField, canDeriveOperatingQuarter, isOperatingField, operatingResultAggregation } from "../utils/operating-result-aggregation";
 import { hasStatementWithdrawals, isWithdrawnStatementValue, mergeStatementWithdrawals, redactWithdrawnStatement } from "../utils/statement-observations";
 import { canonicalTimeSeriesFieldId, getTimeSeriesField } from "./field-catalog";
 import { forwardPeHistory, realizedNtmPeHistory } from "./forward-valuation";
@@ -16,6 +19,9 @@ type NumericStatementField =
   | "totalRevenue"
   | "grossProfit"
   | "operatingIncome"
+  | "operatingExpense"
+  | "totalExpenses"
+  | "depreciationAndAmortization"
   | "netIncome"
   | "netIncomeIncludingNoncontrollingInterests"
   | "netIncomeCommonStockholders"
@@ -76,6 +82,10 @@ const NUMERIC_STATEMENT_FIELDS: readonly NumericStatementField[] = [
   ...QUARTERLY_AVERAGE_FIELDS,
   "netIncomeCommonStockholders",
   "eps",
+  // Preserve the complete operating cohort even when only income is charted.
+  "operatingExpense",
+  "totalExpenses",
+  "depreciationAndAmortization",
 ];
 
 const FUNDAMENTAL_IDS = new Set([
@@ -229,6 +239,7 @@ function mergeStatementPeriodGroup(statements: readonly InternalStatement[]): In
   const derivedFields: NumericStatementField[] = [];
   const fieldAvailability: Record<string, string> = {};
   const record = merged as unknown as Record<string, unknown>;
+  const operatingOwners = new Map<ProviderOperatingField, FinancialStatement>();
 
   for (const field of NUMERIC_STATEMENT_FIELDS) {
     if (isIncomeStatementField(field)) {
@@ -263,9 +274,38 @@ function mergeStatementPeriodGroup(statements: readonly InternalStatement[]): In
     if (candidates.length === 0) continue;
     const selected = selectFieldCandidate(verifiedEps.length ? verifiedEps : candidates);
     record[field] = selected.value;
+    if (isOperatingField(field)) operatingOwners.set(field, selected.statement);
     if (field === "eps" && selected.statement.epsBasis) merged.epsBasis = selected.statement.epsBasis;
     if (selected.availableAt) fieldAvailability[field] = selected.availableAt;
     if (selected.derived) derivedFields.push(field);
+  }
+
+  // Keep the actual winner for each independent companion. The reported trio
+  // is then selected together by the same cohort merge used during acquisition.
+  const reportedOwners = compatibleStatements.filter(statement => statement.date === merged.date && reportedOperatingCohort(statement))
+    .toSorted((left, right) => {
+      const a = reportedOperatingCohort(left)!;
+      const b = reportedOperatingCohort(right)!;
+      return a.filed.localeCompare(b.filed) || a.accessionNumber.localeCompare(b.accessionNumber);
+    });
+  if (reportedOwners.length || [...operatingOwners.values()].some(statement => statement.operatingResult)) {
+    const provider = Object.fromEntries([...operatingOwners].flatMap(([field, owner]) => {
+      const observation = providerOperatingObservation(owner, field);
+      return observation ? [[field, observation]] : [];
+    }));
+    const ebitdaOwner = operatingOwners.get("ebitda");
+    const derived = ebitdaOwner ? derivedOperatingObservation(ebitdaOwner, "ebitda") : undefined;
+    merged.operatingResult = { version: 1,
+      ...(Object.keys(provider).length ? { provider } : {}),
+      ...(derived ? { derived: { ebitda: derived } } : {}),
+    };
+    if (reportedOwners.length) {
+      for (const owner of reportedOwners) mergeStatementOperatingResult(merged, { ...merged }, owner);
+    } else mergeStatementOperatingResult(merged, { ...merged });
+    const cohort = reportedOperatingCohort(merged);
+    if (cohort) for (const field of ["grossProfit", "operatingExpense", "operatingIncome"] as const) {
+      fieldAvailability[field] = cohort.filed;
+    }
   }
 
   merged.fieldAvailability = fieldAvailability;
@@ -287,7 +327,8 @@ function mergeStatementsByPeriod(
   for (const statement of sorted) {
     const lastGroup = groups.at(-1);
     if (lastGroup && areNearbyFinancialPeriodEnds(lastGroup[0]!.date, statement.date)
-      && (lastGroup[0]!.date === statement.date || (!hasStatementWithdrawals(statement) && !lastGroup.some(hasStatementWithdrawals)))) {
+      && (lastGroup[0]!.date === statement.date || (!hasStatementWithdrawals(statement) && !lastGroup.some(hasStatementWithdrawals)
+        && !statement.operatingResult && !lastGroup.some(row => row.operatingResult)))) {
       lastGroup.push(statement as InternalStatement);
     } else groups.push([statement as InternalStatement]);
   }
@@ -358,6 +399,7 @@ export function deriveQuarterlyStatements(
     let changed = false;
 
     for (const field of QUARTERLY_FLOW_FIELDS) {
+      if (!canDeriveOperatingQuarter(annualStatement, mergedQuarterly, field)) continue;
       if (isIncomeStatementField(field) && target.unavailableFields?.includes(field)) continue;
       if (statementNumber(target, field) !== null) continue;
       const annualValue = statementNumber(annualStatement, field);
@@ -417,6 +459,7 @@ function buildTtmStatements(statements: readonly FinancialStatement[]): Internal
       fieldAvailability: {},
       __timeSeriesTtm: true,
       __timeSeriesDerivedFields: [],
+      operatingResultAggregation: operatingResultAggregation(window),
     };
     const unresolvedEps = window.find((statement) => statement.epsBasis?.status === "unresolved");
     if (unresolvedEps) ttm.epsBasis = unresolvedEps.epsBasis;
@@ -437,6 +480,7 @@ function buildTtmStatements(statements: readonly FinancialStatement[]): Internal
     if (hasAverageShareInputs && !hasCompleteAverageShares) ttm.__timeSeriesIncompleteAverageShares = true;
 
     for (const field of [...TTM_SUM_FIELDS, ...QUARTERLY_AVERAGE_FIELDS]) {
+      if (!canAggregateOperatingField(window, field)) continue;
       const values = window.map((statement) => statementNumber(statement, field));
       if (!values.every((value): value is number => value !== null)) continue;
       if (QUARTERLY_AVERAGE_FIELDS.includes(field) && !values.every(value => value > 0)) continue;
@@ -669,6 +713,10 @@ function pointForStatement(
       quality: derived || (metric === "eps" && statement.epsBasis?.factor !== undefined && statement.epsBasis.factor !== 1) ? "derived" : "reported",
       ...((metric === "eps" || metric === "trailingPE") && statement.epsBasis ? { secEpsBasis: statement.epsBasis } : {}),
       currency: statement.currency,
+      ...(metricDependencies(metric, statement).some(isOperatingField) ? {
+        ...(statement.operatingResult ? { operatingResult: statement.operatingResult } : {}),
+        ...(statement.operatingResultAggregation ? { operatingResultAggregation: statement.operatingResultAggregation } : {}),
+      } : {}),
     },
   };
 }
@@ -792,6 +840,10 @@ function currentDerivedValuationPoint(
     provenance: {
       providerId: quote.providerId,
       quality: "derived",
+      ...(metricDependencies(metric, statement).some(isOperatingField) ? {
+        ...(statement.operatingResult ? { operatingResult: statement.operatingResult } : {}),
+        ...(statement.operatingResultAggregation ? { operatingResultAggregation: statement.operatingResultAggregation } : {}),
+      } : {}),
     },
   };
 }
@@ -852,7 +904,9 @@ function dedupeFundamentalPeriods(points: readonly TimeSeriesPoint[]): TimeSerie
   ));
   for (const point of sorted) {
     const lastGroup = groups.at(-1);
-    if (lastGroup && areNearbyFinancialPeriodEnds(lastGroup[0]!.observedAt, point.observedAt)) {
+    if (lastGroup && areNearbyFinancialPeriodEnds(lastGroup[0]!.observedAt, point.observedAt)
+      && (lastGroup[0]!.observedAt.getTime() === point.observedAt.getTime()
+        || (!point.provenance?.operatingResult && !lastGroup.some(item => item.provenance?.operatingResult)))) {
       lastGroup.push(point);
     } else groups.push([point]);
   }

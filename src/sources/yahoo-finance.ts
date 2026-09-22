@@ -11,6 +11,7 @@ import type { InstrumentSearchResult } from "../types/instrument";
 import { parseOptionSymbol } from "../utils/options";
 import { SecEdgarClient } from "./sec-edgar";
 import { mergeFinancialStatementRows } from "../utils/financial-statements";
+import { hasShopOperatingIdentity, normalizeFinancialOperatingResults } from "../utils/operating-result";
 import { withdrawKnownProviderStatements } from "../utils/statement-observations";
 import { YahooHttpClient } from "./yahoo-finance/http";
 import {
@@ -74,7 +75,8 @@ export class YahooFinanceClient implements DataProvider {
     if (!/^[A-Z0-9.-]+$/i.test(ticker.trim())) return false;
     if (ticker.includes(".") && !/^[A-Z]+\.[AB]$/i.test(ticker)) return false;
     const normalizedExchange = exchange.trim().toUpperCase();
-    return SEC_STATEMENT_SUPPLEMENT_EXCHANGES.has(normalizedExchange)
+    return (SEC_STATEMENT_SUPPLEMENT_EXCHANGES.has(normalizedExchange)
+      || hasShopOperatingIdentity(financials, { symbol: ticker, exchange }))
       && (financials.quote?.currency ?? "USD").toUpperCase() === "USD"
       && ![financials.financialCurrency, ...financials.annualStatements.map((row) => row.currency), ...financials.quarterlyStatements.map((row) => row.currency)].some((currency) => currency != null && currency.toUpperCase() !== "USD");
   }
@@ -89,14 +91,18 @@ export class YahooFinanceClient implements DataProvider {
       ? { mode: "extended" as const, source: "sec" as const, status, fetchedAt: new Date().toISOString() } : undefined;
     if (!this.shouldSupplementSecStatements(ticker, exchange, financials)) return { ...financials, statementHistory: stamp("unsupported") };
     try {
-      const secStatements = await this.secClient.getFinancialStatements(ticker);
+      const operatingTarget = hasShopOperatingIdentity(financials, { symbol: ticker, exchange });
+      const secStatements = await this.secClient.getFinancialStatements(ticker, { reportedOperatingResults: operatingTarget });
       if (
         !secStatements
         || (secStatements.annualStatements.length === 0 && secStatements.quarterlyStatements.length === 0)
       ) {
         return { ...financials, statementHistory: stamp("unsupported") };
       }
-      return {
+      if (!operatingTarget) {
+        for (const row of [...secStatements.annualStatements, ...secStatements.quarterlyStatements]) delete row.operatingResult;
+      }
+      return normalizeFinancialOperatingResults({
         ...financials,
         financialCurrency: financials.financialCurrency ?? "USD",
         statementHistory: stamp("available"),
@@ -106,7 +112,7 @@ export class YahooFinanceClient implements DataProvider {
         quarterlyStatements: extended
           ? mergeFinancialStatementRows(secStatements.quarterlyStatements, financials.quarterlyStatements)
           : mergeFinancialStatementRows(financials.quarterlyStatements, secStatements.quarterlyStatements),
-      };
+      }, { symbol: ticker, exchange });
     } catch {
       return { ...financials, statementHistory: stamp("retryable-failure") };
     }
