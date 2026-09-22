@@ -9,13 +9,13 @@ import {
   type TeamSummary,
 } from "../../../../api-client";
 import { ApiRequestError } from "../../../../api-client/errors";
-import { Button, Tabs, usePaneFooter, type PaneHint } from "../../../../components";
+import { Button, Tabs, loadingText, usePaneFooter, type PaneHint } from "../../../../components";
 import { useShortcut } from "../../../../react/input";
 import { colors } from "../../../../theme/colors";
 import type { PaneProps } from "../../../../types/plugin";
 import { Box, ScrollBox, Span, Text, TextAttributes, useRendererHost } from "../../../../ui";
 import { isPlainKey } from "../../../../utils/keyboard";
-import { usePluginAppActions } from "../../../runtime";
+import { usePluginAppActions, usePluginPaneState } from "../../../runtime";
 import { chatController } from "../../chat/controller";
 import { SignInWall } from "../auth-actions";
 import { useCloudUpgradeAction } from "../../shared/cloud-upgrade";
@@ -182,7 +182,7 @@ export function TeamPane({ focused, width, height, close }: PaneProps) {
   const selfUserId = apiClient.getCurrentUser()?.id ?? null;
 
   const [teamId, setTeamId] = useState<string | null>(null);
-  const [section, setSection] = useState<TeamPaneSection>("members");
+  const [section, setSection] = usePluginPaneState<TeamPaneSection>("section", "members");
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<TeamDraft>(() => emptyTeamDraft());
   const [createDraft, setCreateDraft] = useState<TeamDraft>(() => emptyTeamDraft());
@@ -574,7 +574,7 @@ export function TeamPane({ focused, width, height, close }: PaneProps) {
           </Box>
         ) : (
           <Box height={1}>
-            <Muted>{snapshot.loading ? "Loading teams…" : snapshot.error ?? ""}</Muted>
+            <Muted>{snapshot.loading ? loadingText("teams") : snapshot.error ?? ""}</Muted>
           </Box>
         )}
 
@@ -698,7 +698,7 @@ export function TeamPane({ focused, width, height, close }: PaneProps) {
               />
             ) : null}
             {!showCreate && team && details.loading && details.members.length === 0 ? (
-              <Muted>Loading…</Muted>
+              <Muted>{loadingText()}</Muted>
             ) : null}
             {!showCreate && !team && !snapshot.loading && snapshot.loaded ? (
               <Muted>You are not in a team yet.</Muted>
