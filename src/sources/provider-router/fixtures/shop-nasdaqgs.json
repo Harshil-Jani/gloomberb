@@ -1,0 +1,137 @@
+{
+  "provenance": {
+    "url": "https://term.gloom.sh/api/market/financials?symbol=SHOP&exchange=NASDAQ",
+    "capturedAt": "Wed, 16 Sep 2026 20:35:41 GMT",
+    "responseBodySha256": "59c5d7cb8e441a4f0b03a70f956b70eae9dd36dd90f1aaa6f65cf4778ec6ff15",
+    "projection": "Exact recorded quote, description, sector/industry and selected statement values; price history omitted. Full response retained in audit-shop-crosslisting-2026-09-16/browser/XNAS-financials-response.json."
+  },
+  "financials": {
+    "financialCurrency": "USD",
+    "quote": {
+      "symbol": "SHOP",
+      "price": 130.22,
+      "instrumentType": "EQUITY",
+      "currency": "USD",
+      "change": 0.3599999999999852,
+      "changePercent": 0.27722162328660493,
+      "previousClose": 129.86,
+      "changeSessionDate": "2026-09-16",
+      "open": 130.34,
+      "high": 132.6699981689453,
+      "low": 126.8812,
+      "high52w": 182.19,
+      "low52w": 94,
+      "marketCap": 168643215360,
+      "volume": 6087689,
+      "name": "Shopify Inc.",
+      "lastUpdated": 1789589940000,
+      "listingExchangeName": "NASDAQGS",
+      "listingExchangeFullName": "NASDAQGS",
+      "exchangeName": "NASDAQGS",
+      "fullExchangeName": "NASDAQGS",
+      "marketState": "POST",
+      "sessionConfidence": "explicit",
+      "providerId": "gloomberb-cloud",
+      "dataSource": "delayed",
+      "providerPriceDivisor": 1,
+      "stale": false
+    },
+    "profile": {
+      "description": "Shopify Inc. is a Canadian commerce technology company that provides software and services for businesses to create, manage, and grow retail operations across online and offline channels. Its core platform helps merchants build storefronts, manage products and inventory, process orders and payments, handle shipping, and maintain customer relationships. Shopify also offers merchant services such as integrated payment processing, point-of-sale tools, shipping labels, apps, themes, and financing-related products that support day-to-day commerce operations. The company serves businesses of many sizes across North America, Europe, the Middle East, Africa, Asia Pacific, and Latin America. Founded in 2004 and headquartered in Ottawa, Canada, Shopify plays a central role in modern e-commerce by providing the digital infrastructure that connects merchants with consumers across web, mobile, social, and physical retail environments.",
+      "sector": "Technology",
+      "industry": "Software - Application"
+    },
+    "priceHistory": [],
+    "annualStatements": [
+      {
+        "date": "2021-12-31",
+        "currency": "USD",
+        "dateSource": "provider"
+      },
+      {
+        "date": "2022-12-31",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 5600000000,
+        "netIncome": -3460000000,
+        "eps": -2.73
+      },
+      {
+        "date": "2023-12-31",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 7060000000,
+        "netIncome": 132000000,
+        "eps": 0.1
+      },
+      {
+        "date": "2024-12-31",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 8880000000,
+        "netIncome": 2019000000,
+        "eps": 1.559579
+      },
+      {
+        "date": "2025-12-31",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 11556000000,
+        "netIncome": 1231000000,
+        "eps": 0.944088
+      }
+    ],
+    "quarterlyStatements": [
+      {
+        "date": "2024-12-31",
+        "currency": "USD",
+        "dateSource": "provider"
+      },
+      {
+        "date": "2025-03-31",
+        "currency": "USD",
+        "dateSource": "provider"
+      },
+      {
+        "date": "2025-06-30",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 2680000000,
+        "netIncome": 906000000,
+        "eps": 0.69
+      },
+      {
+        "date": "2025-09-30",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 2844000000,
+        "netIncome": 264000000,
+        "eps": 0.2
+      },
+      {
+        "date": "2025-12-31",
+        "currency": "USD",
+        "dateSource": "provider",
+        "totalRevenue": 3672000000,
+        "netIncome": 743000000,
+        "eps": 0.569827
+      },
+      {
+        "date": "2026-03-31",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 3170000000,
+        "netIncome": -581000000,
+        "eps": -0.446655
+      },
+      {
+        "date": "2026-06-30",
+        "currency": "USD",
+        "dateSource": "sec",
+        "totalRevenue": 3583000000,
+        "netIncome": 1502000000,
+        "eps": 1.16
+      }
+    ]
+  }
+}
