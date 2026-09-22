@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ChartResolveCache,
+  chartSeedResolution,
   resolveChartSpecData,
   seedChartResolutionResult,
   type ChartResolveOptions,
@@ -14,11 +15,10 @@ import {
   subscribeToLiveChartQuotes,
 } from "./live-quotes";
 import type { PricePoint, Quote } from "../types/financials";
-import { createBaselineChartRequest } from "../market-data/coordinator/chart";
 import { getSharedMarketDataCoordinator } from "../market-data/coordinator";
 import { resolveEntryData } from "../market-data/selectors";
 import { isMarketFieldId } from "./field-catalog";
-import { getPresetResolution } from "./resolution";
+import { getNextBufferRange } from "./resolution";
 import {
   parsedPriceHistoryKey,
   readParsedPriceHistory,
@@ -52,29 +52,28 @@ function hasRenderableData(result: ChartResolutionResult): boolean {
   return (result.bufferedSeries ?? result.series).some((series) => series.points.length > 0);
 }
 
-function collectSeedHistory(spec: ChartSpec): Map<string, PricePoint[]> {
+function collectSeedHistory(spec: ChartSpec, now: Date, options: ChartResolveOptions): Map<string, PricePoint[]> {
   const history = new Map<string, PricePoint[]>();
   const coordinator = getSharedMarketDataCoordinator();
+  const resolution = chartSeedResolution(spec, now, options);
+  const ranges = [...new Set([spec.viewport.range, getNextBufferRange(spec.viewport.range), "ALL"] as const)];
   for (const series of spec.series) {
     if (series.source.kind !== "security" || !isMarketFieldId(series.source.fieldId)) continue;
     const source = series.source;
     const key = chartQuoteOverrideKeyForSource(source);
     if (history.has(key)) continue;
-    const baseline = createBaselineChartRequest(source.instrument);
-    const presetResolution = spec.viewport.resolution === "auto"
-      ? getPresetResolution(spec.viewport.range)
-      : spec.viewport.resolution;
-    const remembered = readParsedPriceHistory(parsedPriceHistoryKey(source.instrument, baseline.bufferRange, baseline.resolution))
-      ?? readParsedPriceHistory(parsedPriceHistoryKey(source.instrument, spec.viewport.range, presetResolution))
-      ?? readParsedPriceHistory(parsedPriceHistoryKey(source.instrument, baseline.bufferRange, presetResolution));
-    if (remembered?.length) {
-      history.set(key, remembered);
-      continue;
+    // Cached bars retain their acquisition cadence. An ALL/weekly baseline
+    // cannot supply daily prices, volume or study inputs under daily controls.
+    for (const range of ranges) {
+      const data = readParsedPriceHistory(parsedPriceHistoryKey(source.instrument, range, resolution))
+        ?? (coordinator ? resolveEntryData(coordinator.getChartEntry({
+          instrument: source.instrument, bufferRange: range, granularity: "resolution", resolution,
+        })) : null);
+      if (data?.length) {
+        history.set(key, data);
+        break;
+      }
     }
-    if (!coordinator) continue;
-    const entry = coordinator.getChartEntry(baseline);
-    const data = resolveEntryData(entry);
-    if (data?.length) history.set(key, data);
   }
   return history;
 }
@@ -100,9 +99,13 @@ export function useChartResolution(
   const snapshot = options.snapshot;
   const coordinator = getSharedMarketDataCoordinator();
   const specKey = JSON.stringify(spec);
+  const seedResult = () => {
+    const now = sources.now ?? new Date();
+    return seedChartResolutionResult(spec, collectSeedHistory(spec, now, options), now, options);
+  };
   const [state, setState] = useState(() => ({
     key: specKey,
-    result: snapshot ?? seedChartResolutionResult(spec, collectSeedHistory(spec), sources.now ?? new Date()) ?? EMPTY_RESULT,
+    result: snapshot ?? seedResult() ?? EMPTY_RESULT,
   }));
   // A selected range, listing or transform owns its displayed data. A pending
   // request must not keep another specification's result under the new controls.
@@ -121,7 +124,7 @@ export function useChartResolution(
   }, [coordinator, needsSeed]);
   useSyncExternalStore(subscribeSeed, getSeedSnapshot, () => 0);
   const seeded = needsSeed
-    ? seedChartResolutionResult(spec, collectSeedHistory(spec), sources.now ?? new Date())
+    ? seedResult()
     : null;
   const displayed = hasRenderableData(result) ? result : (seeded ?? result);
   const resultRef = useRef(displayed);
