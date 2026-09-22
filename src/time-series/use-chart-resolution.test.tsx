@@ -382,7 +382,11 @@ describe("useChartResolution", () => {
       getPriceHistory: async () => [],
     });
     const sources = sourcesFor(provider);
-    testSetup = await testRender(<ResolutionHarness sources={sources} />, {
+    // This case needs a cold identity, independent of the earlier cache tests.
+    const coldSpec: ChartSpec = { ...SPEC, series: SPEC.series.map(entry => ({ ...entry,
+      source: { kind: "security", instrument: { symbol: "RESOLUTION-COLD-RELOAD", exchange: "NASDAQ" }, fieldId: "market.ohlcv" },
+    })) };
+    testSetup = await testRender(<ResolutionHarness sources={sources} spec={coldSpec} />, {
       width: 24,
       height: 1,
     });

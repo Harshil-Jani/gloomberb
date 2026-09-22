@@ -446,10 +446,25 @@ function emptyFinancials(priceHistory: TickerFinancials["priceHistory"] = []): T
   return { annualStatements: [], quarterlyStatements: [], priceHistory };
 }
 
+function chartCalculationSeriesIds(spec: ChartSpec): Set<string> {
+  const ids = activeStudyInputSeriesIds(spec.studies);
+  spec.series.filter(entry => entry.visible !== false).forEach(entry => ids.add(entry.id));
+  // Hidden primary market data still owns the shared session anchor.
+  const primary = spec.series.find(entry => entry.source.kind === "security" && isMarketFieldId(entry.source.fieldId));
+  if (primary) ids.add(primary.id);
+  return ids;
+}
+
+/** Select the provisional seed cadence before provider resolution support arrives. */
+export function chartSeedResolution(spec: ChartSpec, now: Date, options: ChartResolveOptions = {}): ManualChartResolution {
+  return requestResolution(spec, requestedBounds(spec, now), chartCalculationSeriesIds(spec), options, []);
+}
+
 export function seedChartResolutionResult(
   spec: ChartSpec,
   historyByInstrument: ReadonlyMap<string, TickerFinancials["priceHistory"]>,
   referenceNow?: Date,
+  options: ChartResolveOptions = {},
 ): ChartResolutionResult | null {
   const series: ResolvedSeries[] = [];
   spec.series.forEach((seriesSpec, index) => {
@@ -466,7 +481,7 @@ export function seedChartResolutionResult(
     for (const point of entry.points) latest = Math.max(latest, point.date.getTime());
   }
   const bounds = requestedBounds(spec, referenceNow ?? new Date(latest));
-  const resolution = requestResolution(spec, bounds, new Set(series.map((entry) => entry.id)), {}, []);
+  const resolution = chartSeedResolution(spec, referenceNow ?? new Date(latest), options);
   const priceComparison = resolvePriceComparison(spec, series, bounds, resolution);
   const displayBounds = comparisonDisplayBounds(bounds, priceComparison);
   const comparisonBounds = priceComparison && priceComparison.start !== null
@@ -1009,14 +1024,8 @@ export async function resolveChartSpecData(
   const visibleSeriesIds = new Set(spec.series
     .filter((entry) => entry.visible !== false)
     .map((entry) => entry.id));
-  const calculationSeriesIds = activeStudyInputSeriesIds(spec.studies);
-  visibleSeriesIds.forEach((id) => calculationSeriesIds.add(id));
-  // Keep the first authored market series loaded as the deterministic shared
-  // session anchor even when the user temporarily hides its marks.
-  const primaryMarketSeries = spec.series.find((entry) => (
-    entry.source.kind === "security" && isMarketFieldId(entry.source.fieldId)
-  ));
-  if (primaryMarketSeries) calculationSeriesIds.add(primaryMarketSeries.id);
+  const calculationSeriesIds = chartCalculationSeriesIds(spec);
+  const primaryMarketSeries = spec.series.find(entry => entry.source.kind === "security" && isMarketFieldId(entry.source.fieldId));
   if (!sources.dataProvider && spec.series.some((entry) => (
     calculationSeriesIds.has(entry.id) && entry.source.kind === "security"
   ))) {
