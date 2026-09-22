@@ -1,3 +1,4 @@
+import { hasAsmlEarningsIdentity } from "../../utils/reported-earnings-result";
 import { yahooSuffixExchange } from "../yahoo-finance/symbols";
 import type { CachedResourceRecord, ResourceStore } from "../../data/resource-store";
 import type { TimeRange } from "../../time-series/range";
@@ -105,10 +106,14 @@ export function cacheRouterResource<T>(
 ): void {
   if (kind === "financials" && ["provider:yahoo", "provider:gloomberb-cloud"].includes(sourceKey) && !entityKey.startsWith("contract:")) {
     const financials = value as TickerFinancials;
-    const retryAt = financials.operatingHistoryRetryAt;
-    if (typeof retryAt === "number" && Number.isFinite(retryAt) && hasShopOperatingIdentity(financials, {
-      symbol: entityKey, exchange: variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1],
-    })) {
+    const target = { symbol: entityKey, exchange: variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1] };
+    const isRetry = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
+    const retries = [
+      isRetry(financials.operatingHistoryRetryAt) && hasShopOperatingIdentity(financials, target) ? financials.operatingHistoryRetryAt : undefined,
+      isRetry(financials.earningsHistoryRetryAt) && hasAsmlEarningsIdentity(financials, target) ? financials.earningsHistoryRetryAt : undefined,
+    ].filter(isRetry);
+    const retryAt = Math.min(...retries);
+    if (Number.isFinite(retryAt)) {
       // Keep usable partial statements while allowing the SEC source's
       // short retry (or completed background load) to escape the normal TTL.
       cachePolicy = { ...cachePolicy, staleMs: Math.min(cachePolicy.staleMs, Math.max(0, retryAt - Date.now())) };

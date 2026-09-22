@@ -1,3 +1,4 @@
+import { hasAsmlEarningsIdentity, promoteReportedEarningsResults } from "../utils/reported-earnings-result";
 import { exchangeRateMetadata } from "../utils/exchange-rate-snapshot";
 import type { ExchangeRateSnapshot } from "../types/exchange-rate";
 import type { Quote, PricePoint, TickerFinancials, OptionsChain, CompanyProfile, HolderData, AnalystResearchData, CorporateActionsData } from "../types/financials";
@@ -89,6 +90,15 @@ export class YahooFinanceClient implements DataProvider {
   ): Promise<TickerFinancials> {
     const stamp = (status: "available" | "unsupported" | "retryable-failure") => extended
       ? { mode: "extended" as const, source: "sec" as const, status, fetchedAt: new Date().toISOString() } : undefined;
+    if (hasAsmlEarningsIdentity(financials, { symbol: ticker, exchange })) {
+      // Listing qualification above permits the Amsterdam symbol to use the
+      // verified issuer lookup. Annual EPS does not establish full SEC history.
+      const source = await this.secClient.getFinancialStatements("ASML", { reportedEarningsResults: true });
+      return { ...financials, statementHistory: stamp("unsupported"),
+        earningsHistoryRetryAt: this.secClient.getEarningsHistoryRetryAt(),
+        annualStatements: promoteReportedEarningsResults(financials.annualStatements, source?.reportedEarningsResults ?? [], "annual"),
+      };
+    }
     if (!this.shouldSupplementSecStatements(ticker, exchange, financials)) return { ...financials, statementHistory: stamp("unsupported") };
     const operatingTarget = hasShopOperatingIdentity(financials, { symbol: ticker, exchange });
     const retry = () => operatingTarget ? this.secClient.getOperatingTablesRetryAt(ticker) : undefined;

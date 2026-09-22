@@ -1,3 +1,5 @@
+import { normalizeStatementEarningsResult } from "../utils/earnings-result";
+import { EARNINGS_FIELDS, hasEarningsWithdrawal, hasUnavailableEarnings, mergeReportedEarningsResult, ownedReportedEarningsCohort } from "../utils/reported-earnings-result";
 import type {
   FinancialStatement,
   ProviderOperatingField,
@@ -308,6 +310,10 @@ function mergeStatementPeriodGroup(statements: readonly InternalStatement[]): In
     }
   }
 
+  mergeReportedEarningsResult(merged, compatibleStatements);
+  const earnings = ownedReportedEarningsCohort(merged);
+  if (earnings) for (const field of EARNINGS_FIELDS) fieldAvailability[field] = earnings.filed;
+  for (const field of EARNINGS_FIELDS) if (merged[field] === undefined) delete fieldAvailability[field];
   merged.fieldAvailability = fieldAvailability;
   merged.availableAt = completeStatementAvailability(merged);
   if (NUMERIC_STATEMENT_FIELDS.every(field => statementNumber(merged, field) === null)) {
@@ -323,12 +329,12 @@ function mergeStatementsByPeriod(
   statements: readonly FinancialStatement[],
 ): InternalStatement[] {
   const groups: InternalStatement[][] = [];
-  const sorted = [...statements].sort((left, right) => left.date.localeCompare(right.date));
+  const sorted = statements.map(row => normalizeStatementEarningsResult(row)).sort((left, right) => left.date.localeCompare(right.date));
   for (const statement of sorted) {
     const lastGroup = groups.at(-1);
     if (lastGroup && areNearbyFinancialPeriodEnds(lastGroup[0]!.date, statement.date)
       && (lastGroup[0]!.date === statement.date || (!hasStatementWithdrawals(statement) && !lastGroup.some(hasStatementWithdrawals)
-        && !statement.operatingResult && !lastGroup.some(row => row.operatingResult)))) {
+        && !statement.operatingResult && !statement.earningsResult && !lastGroup.some(row => row.operatingResult || row.earningsResult)))) {
       lastGroup.push(statement as InternalStatement);
     } else groups.push([statement as InternalStatement]);
   }
@@ -586,7 +592,7 @@ function selectedCash(statement: FinancialStatement): SelectedStatementField | n
 function selectedEps(
   statement: InternalStatement,
 ): { value: number; dependencies: NumericStatementField[] } | null {
-  if (statement.epsBasis?.status === "unresolved") return null;
+  if (statement.epsBasis?.status === "unresolved" || hasEarningsWithdrawal(statement, "eps") || hasUnavailableEarnings(statement, "eps")) return null;
   if (finiteNumber(statement.eps)) {
     return { value: statement.eps, dependencies: ["eps"] };
   }
@@ -712,6 +718,11 @@ function pointForStatement(
     provenance: {
       quality: derived || (metric === "eps" && statement.epsBasis?.factor !== undefined && statement.epsBasis.factor !== 1) ? "derived" : "reported",
       ...((metric === "eps" || metric === "trailingPE") && statement.epsBasis ? { secEpsBasis: statement.epsBasis } : {}),
+      ...((metric === "eps" || metric === "trailingPE") && ownedReportedEarningsCohort(statement)
+        ? { earningsResult: statement.earningsResult } : {}),
+      ...((metric === "eps" || metric === "trailingPE")
+        && (hasUnavailableEarnings(statement, "eps") || hasEarningsWithdrawal(statement, "eps"))
+        ? { unavailableEarnings: ["eps" as const] } : {}),
       currency: statement.currency,
       ...(metricDependencies(metric, statement).some(isOperatingField) ? {
         ...(statement.operatingResult ? { operatingResult: statement.operatingResult } : {}),
@@ -738,7 +749,7 @@ function historicalValuation(
 
 function hasValuationInputs(statement: InternalStatement, metric: string): boolean {
   if (metric === "trailingPE") {
-    return statement.epsBasis?.status === "unresolved"
+    return hasEarningsWithdrawal(statement, "eps") || hasUnavailableEarnings(statement, "eps") || statement.epsBasis?.status === "unresolved"
       || statement.__timeSeriesIncompleteCommonIncome === true
       || statement.__timeSeriesIncompleteAverageShares === true
       || selectedEps(statement) !== null;
@@ -906,7 +917,8 @@ function dedupeFundamentalPeriods(points: readonly TimeSeriesPoint[]): TimeSerie
     const lastGroup = groups.at(-1);
     if (lastGroup && areNearbyFinancialPeriodEnds(lastGroup[0]!.observedAt, point.observedAt)
       && (lastGroup[0]!.observedAt.getTime() === point.observedAt.getTime()
-        || (!point.provenance?.operatingResult && !lastGroup.some(item => item.provenance?.operatingResult)))) {
+        || ![point, ...lastGroup].some(item => item.provenance?.operatingResult
+          || item.provenance?.earningsResult || item.provenance?.unavailableEarnings?.length))) {
       lastGroup.push(point);
     } else groups.push([point]);
   }

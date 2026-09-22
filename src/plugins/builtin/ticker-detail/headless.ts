@@ -31,7 +31,7 @@ export const financialStatementsHeadless: HeadlessPaneDefinition<"rows"> = {
     const statementCurrency = financialStatementCurrency(financials, [
       ...financials.annualStatements, ...financials.quarterlyStatements,
     ]);
-    const dates = table?.statements.map(({ date, currency, dateSource, providerDate, dateEvidence, availableAt, fieldAvailability, fieldSources, unavailableFields, withdrawnObservations, epsBasis, aggregation, operatingResult, operatingResultAggregation }) => ({
+    const dates = table?.statements.map(({ date, currency, dateSource, providerDate, dateEvidence, availableAt, fieldAvailability, fieldSources, unavailableFields, withdrawnObservations, epsBasis, earningsResult, unavailableEarnings, aggregation, operatingResult, operatingResultAggregation }) => ({
       date, currency: currency ?? statementCurrency ?? null,
       availableAt: availableAt ?? null,
       fieldAvailability: fieldAvailability ? { ...fieldAvailability } : null,
@@ -39,6 +39,8 @@ export const financialStatementsHeadless: HeadlessPaneDefinition<"rows"> = {
       ...(unavailableFields ? { unavailableFields } : {}),
       ...(withdrawnObservations ? { withdrawnObservations } : {}),
       ...(epsBasis ? { epsBasis } : {}),
+      ...(earningsResult ? { earningsResult } : {}),
+      ...(unavailableEarnings ? { unavailableEarnings } : {}),
       ...(aggregation ? { aggregation } : {}),
       ...(operatingResult ? { operatingResult } : {}),
       ...(operatingResultAggregation ? { operatingResultAggregation } : {}),
