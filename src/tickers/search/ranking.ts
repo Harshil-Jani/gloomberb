@@ -209,7 +209,7 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
         companyMatchRank,
         companyNameKey,
         issuerGroupKey: companyMatchRank > 0 && item.instrumentClass === "equity"
-          ? companyNameKey
+          ? getIssuerGroupKey(item.detail)
           : null,
         explicitIntentScore,
         normalizedSymbol: normalizeSearchText(item.symbol || item.label),
@@ -548,6 +548,14 @@ function scoreListingPriority(item: Pick<TickerSearchRankableItem, "label"> & Pa
 
 function getCompanyNameKey(detail: string): string {
   return normalizeCompanyName(detail.split("|")[0] || "");
+}
+
+function getIssuerGroupKey(detail: string): string {
+  // Listing descriptions do not create a different issuer. Strip only these
+  // recognized tails for grouping, preserving full names and query relevance.
+  const issuer = normalizeSearchText(detail.split("|")[0] || "")
+    .replace(/\s+(?:(?:NY|NEW YORK) REGISTERED SHARES|DEPOSITARY RECEIPTS?)$/, "");
+  return normalizeCompanyName(issuer);
 }
 
 function normalizeCompanyName(name: string): string {
