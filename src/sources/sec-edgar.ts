@@ -93,6 +93,7 @@ const COMPANY_FACTS_STATEMENT_FIELDS: CompanyFactsStatementField[] = [
     periodType: "duration",
   },
   { field: "grossProfit", tags: ["GrossProfit"], units: ["USD"], periodType: "duration" },
+  { field: "operatingExpense", tags: ["OperatingExpenses"], units: ["USD"], periodType: "duration" },
   { field: "operatingIncome", tags: ["OperatingIncomeLoss"], units: ["USD"], periodType: "duration" },
   { field: "netIncome", tags: ["NetIncomeLoss"], units: ["USD"], periodType: "duration" },
   { field: "netIncomeIncludingNoncontrollingInterests", tags: ["ProfitLoss"], units: ["USD"], periodType: "duration" },
