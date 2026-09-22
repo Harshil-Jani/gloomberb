@@ -22,7 +22,7 @@ import {
   type PaneInstanceConfig,
 } from "../../../types/config";
 import type { DesktopSharedStateSnapshot, DesktopThemePreviewState, DesktopWindowBridge } from "../../../types/desktop-window";
-import { setPaneSetting, updatePaneInstance } from "../../../pane-settings";
+import { setPaneSetting, setPaneSettings, updatePaneInstance } from "../../../pane-settings";
 import { useTickerFinancials } from "../../../market-data/hooks";
 import { hasAmbiguousTickerContracts, resolveInstrumentForPane, resolveListingForPane, tickerForInstrument } from "../../../core/state/app/instrument";
 import {
@@ -350,6 +350,19 @@ export function usePaneSettingValue<T>(
   }, [fallback, key, scopedPaneId, stateRef, updateLayout]);
 
   return [value, setValue];
+}
+
+/** Persist related pane settings in one layout update. */
+export function useUpdatePaneSettings(paneId?: string) {
+  const scopedPaneId = useScopedPaneId(paneId);
+  const updateLayout = useUpdatePaneLayout();
+  return useCallback((patch: Record<string, unknown>) => {
+    updateLayout((layout) => {
+      const pane = findPaneInstance(layout, scopedPaneId);
+      if (!pane || Object.entries(patch).every(([key, value]) => Object.is(pane.settings?.[key], value))) return layout;
+      return setPaneSettings(layout, scopedPaneId, { ...pane.settings, ...patch });
+    });
+  }, [scopedPaneId, updateLayout]);
 }
 
 function useScopedPaneId(paneId?: string): string {
