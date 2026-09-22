@@ -175,3 +175,23 @@ test("detached filing EPS remains unavailable through sparse fallback and histor
     expect(points).toHaveLength(2); expect(points[0]!.value).toBeNull(); expect(points[1]!.value).toBe(100 / 19.89);
   }
 });
+
+
+test("chart period deduplication keeps nearby provider EPS separate from an owned filing or an unavailable fiscal period", () => {
+  const value = corrected();
+  const [good, nextYear] = affected(value.annualStatements);
+  const detached = mapCloudFinancials({ ...value, annualStatements: [{ ...good!, netIncome: 1 }] } as any, undefined,
+    { symbol: "ASML", exchange: "AMS" }).annualStatements[0]!;
+  for (const dated of [false, true]) for (const fiscal of [good!, detached]) {
+    const neighbor = { date: "2022-12-30", currency: "EUR", eps: 14.13, basicEps: 14.14,
+      ...(dated ? { availableAt: "2023-02-15" } : {}) };
+    const points = extractFundamentalSeries({ ...value, annualStatements: [neighbor, fiscal, nextYear!], quarterlyStatements: [],
+      quote: { ...value.quote!, stale: true }, priceHistory: ["2022-12-30", "2023-02-15", "2024-02-14"].map(date => ({ date: new Date(date), close: 100 })) }, {
+      kind: "security", instrument: { symbol: "ASML", exchange: "AMS" }, fieldId: "valuation.trailingPE", period: "annual", timestampMode: "period-end",
+    });
+    expect(points.map(point => point.observedAt.toISOString().slice(0, 10))).toEqual(["2022-12-30", "2022-12-31", "2023-12-31"]);
+    expect(points[1]!.value).toBe(fiscal === detached ? null : 100 / 14.13);
+    expect(points[2]!.value).toBe(100 / 19.89);
+    if (fiscal === detached) expect(points[1]!.provenance?.unavailableEarnings).toEqual(["eps"]);
+  }
+});

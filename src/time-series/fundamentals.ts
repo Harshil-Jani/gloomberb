@@ -720,6 +720,9 @@ function pointForStatement(
       ...((metric === "eps" || metric === "trailingPE") && statement.epsBasis ? { secEpsBasis: statement.epsBasis } : {}),
       ...((metric === "eps" || metric === "trailingPE") && ownedReportedEarningsCohort(statement)
         ? { earningsResult: statement.earningsResult } : {}),
+      ...((metric === "eps" || metric === "trailingPE")
+        && (hasUnavailableEarnings(statement, "eps") || hasEarningsWithdrawal(statement, "eps"))
+        ? { unavailableEarnings: ["eps" as const] } : {}),
       currency: statement.currency,
       ...(metricDependencies(metric, statement).some(isOperatingField) ? {
         ...(statement.operatingResult ? { operatingResult: statement.operatingResult } : {}),
@@ -914,7 +917,8 @@ function dedupeFundamentalPeriods(points: readonly TimeSeriesPoint[]): TimeSerie
     const lastGroup = groups.at(-1);
     if (lastGroup && areNearbyFinancialPeriodEnds(lastGroup[0]!.observedAt, point.observedAt)
       && (lastGroup[0]!.observedAt.getTime() === point.observedAt.getTime()
-        || (!point.provenance?.operatingResult && !lastGroup.some(item => item.provenance?.operatingResult)))) {
+        || ![point, ...lastGroup].some(item => item.provenance?.operatingResult
+          || item.provenance?.earningsResult || item.provenance?.unavailableEarnings?.length))) {
       lastGroup.push(point);
     } else groups.push([point]);
   }

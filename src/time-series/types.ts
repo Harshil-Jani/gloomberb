@@ -113,6 +113,7 @@ export interface TimeSeriesPoint {
     valuationPriceIssues?: import("./valuation-price").ValuationPriceIssue[];
     secEpsBasis?: import("../utils/sec-eps-basis").SecEpsBasis;
     earningsResult?: import("../utils/reported-earnings-result").EarningsResultProvenance;
+    unavailableEarnings?: import("../utils/reported-earnings-result").EarningsField[];
     operatingResult?: import("../types/financials").OperatingResult;
     operatingResultAggregation?: import("../utils/operating-result-aggregation").OperatingResultAggregation;
     providerId?: string;

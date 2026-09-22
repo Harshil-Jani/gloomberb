@@ -129,3 +129,30 @@ test("slow optional native filings leave provider statements usable and finish i
     expect(calls).toBe(1);
   } finally { finish(); await client.secClient.asmlEarningsPromise; }
 });
+
+test("native partial filings retain bounded prior evidence while rejecting an explicit same-accession contradiction", async () => {
+  setSystemTime(NOW);
+  const client = new YahooFinanceClient() as any;
+  client.secClient.loadLookup = async () => new Map([["ASML", { cik: "0000937966", exchange: "NASDAQ" }]]);
+  let payload: any = fixture.companyfacts;
+  client.secClient.fetchJson = async () => payload;
+  const load = () => client.secClient.getFinancialStatements("ASML", { reportedEarningsResults: true });
+  expect((await load()).reportedEarningsResults).toHaveLength(6);
+  payload = structuredClone(fixture.companyfacts);
+  const entries = payload.facts["us-gaap"].EarningsPerShareBasic.units["EUR/shares"];
+  const challenged = entries.find((entry: any) => entry.end === "2023-12-31");
+  payload.facts["us-gaap"].EarningsPerShareBasic.units["EUR/shares"] = [
+    ...entries.filter((entry: any) => entry.end === "2022-12-31"), challenged, { ...challenged, val: 999 },
+  ];
+  setSystemTime(NOW + 6 * 3_600_000 + 1);
+  const partial = await load();
+  expect(partial.reportedEarningsResults).toHaveLength(5);
+  expect(partial.reportedEarningsResults.some((group: any) => group.endDate === "2023-12-31" && group.accessionNumber === challenged.accn)).toBe(false);
+  expect(client.secClient.getEarningsHistoryRetryAt()).toBe(Date.now() + 60_000);
+  const repaired = await client.supplementSecStatements("ASML", "AMS", raw(), false);
+  expect(eps(repaired)).toEqual([14.13, 19.89]);
+  setSystemTime(NOW + 24 * 3_600_000 + 1);
+  const expired = await load();
+  expect(expired.reportedEarningsResults).toHaveLength(3);
+  expect(expired.reportedEarningsResults.every((group: any) => group.endDate === "2022-12-31")).toBe(true);
+});

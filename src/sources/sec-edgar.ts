@@ -1,4 +1,4 @@
-import { parseReportedEarningsCohorts, type ReportedEarningsCohort } from "../utils/reported-earnings-result";
+import { contradictsEarningsCohort, parseReportedEarningsCohorts, type ReportedEarningsCohort } from "../utils/reported-earnings-result";
 import type { SecFilingDocument, SecFilingItem } from "../types/data-provider";
 import type { FinancialStatement, IncomeStatementSource } from "../types/financials";
 import { parseReportedOperatingCohorts, promoteReportedOperatingResults, type ReportedOperatingCohort } from "../utils/operating-result";
@@ -694,7 +694,7 @@ export function parseCompanyFactsFinancialStatements(payload: unknown): SecCompa
 }
 
 export class SecEdgarClient {
-  private asmlEarnings?: { cohorts: ReportedEarningsCohort[]; expiresAt: number };
+  private asmlEarnings?: { cohorts: ReportedEarningsCohort[]; expiresAt: number; fetchedAt: number };
   private asmlEarningsPromise?: Promise<ReportedEarningsCohort[]>;
   private asmlEarningsRetryAt = 0;
   private lookupPromise: Promise<Map<string, LookupEntry>> | null = null;
@@ -887,11 +887,16 @@ export class SecEdgarClient {
     return this.shopOperatingTablesRetryAt || Date.now() + 60_000;
   }
 
+  private previousAsmlEarnings(): ReportedEarningsCohort[] {
+    const age = this.asmlEarnings ? Date.now() - this.asmlEarnings.fetchedAt : Infinity;
+    return age >= 0 && age <= 24 * 60 * 60_000 ? this.asmlEarnings!.cohorts : [];
+  }
+
   /** Optional EUR/20-F projection; it never widens the generic USD parser. */
   private loadAsmlEarnings(): Promise<ReportedEarningsCohort[]> {
-    if (this.asmlEarnings && this.asmlEarnings.expiresAt > Date.now()) return Promise.resolve(this.asmlEarnings.cohorts);
+    if (this.previousAsmlEarnings().length && this.asmlEarnings!.expiresAt > Date.now()) return Promise.resolve(this.asmlEarnings!.cohorts);
     if (this.asmlEarningsPromise) return this.asmlEarningsPromise;
-    if (this.asmlEarningsRetryAt > Date.now()) return Promise.resolve(this.asmlEarnings?.cohorts ?? []);
+    if (this.asmlEarningsRetryAt > Date.now()) return Promise.resolve(this.previousAsmlEarnings());
     const pending = (async () => {
       const entry = (await this.loadLookup()).get("ASML");
       if (entry?.cik !== "0000937966" || normalize(entry.exchange) !== "NASDAQ") throw new Error("SEC earnings issuer mismatch");
@@ -899,14 +904,17 @@ export class SecEdgarClient {
       if (zeroPadCik(asRecord(payload)?.cik) !== entry.cik) throw new Error("SEC companyfacts issuer mismatch");
       const fresh = parseReportedEarningsCohorts(payload, entry.cik);
       const complete = ["2022-12-31", "2023-12-31"].every(end => fresh.some(group => group.endDate === end));
-      const cohorts = complete ? fresh : [...new Map([...(this.asmlEarnings?.cohorts ?? []), ...fresh]
-        .map(group => [`${group.endDate}:${group.accessionNumber}`, group])).values()];
+      const keys = new Set(fresh.map(group => `${group.endDate}:${group.accessionNumber}`));
+      const retained = complete ? [] : this.previousAsmlEarnings().filter(group =>
+        !keys.has(`${group.endDate}:${group.accessionNumber}`) && !contradictsEarningsCohort(payload, group));
+      const cohorts = [...retained, ...fresh];
       this.asmlEarningsRetryAt = complete ? 0 : Date.now() + 60_000;
-      this.asmlEarnings = { cohorts, expiresAt: complete ? Date.now() + 6 * 60 * 60_000 : 0 };
+      this.asmlEarnings = { cohorts, expiresAt: complete ? Date.now() + 6 * 60 * 60_000 : 0,
+        fetchedAt: retained.length ? this.asmlEarnings!.fetchedAt : Date.now() };
       return cohorts;
     })().catch(() => {
       this.asmlEarningsRetryAt = Date.now() + 60_000;
-      return this.asmlEarnings?.cohorts ?? [];
+      return this.previousAsmlEarnings();
     });
     this.asmlEarningsPromise = pending;
     void pending.finally(() => { if (this.asmlEarningsPromise === pending) this.asmlEarningsPromise = undefined; });
@@ -923,7 +931,7 @@ export class SecEdgarClient {
       return await Promise.race([
         this.loadAsmlEarnings(),
         new Promise<ReportedEarningsCohort[]>(resolve => {
-          timer = setTimeout(() => resolve(this.asmlEarnings?.cohorts ?? []), 750);
+          timer = setTimeout(() => resolve(this.previousAsmlEarnings()), 750);
         }),
       ]);
     } finally { if (timer) clearTimeout(timer); }

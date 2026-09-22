@@ -64,19 +64,22 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const date = (value: unknown): value is string => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
   && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
-const venue = (value: string): string => {
+const venue = (value: unknown): string => {
+  if (typeof value !== "string") return "";
   const normalized = value.trim().toUpperCase();
   if (["NASDAQ", "XNAS", "XNGS", "NMS", "NAS", "NASDAQGS", "NASDAQ GLOBAL SELECT"].includes(normalized)) return "NASDAQ";
   if (["AMS", "XAMS", "AMSTERDAM", "EURONEXT AMSTERDAM"].includes(normalized)) return "AMS";
   return normalized;
 };
-function listing(symbol: string): { valid: boolean; exchange: string } {
+function listing(symbol: unknown): { valid: boolean; exchange: string } {
+  if (typeof symbol !== "string") return { valid: false, exchange: "" };
   const normalized = symbol.trim().toUpperCase();
   if (normalized === "ASML.AS") return { valid: true, exchange: "AMS" };
   const parts = normalized.split(":");
   return { valid: parts.length <= 2 && parts[0] === "ASML" && (parts.length === 1 || !!parts[1]), exchange: parts[1] ? venue(parts[1]) : "" };
 }
 export function isAsmlEarningsTarget(symbol: string, exchange = ""): boolean {
+  if (typeof exchange !== "string") return false;
   const target = listing(symbol), declared = venue(exchange);
   const selected = target.exchange || declared;
   return target.valid && ["NASDAQ", "AMS"].includes(selected)
@@ -84,14 +87,17 @@ export function isAsmlEarningsTarget(symbol: string, exchange = ""): boolean {
 }
 export function hasAsmlEarningsIdentity(financials: Pick<EarningsFinancials, "financialCurrency" | "quote" | "quoteMetadata">,
   target: { symbol: string; exchange?: string }): boolean {
-  if (!isAsmlEarningsTarget(target.symbol, target.exchange) || (financials.financialCurrency && financials.financialCurrency !== "EUR")) return false;
+  if (!isAsmlEarningsTarget(target.symbol, target.exchange)
+    || (financials.financialCurrency !== undefined && financials.financialCurrency !== "" && financials.financialCurrency !== "EUR")) return false;
   const selected = listing(target.symbol).exchange || venue(target.exchange ?? "");
   return [financials.quote, financials.quoteMetadata].every(identity => {
-    if (!identity) return true;
-    const declared = identity.symbol ? listing(identity.symbol) : undefined;
+    if (identity === undefined) return true;
+    if (!identity || typeof identity !== "object" || Array.isArray(identity)) return false;
+    const declared = identity.symbol !== undefined ? listing(identity.symbol) : undefined;
     return (!declared || (declared.valid && (!declared.exchange || declared.exchange === selected)))
-      && (!identity.currency || identity.currency === (selected === "AMS" ? "EUR" : "USD"))
-      && [identity.listingExchangeName, identity.exchangeName].every(value => !value || venue(value) === selected);
+      && (identity.currency === undefined || identity.currency === "" || identity.currency === (selected === "AMS" ? "EUR" : "USD"))
+      && [identity.listingExchangeName, identity.exchangeName].every(value => value === undefined
+        || (typeof value === "string" && (!value || venue(value) === selected)));
   });
 }
 export function isReportedEarningsCohort(value: unknown): value is ReportedEarningsCohort {
@@ -141,6 +147,20 @@ export function parseReportedEarningsCohorts(payload: unknown, expectedCik: stri
 function matchesAnchors(row: EarningsStatement, group: ReportedEarningsCohort): boolean {
   return row.date === group.endDate && row.currency === group.currency
     && Object.entries(group.anchors).every(([field, value]) => row[field as Anchor] === value);
+}
+/** Missing source fields cannot erase an independently attested filing. An
+ * explicit contradiction within that same filing cannot resurrect its cache. */
+export function contradictsEarningsCohort(raw: unknown, group: ReportedEarningsCohort): boolean {
+  const facts = record(record(record(raw).facts)["us-gaap"]);
+  return Object.entries(group.concepts).some(([field, definition]) => {
+    const units = record(record(facts[definition.concept]).units);
+    return Object.entries(units).some(([unit, entries]) => Array.isArray(entries) && entries.some(entry => {
+      const fact = record(entry);
+      if (fact.accn !== group.accessionNumber || fact.start !== group.startDate || fact.end !== group.endDate) return false;
+      const value = field in group.values ? group.values[field as EarningsField] : group.anchors[field as Anchor];
+      return unit !== definition.unit || fact.val !== value || fact.form !== group.form || fact.filed !== group.filed;
+    }));
+  });
 }
 export function ownedReportedEarningsCohort(row: EarningsStatement | undefined): ReportedEarningsCohort | undefined {
   const group = row?.earningsResult?.version === 1 ? row.earningsResult.reported : undefined;

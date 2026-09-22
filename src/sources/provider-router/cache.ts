@@ -107,10 +107,11 @@ export function cacheRouterResource<T>(
   if (kind === "financials" && ["provider:yahoo", "provider:gloomberb-cloud"].includes(sourceKey) && !entityKey.startsWith("contract:")) {
     const financials = value as TickerFinancials;
     const target = { symbol: entityKey, exchange: variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1] };
+    const isRetry = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
     const retries = [
-      hasShopOperatingIdentity(financials, target) ? financials.operatingHistoryRetryAt : undefined,
-      hasAsmlEarningsIdentity(financials, target) ? financials.earningsHistoryRetryAt : undefined,
-    ].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+      isRetry(financials.operatingHistoryRetryAt) && hasShopOperatingIdentity(financials, target) ? financials.operatingHistoryRetryAt : undefined,
+      isRetry(financials.earningsHistoryRetryAt) && hasAsmlEarningsIdentity(financials, target) ? financials.earningsHistoryRetryAt : undefined,
+    ].filter(isRetry);
     const retryAt = Math.min(...retries);
     if (Number.isFinite(retryAt)) {
       // Keep usable partial statements while allowing the SEC source's
