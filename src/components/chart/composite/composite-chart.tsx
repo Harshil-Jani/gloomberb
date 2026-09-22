@@ -1519,7 +1519,8 @@ function CompositeLegend({
       width={width}
       height={1}
       overflow="visible"
-      zIndex={20}
+      // Accessory dropdowns must escape above the sibling drawing toolbar.
+      zIndex={accessory ? 40 : 20}
       data-gloom-role="composite-chart-legend"
     >
       {seriesWidth > 0 ? (
