@@ -6,7 +6,8 @@ import { parseChartSpec, serializeChartSpec } from "../plugins/builtin/chart-com
 import { createTestDataProvider } from "../test-support/data-provider";
 import { createDefaultConfig } from "../types/config";
 import type { HeadlessPaneContext } from "../types/headless";
-import { resolveChartSpecData } from "./resolve";
+import { ChartResolveCache, resolveChartSpecData } from "./resolve";
+import type { ChartResolutionSupport } from "./resolution";
 
 const history = Array.from({ length: 368 }, (_, index) => ({
   date: new Date(Date.UTC(2025, 8, 14 + index)), close: 100 + index,
@@ -89,3 +90,44 @@ test("ordinary trailing one-year daily snapshots keep their existing range seman
   expect(model.priceComparison?.start).toBe(Date.parse("2025-09-15"));
   expect(model.priceComparison?.end).toBe(Date.parse("2026-09-15"));
 });
+
+for (const resolution of ["auto", "1d"] as const) for (const dailyMax of ["1Y", "6M"] as const) {
+  test(`${resolution} calendar windows adopt delayed ${dailyMax} daily support without extending its cap`, async () => {
+    let settle!: (support: ChartResolutionSupport[]) => void;
+    const gate = new Promise<ChartResolutionSupport[]>(resolve => { settle = resolve; });
+    const requests: string[] = [];
+    const provider = createTestDataProvider({
+      getChartResolutionSupport: () => gate,
+      getDetailedPriceHistory: async (_symbol, _exchange, start, end, selected) => {
+        requests.push(selected);
+        return history.filter(point => point.date >= start && point.date < end);
+      },
+    });
+    const spec = buildComparisonChartPreset(["AAA:XNAS", "BBB:XTSE"]);
+    spec.viewport = { range: "1Y", resolution, dateWindow: { start: "2025-09-15", end: "2026-09-15" } };
+    const cache = new ChartResolveCache();
+    const sources = { dataProvider: provider, now: new Date("2026-09-16"),
+      loadFredSeries: async () => { throw Error("Unexpected FRED call"); } };
+    const provisional = await resolveChartSpecData(spec, sources, cache);
+    expect(provisional.resolution).toBe("1d");
+    expect(provisional.errors).toEqual([]);
+    expect(requests).toEqual(["1d", "1d"]);
+
+    settle([{ resolution: "1d", maxRange: dailyMax }, { resolution: "1wk", maxRange: "5Y" }]);
+    await gate;
+    // The awaited pass and a fresh one-shot loader must agree on the real cap.
+    requests.length = 0;
+    const settled = await resolveChartSpecData(spec, sources, cache, { awaitResolutionSupport: true });
+    const oneShot = await loadChartPaneModel(spec, context(provider));
+    const expected = dailyMax === "1Y" ? "1d" : "1wk";
+    expect(settled.resolution).toBe(expected);
+    expect(oneShot.chart.resolution).toBe(expected);
+    expect(settled.errors).toEqual([]);
+    expect(oneShot.errors).toEqual([]);
+    expect(new Set(requests)).toEqual(new Set([expected]));
+    if (dailyMax === "1Y") {
+      expect(settled.priceComparison?.start).toBe(Date.parse("2025-09-15"));
+      expect(settled.priceComparison?.end).toBe(Date.parse("2026-09-15"));
+    }
+  });
+}
