@@ -2,7 +2,7 @@ import type { FinancialStatement, TickerFinancials } from "../types/financials";
 import { canonicalExchange, parsePublicTickerKey } from "./exchanges";
 import { isIncomeStatementField } from "./income-statement";
 
-type ObservationField = "totalRevenue" | "netIncome" | "netIncomeCommonStockholders" | "pretaxIncome" | "taxProvision";
+type ObservationField = "totalRevenue" | "operatingRevenue" | "netIncome" | "netIncomeCommonStockholders" | "pretaxIncome" | "taxProvision";
 type Withdrawal = { id: string; symbol: string; field: ObservationField; rejected: readonly number[] };
 
 /** Exact September 2026 observations contradicted by the issuer's Q4 release.
@@ -10,6 +10,7 @@ type Withdrawal = { id: string; symbol: string; field: ObservationField; rejecte
  * definitions: docs/data-quality/quarterly-statement-revisions.md. */
 const WITHDRAWALS: readonly Withdrawal[] = [
   { id: "bac-2025q4-revenue", symbol: "BAC", field: "totalRevenue", rejected: [31_180_000_000, 29_319_000_000] },
+  { id: "bac-2025q4-operating-revenue", symbol: "BAC", field: "operatingRevenue", rejected: [31_180_000_000] },
   { id: "bac-2025q4-parent-income", symbol: "BAC", field: "netIncome", rejected: [7_528_000_000, 7_510_000_000] },
   { id: "bac-2025q4-common-income", symbol: "BAC", field: "netIncomeCommonStockholders", rejected: [7_200_000_000, 7_182_000_000] },
   { id: "bac-2025q4-pretax", symbol: "BAC", field: "pretaxIncome", rejected: [12_435_000_000] },

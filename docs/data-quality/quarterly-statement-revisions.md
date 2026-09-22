@@ -5,6 +5,7 @@ The September 16, 2026 research audit compared NYSE BAC and Realty Income (O), U
 | Issuer / field | Observed vendor value, USD | Issuer release, USD |
 | --- | ---: | ---: |
 | BAC total revenue | 31,180,000,000 | 28,367,000,000 |
+| BAC operating revenue (Yahoo alias, checked September 22) | 31,180,000,000 | 28,367,000,000 |
 | BAC parent net income | 7,528,000,000 | 7,647,000,000 |
 | BAC common-shareholder income | 7,200,000,000 | 7,319,000,000 |
 | BAC pretax income | 12,435,000,000 | 9,622,000,000 |
@@ -18,7 +19,9 @@ Native chart subtraction also combined revised BAC Q1/Q2 with older Q3 facts. Fo
 
 The app withdraws these exact source observations for the identified listing, reporting currency and quarter, and retains withdrawal identifiers through statement merges, caches and structured exports. It also blocks recreation of those attested bad results during chart completion. A different reported value can restore the field; directly sourced SEC income retains its own filing evidence. No replacement figures are inserted from this document. A valid source correction or supported issuer-document ingestion is needed to restore the unavailable observations.
 
-O's parent/common income of 296,085,000 and consolidated income of 301,636,000 remain distinct, valid measures. Its pretax income of 323,436,000 and tax expense of 21,800,000 are not withdrawn. Vendor aliases, adjusted earnings, O's interest/EBITDA definitions and later balance-sheet revisions are separate checks; matching numbers do not establish matching definitions.
+The September 22 follow-up confirmed that Yahoo's separately named `OperatingRevenue` repeated the rejected BAC revenue observation. That exact alias is also withdrawn with `bac-2025q4-operating-revenue`, including from older client caches and sparse merges. BAC's release reports Q4 revenue as net interest income plus noninterest income; it does not support the vendor's 31,180,000,000 observation. Other periods and corrected values are preserved.
+
+O's parent/common income of 296,085,000 and consolidated income of 301,636,000 remain distinct, valid measures. Its pretax income of 323,436,000 and tax expense of 21,800,000 are not withdrawn. Other vendor aliases, adjusted earnings, O's interest/EBITDA definitions and later balance-sheet revisions are separate checks; matching numbers do not establish matching definitions.
 
 The captured Twelve Data O quarter places 301,636,000 in generic `net_income`, which the adapter mapped to parent income. The issuer release identifies that amount as consolidated income before subtracting 5,551,000 attributable to noncontrolling interests. The app withdraws this exact parent-field observation with `o-2025q4-parent-income`; the explicitly consolidated field remains valid. [Twelve Data's standard endpoint documentation](https://twelvedata.com/docs/llms/fundamentals/income-statement.md) defines `net_income` as pretax income minus income tax without a universal parent-attribution guarantee. This bounded repair does not reclassify the generic field for other issuers or switch endpoints.
 

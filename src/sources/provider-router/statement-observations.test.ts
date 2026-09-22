@@ -19,6 +19,42 @@ const captured = (symbol: "BAC" | "O" = "BAC") => makeFinancials({ ...fixture.is
   profile: { description: "Recorded issuer" },
 });
 
+test("BAC operating-revenue conflict cannot return through legacy caches or sparse merges", () => {
+  const raw = captured();
+  raw.quarterlyStatements = raw.quarterlyStatements.map(row => row.date === "2025-12-31"
+    ? { ...row, operatingRevenue: 31_180_000_000, normalizedIncome: 7_528_000_000 } : row);
+  const clean = withdrawKnownProviderStatements(raw, target, "provider:gloomberb-cloud");
+  const quarter = q4(clean.quarterlyStatements);
+  expect(quarter.operatingRevenue).toBeUndefined();
+  expect(quarter.withdrawnObservations).toContain("bac-2025q4-operating-revenue");
+  expect(quarter.normalizedIncome).toBe(7_528_000_000); // Different, unverified definition.
+  for (const rows of [
+    mergeFinancialStatementRows(clean.quarterlyStatements, raw.quarterlyStatements),
+    mergeFinancialStatementRows(raw.quarterlyStatements, clean.quarterlyStatements),
+  ]) {
+    expect(q4(JSON.parse(JSON.stringify(rows))).operatingRevenue).toBeUndefined();
+    expect(computeTTM(rows)?.operatingRevenue).toBeUndefined();
+  }
+  const store = new AppPersistence(":memory:");
+  try {
+    cacheRouterResource(store.resources, "financials", "BAC", "exchange=NYSE", "provider:gloomberb-cloud", raw, policy);
+    const cached = listCachedResources<typeof raw>(store.resources, "financials", "BAC", ["exchange=NYSE"], ["provider:gloomberb-cloud"], true)[0]!;
+    expect(q4(cached.value.quarterlyStatements).operatingRevenue).toBeUndefined();
+  } finally { store.close(); }
+  const restored = q4(mergeFinancialStatementRows(clean.quarterlyStatements,
+    [{ date: "2025-12-31", currency: "USD", operatingRevenue: 28_367_000_000 }]));
+  expect(restored.operatingRevenue).toBe(28_367_000_000);
+  expect(restored.withdrawnObservations).not.toContain("bac-2025q4-operating-revenue");
+  for (const [value, request, source] of [
+    [raw, { ...target, exchange: "LSE" }, "provider:yahoo"],
+    [raw, { ...target, symbol: "JPM" }, "provider:yahoo"],
+    [raw, target, "broker:account"],
+    [{ ...raw, quarterlyStatements: raw.quarterlyStatements.map(row => ({ ...row, currency: "CAD" })) }, target, "provider:yahoo"],
+    [{ ...raw, annualStatements: [], quarterlyStatements: [{ ...q4(raw.quarterlyStatements), date: "2025-09-30" }] }, target, "provider:yahoo"],
+  ] as const) expect(withdrawKnownProviderStatements(value, request, source)).toBe(value);
+  expect(clean.annualStatements).toBe(raw.annualStatements);
+});
+
 test("recorded quarter conflicts survive both sparse merge orders and JSON without erasing corroborated O income", () => {
   for (const symbol of ["BAC", "O"] as const) {
     const raw = captured(symbol);
