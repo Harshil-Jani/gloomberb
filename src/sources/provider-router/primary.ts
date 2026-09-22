@@ -98,6 +98,7 @@ export class ProviderRouterPrimaryRoutes {
             financialCurrency: value.financialCurrency,
             statementHistory: value.statementHistory,
             operatingHistoryRetryAt: value.operatingHistoryRetryAt,
+            earningsHistoryRetryAt: value.earningsHistoryRetryAt,
             annualStatements: value.annualStatements,
             quarterlyStatements: value.quarterlyStatements,
             priceHistory: [],

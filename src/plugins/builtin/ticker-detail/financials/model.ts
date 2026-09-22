@@ -206,7 +206,7 @@ export function financialStatementLimitations(financials: TickerFinancials | nul
   const operatingNotice = financialOperatingSourceNotice(financials);
   if (operatingNotice) limitations.push(operatingNotice);
   if ([...(financials?.annualStatements ?? []), ...(financials?.quarterlyStatements ?? [])].some(row => row.withdrawnObservations?.length)) {
-    limitations.push("Some quarterly values conflict with issuer filings and are unavailable.");
+    limitations.push("Some statement values conflict with issuer filings and are unavailable.");
   }
   if ([...(financials?.annualStatements ?? []), ...(financials?.quarterlyStatements ?? [])].some(row => row.unavailableFields?.includes("netIncome"))) {
     limitations.push("Parent net income is unavailable for some reported periods.");

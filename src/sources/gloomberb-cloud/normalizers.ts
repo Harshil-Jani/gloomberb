@@ -224,6 +224,7 @@ export function mapCloudFinancials(
       && financials.operatingHistoryRetryAt > 0 && hasShopOperatingIdentity({
         quote, quoteMetadata: financials.quoteMetadata, financialCurrency: financials.financialCurrency,
       }, target) ? financials.operatingHistoryRetryAt : undefined,
+    earningsHistoryRetryAt: financials.earningsHistoryRetryAt,
     annualStatements: financials.annualStatements ?? [],
     quarterlyStatements: financials.quarterlyStatements ?? [],
     priceHistory: (financials.priceHistory ?? []).map((point) =>

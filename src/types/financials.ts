@@ -339,6 +339,10 @@ export interface DerivedOperatingObservation {
 }
 
 export interface FinancialStatement {
+  /** Directly reported annual EPS and its accounting/share-basis evidence. */
+  earningsResult?: import("../utils/reported-earnings-result").EarningsResultProvenance;
+  /** EPS whose claimed source ownership failed validation; sparse rows cannot restore it. */
+  unavailableEarnings?: import("../utils/reported-earnings-result").EarningsField[];
   /** Operating concepts have ownership independent of net income and fiscal dates. */
   operatingResult?: OperatingResult;
   /** Derived operating sums retain their actual quarter inputs, not a single filing owner. */
@@ -587,6 +591,8 @@ export interface TickerFinancials {
   statementHistory?: StatementHistoryAttempt;
   /** SEC operating-table retry deadline; cache eligibility, not a financial observation. */
   operatingHistoryRetryAt?: number;
+  /** Optional annual EPS acquisition retry; independent of statement-history coverage. */
+  earningsHistoryRetryAt?: number;
   financialCurrency?: string;
   quote?: Quote;
   quoteMetadata?: QuoteMetadata;

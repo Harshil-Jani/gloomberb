@@ -1,5 +1,7 @@
+import { normalizeFinancialEarningsResults } from "./earnings-result";
 import type { FinancialStatement, TickerFinancials } from "../types/financials";
 import { canonicalExchange, parsePublicTickerKey } from "./exchanges";
+import { earningsWithdrawalIds, hasEarningsWithdrawal, hasUnavailableEarnings, isWithdrawnEarningsValue, redactWithdrawnEarnings, withdrawKnownProviderEarnings } from "./reported-earnings-result";
 import { isIncomeStatementField } from "./income-statement";
 
 type ObservationField = "totalRevenue" | "operatingRevenue" | "netIncome" | "netIncomeCommonStockholders" | "pretaxIncome" | "taxProvision";
@@ -25,7 +27,7 @@ function withdrawals(row: FinancialStatement): Withdrawal[] {
 }
 
 export function hasStatementWithdrawals(row: FinancialStatement): boolean {
-  return withdrawals(row).length > 0;
+  return withdrawals(row).length > 0 || hasEarningsWithdrawal(row) || hasUnavailableEarnings(row);
 }
 
 function hasDirectSecIncome(row: FinancialStatement, field: string): boolean {
@@ -37,14 +39,17 @@ function hasDirectSecIncome(row: FinancialStatement, field: string): boolean {
 
 export function isWithdrawnStatementValue(row: FinancialStatement, field: string, value: number): boolean {
   if (hasDirectSecIncome(row, field)) return false;
-  return withdrawals(row).some(item => item.field === field && item.rejected.includes(value));
+  return withdrawals(row).some(item => item.field === field && item.rejected.includes(value))
+    || isWithdrawnEarningsValue(row, field, value)
+    || (["basicEps", "eps"].includes(field) && hasUnavailableEarnings(row, field as "basicEps" | "eps"));
 }
 
 /** Normalize optional wire metadata and keep only unresolved withdrawals. */
 export function redactWithdrawnStatement(row: FinancialStatement): FinancialStatement {
+  row = redactWithdrawnEarnings(row);
   if (!row.withdrawnObservations) return row;
   const result = { ...row };
-  const active: string[] = [];
+  const active: string[] = earningsWithdrawalIds(row);
   let changed = false;
   for (const item of withdrawals(row)) {
     const value = row[item.field];
@@ -69,7 +74,7 @@ export function redactWithdrawnStatement(row: FinancialStatement): FinancialStat
 /** Preserve unresolved source conflicts across sparse and cached row merges. */
 export function mergeStatementWithdrawals(target: FinancialStatement, rows: readonly FinancialStatement[]): void {
   const ids = [...new Set(rows.filter(row => row.date === target.date && row.currency === target.currency)
-    .flatMap(row => withdrawals(row).map(item => item.id)))];
+    .flatMap(row => [...withdrawals(row).map(item => item.id), ...earningsWithdrawalIds(row)]))];
   if (ids.length) target.withdrawnObservations = ids;
   else delete target.withdrawnObservations;
 }
@@ -106,7 +111,9 @@ export function withdrawKnownProviderStatements(
   target: { symbol: string; exchange?: string },
   sourceKey: string,
 ): TickerFinancials {
+  financials = normalizeFinancialEarningsResults(financials, target, sourceKey);
   if (!["provider:gloomberb-cloud", "provider:yahoo", "provider:twelvedata"].includes(sourceKey)) return financials;
+  financials = withdrawKnownProviderEarnings(financials, target, sourceKey);
   const requested = parsePublicTickerKey(target.symbol);
   const identities = [financials.quote, financials.quoteMetadata].filter(Boolean);
   const declared = identities.flatMap(quote => quote?.symbol ? [parsePublicTickerKey(quote.symbol)] : []);

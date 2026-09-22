@@ -1,3 +1,4 @@
+import { parseReportedEarningsCohorts, type ReportedEarningsCohort } from "../utils/reported-earnings-result";
 import type { SecFilingDocument, SecFilingItem } from "../types/data-provider";
 import type { FinancialStatement, IncomeStatementSource } from "../types/financials";
 import { parseReportedOperatingCohorts, promoteReportedOperatingResults, type ReportedOperatingCohort } from "../utils/operating-result";
@@ -83,6 +84,7 @@ type CompanyFactsStatementField = {
 };
 
 export type SecCompanyFactsStatements = {
+  reportedEarningsResults?: ReportedEarningsCohort[];
   annualStatements: FinancialStatement[];
   quarterlyStatements: FinancialStatement[];
 };
@@ -692,6 +694,9 @@ export function parseCompanyFactsFinancialStatements(payload: unknown): SecCompa
 }
 
 export class SecEdgarClient {
+  private asmlEarnings?: { cohorts: ReportedEarningsCohort[]; expiresAt: number };
+  private asmlEarningsPromise?: Promise<ReportedEarningsCohort[]>;
+  private asmlEarningsRetryAt = 0;
   private lookupPromise: Promise<Map<string, LookupEntry>> | null = null;
   private shopOperatingTables?: { cohorts: ReportedOperatingCohort[]; expiresAt: number };
   private shopOperatingTablesPartial?: { cohorts: ReportedOperatingCohort[]; expiresAt: number };
@@ -882,10 +887,55 @@ export class SecEdgarClient {
     return this.shopOperatingTablesRetryAt || Date.now() + 60_000;
   }
 
-  async getFinancialStatements(ticker: string, options: { reportedOperatingResults?: boolean } = {}): Promise<SecCompanyFactsStatements | null> {
+  /** Optional EUR/20-F projection; it never widens the generic USD parser. */
+  private loadAsmlEarnings(): Promise<ReportedEarningsCohort[]> {
+    if (this.asmlEarnings && this.asmlEarnings.expiresAt > Date.now()) return Promise.resolve(this.asmlEarnings.cohorts);
+    if (this.asmlEarningsPromise) return this.asmlEarningsPromise;
+    if (this.asmlEarningsRetryAt > Date.now()) return Promise.resolve(this.asmlEarnings?.cohorts ?? []);
+    const pending = (async () => {
+      const entry = (await this.loadLookup()).get("ASML");
+      if (entry?.cik !== "0000937966" || normalize(entry.exchange) !== "NASDAQ") throw new Error("SEC earnings issuer mismatch");
+      const payload = await this.fetchJson<unknown>(`${COMPANY_FACTS_URL}/CIK${entry.cik}.json`);
+      if (zeroPadCik(asRecord(payload)?.cik) !== entry.cik) throw new Error("SEC companyfacts issuer mismatch");
+      const fresh = parseReportedEarningsCohorts(payload, entry.cik);
+      const complete = ["2022-12-31", "2023-12-31"].every(end => fresh.some(group => group.endDate === end));
+      const cohorts = complete ? fresh : [...new Map([...(this.asmlEarnings?.cohorts ?? []), ...fresh]
+        .map(group => [`${group.endDate}:${group.accessionNumber}`, group])).values()];
+      this.asmlEarningsRetryAt = complete ? 0 : Date.now() + 60_000;
+      this.asmlEarnings = { cohorts, expiresAt: complete ? Date.now() + 6 * 60 * 60_000 : 0 };
+      return cohorts;
+    })().catch(() => {
+      this.asmlEarningsRetryAt = Date.now() + 60_000;
+      return this.asmlEarnings?.cohorts ?? [];
+    });
+    this.asmlEarningsPromise = pending;
+    void pending.finally(() => { if (this.asmlEarningsPromise === pending) this.asmlEarningsPromise = undefined; });
+    return pending;
+  }
+
+  getEarningsHistoryRetryAt(): number | undefined {
+    return this.asmlEarningsPromise ? Date.now() + 60_000 : this.asmlEarningsRetryAt || undefined;
+  }
+
+  private async asmlEarningsWithinBudget(): Promise<ReportedEarningsCohort[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.loadAsmlEarnings(),
+        new Promise<ReportedEarningsCohort[]>(resolve => {
+          timer = setTimeout(() => resolve(this.asmlEarnings?.cohorts ?? []), 750);
+        }),
+      ]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+
+  async getFinancialStatements(ticker: string, options: { reportedOperatingResults?: boolean; reportedEarningsResults?: boolean } = {}): Promise<SecCompanyFactsStatements | null> {
     const normalizedTicker = normalize(ticker);
     if (!normalizedTicker) return null;
 
+    if (options.reportedEarningsResults && normalizedTicker === "ASML") return {
+      annualStatements: [], quarterlyStatements: [], reportedEarningsResults: await this.asmlEarningsWithinBudget(),
+    };
     const lookup = await this.loadLookup();
     const entry = lookup.get(normalizedTicker) ?? lookup.get(normalizedTicker.replace(/\./g, "-"));
     if (!entry) return null;
