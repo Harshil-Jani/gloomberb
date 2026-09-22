@@ -162,7 +162,7 @@ test("legacy cloud ASML valuation is retired and recovers with a marker-bearing 
     { entityKey: "ASML", variantKey: "", sourceKey: "provider:gloomberb-cloud", quote: undefined, retract: true },
     { entityKey: "ASML", variantKey: "exchange=AMS", sourceKey: "provider:gloomberb-cloud", quote: { ...recorded.quote!, listingExchangeName: "EURONEXT", currency: "EUR" }, retract: true },
     { entityKey: "ASML", variantKey: "exchange=NASDAQ", sourceKey: "provider:gloomberb-cloud", quote: { ...recorded.quote!, listingExchangeName: "AMS", currency: "EUR" }, retract: true, reject: true },
-    { entityKey: "ASML", variantKey: "exchange=AMS", sourceKey: "provider:gloomberb-cloud", quote: { ...recorded.quote!, symbol: "ASML:XNAS", listingExchangeName: "AMS", currency: "EUR" }, retract: true },
+    { entityKey: "ASML", variantKey: "exchange=AMS", sourceKey: "provider:gloomberb-cloud", quote: { ...recorded.quote!, symbol: "ASML:XNAS", listingExchangeName: "AMS", currency: "EUR" }, retract: true, reject: true },
     { entityKey: "ASML", variantKey: "exchange=AMS", sourceKey: "provider:gloomberb-cloud", quote: { ...recorded.quote!, listingExchangeName: "AMS", currency: "EUR" }, retract: false },
     { entityKey: "ASML.AS", variantKey: "", sourceKey: "provider:gloomberb-cloud", quote: { ...recorded.quote!, symbol: "ASML.AS", listingExchangeName: "XAMS", currency: "EUR" }, retract: false },
     { entityKey: "ASML", variantKey: "exchange=BMV", sourceKey: "provider:gloomberb-cloud", quote: { ...recorded.quote!, listingExchangeName: "BMV", currency: "MXN" }, retract: false },
