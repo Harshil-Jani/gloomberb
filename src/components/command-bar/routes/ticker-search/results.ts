@@ -5,7 +5,7 @@ import {
   type TickerSearchCandidate,
 } from "../../../../tickers/search";
 import type { ResultItem } from "../../list/model";
-import { canonicalExchange } from "../../../../utils/exchanges";
+import { canonicalExchange, parsePublicTickerKey } from "../../../../utils/exchanges";
 import { isExplicitMarketSymbol } from "../../../../tickers/search/ranking";
 
 export const QUICK_LOOK_TICKER_SEARCH_OPTIONS = { includeOptionContracts: false } as const;
@@ -56,7 +56,8 @@ export function normalizeCommandTickerSearchText(value: string): string {
 
 function isExactTickerResultMatch(item: ResultItem, query: string): boolean {
   if (item.kind !== "ticker" && item.kind !== "search") return false;
-  return findExactTickerSearchMatch([item], query) != null;
+  return findExactTickerSearchMatch([item], query) != null
+    || parsePublicTickerKey(item.label).symbol === query.trim().toUpperCase();
 }
 
 export function mergeTickerSearchResultItems(

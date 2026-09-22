@@ -162,7 +162,13 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
 
   const ranked = items
     .map((item, index) => {
-      const normalizedLabel = normalizeSearchText(item.label);
+      // A saved public key replaces its provider row during deduplication.
+      // Score its exact bare symbol like that row, retaining the saved identity
+      // and the resolver's stricter aliases outside this ranking projection.
+      const listing = parsePublicTickerKey(item.symbol || item.label);
+      const exactListingSymbol = listing.exchange && !isQualifiedTickerQuery(query)
+        && listing.symbol === normalizeTickerSymbol(query) ? listing.symbol : null;
+      const normalizedLabel = normalizeSearchText(exactListingSymbol ?? item.label);
       const normalizedDetail = normalizeSearchText(item.detail);
       const normalizedRight = normalizeSearchText(item.right || "");
       const companyNameKey = getCompanyNameKey(item.detail);
@@ -187,7 +193,8 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
           fuzzy: 100,
         }),
       );
-      const aliasScore = getItemSearchAliases(item)
+      const aliases = getItemSearchAliases(item);
+      const aliasScore = (exactListingSymbol ? [...aliases, exactListingSymbol] : aliases)
         .reduce((best, alias) => Math.max(best, scoreSearchAlias(intent, alias)), 0);
       const textScore = labelScore + detailScore + aliasScore
         + (isQualifiedTickerQuery(query) && matchesQualifiedTicker(item, query) ? 100_000 : 0);
@@ -451,6 +458,7 @@ function scoreSymbolMatchRank(
 ): number {
   if (normalizeTickerSymbol(item.symbol || item.label) === normalizeTickerSymbol(intent.rawQuery)) return 4;
   if (isQualifiedTickerQuery(intent.rawQuery)) return matchesQualifiedTicker(item, intent.rawQuery) ? 4 : 0;
+  if (parsePublicTickerKey(item.symbol || item.label).symbol === normalizeTickerSymbol(intent.rawQuery)) return 4;
   if (isCryptoInstrumentType(item.instrumentType)) return 0;
   if (isExplicitMarketSymbol(item.symbol || item.label)) return 0;
   if (!intent.normalizedQuery && !intent.compactQuery) return 0;
