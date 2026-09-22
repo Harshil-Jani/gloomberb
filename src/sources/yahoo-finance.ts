@@ -90,14 +90,15 @@ export class YahooFinanceClient implements DataProvider {
     const stamp = (status: "available" | "unsupported" | "retryable-failure") => extended
       ? { mode: "extended" as const, source: "sec" as const, status, fetchedAt: new Date().toISOString() } : undefined;
     if (!this.shouldSupplementSecStatements(ticker, exchange, financials)) return { ...financials, statementHistory: stamp("unsupported") };
+    const operatingTarget = hasShopOperatingIdentity(financials, { symbol: ticker, exchange });
+    const retry = () => operatingTarget ? this.secClient.getOperatingTablesRetryAt(ticker) : undefined;
     try {
-      const operatingTarget = hasShopOperatingIdentity(financials, { symbol: ticker, exchange });
       const secStatements = await this.secClient.getFinancialStatements(ticker, { reportedOperatingResults: operatingTarget });
       if (
         !secStatements
         || (secStatements.annualStatements.length === 0 && secStatements.quarterlyStatements.length === 0)
       ) {
-        return { ...financials, statementHistory: stamp("unsupported") };
+        return { ...financials, statementHistory: stamp("unsupported"), operatingHistoryRetryAt: retry() };
       }
       if (!operatingTarget) {
         for (const row of [...secStatements.annualStatements, ...secStatements.quarterlyStatements]) delete row.operatingResult;
@@ -106,6 +107,7 @@ export class YahooFinanceClient implements DataProvider {
         ...financials,
         financialCurrency: financials.financialCurrency ?? "USD",
         statementHistory: stamp("available"),
+        operatingHistoryRetryAt: retry(),
         annualStatements: extended
           ? mergeFinancialStatementRows(secStatements.annualStatements, financials.annualStatements)
           : mergeFinancialStatementRows(financials.annualStatements, secStatements.annualStatements),
@@ -114,7 +116,7 @@ export class YahooFinanceClient implements DataProvider {
           : mergeFinancialStatementRows(financials.quarterlyStatements, secStatements.quarterlyStatements),
       }, { symbol: ticker, exchange });
     } catch {
-      return { ...financials, statementHistory: stamp("retryable-failure") };
+      return { ...financials, statementHistory: stamp("retryable-failure"), operatingHistoryRetryAt: retry() };
     }
   }
 

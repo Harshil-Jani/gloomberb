@@ -97,6 +97,7 @@ export class ProviderRouterPrimaryRoutes {
             quoteMetadata: value.quoteMetadata ?? (value.quote ? quoteMetadataFromQuote(value.quote) : undefined),
             financialCurrency: value.financialCurrency,
             statementHistory: value.statementHistory,
+            operatingHistoryRetryAt: value.operatingHistoryRetryAt,
             annualStatements: value.annualStatements,
             quarterlyStatements: value.quarterlyStatements,
             priceHistory: [],

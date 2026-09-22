@@ -694,6 +694,7 @@ export function parseCompanyFactsFinancialStatements(payload: unknown): SecCompa
 export class SecEdgarClient {
   private lookupPromise: Promise<Map<string, LookupEntry>> | null = null;
   private shopOperatingTables?: { cohorts: ReportedOperatingCohort[]; expiresAt: number };
+  private shopOperatingTablesPartial?: { cohorts: ReportedOperatingCohort[]; expiresAt: number };
   private shopOperatingTablesPromise?: Promise<ReportedOperatingCohort[]>;
   private shopOperatingTablesRetryAt = 0;
 
@@ -815,7 +816,8 @@ export class SecEdgarClient {
   private loadShopOperatingTables(entry: LookupEntry): Promise<ReportedOperatingCohort[]> {
     if (entry.cik !== "0001594805" || normalize(entry.exchange) !== "NASDAQ") return Promise.resolve([]);
     if (this.shopOperatingTables && this.shopOperatingTables.expiresAt > Date.now()) return Promise.resolve(this.shopOperatingTables.cohorts);
-    if (this.shopOperatingTablesRetryAt > Date.now()) return Promise.resolve(this.shopOperatingTables?.cohorts ?? []);
+    if (this.shopOperatingTablesPartial && this.shopOperatingTablesPartial.expiresAt > Date.now()) return Promise.resolve(this.shopOperatingTablesPartial.cohorts);
+    if (this.shopOperatingTablesRetryAt > Date.now()) return Promise.resolve(this.previousShopOperatingTables());
     if (this.shopOperatingTablesPromise) return this.shopOperatingTablesPromise;
     const pending = (async () => {
       const payload = await this.fetchJson<unknown>(`${SUBMISSIONS_URL}/CIK${entry.cik}.json`);
@@ -830,7 +832,7 @@ export class SecEdgarClient {
         return filing ? [filing] : [];
       });
       if (!filings.length) throw new Error("SEC operating filings are unavailable");
-      const results = await Promise.all(filings.map(async filing => {
+      const results = await Promise.allSettled(filings.map(async filing => {
         // An unsupported latest filing must not silently select an older one.
         if (!/^(10-K|10-Q)$/.test(filing.form)
           || !/^0001594805-\d{2}-\d{6}$/.test(filing.accessionNumber)
@@ -842,18 +844,42 @@ export class SecEdgarClient {
         if (!cohorts.length) throw new Error("SEC operating table has no qualified quarters");
         return cohorts;
       }));
-      const cohorts = results.flat();
-      this.shopOperatingTables = { cohorts, expiresAt: Date.now() + 6 * 60 * 60_000 };
-      this.shopOperatingTablesRetryAt = 0;
+      const supported = results.flatMap(result => result.status === "fulfilled" ? result.value : []);
+      if (!supported.length) throw new Error("SEC operating tables are unavailable");
+      if (filings.length === 2 && results.every(result => result.status === "fulfilled")) {
+        this.shopOperatingTables = { cohorts: supported, expiresAt: Date.now() + 6 * 60 * 60_000 };
+        this.shopOperatingTablesPartial = undefined;
+        this.shopOperatingTablesRetryAt = 0;
+        return supported;
+      }
+      // A qualified sibling remains evidence at its original filing date. Keep
+      // prior coverage without extending the complete snapshot's lifetime.
+      const cohorts = [...new Map([...this.previousShopOperatingTables(), ...supported].map(cohort => [
+        JSON.stringify([cohort.accessionNumber, cohort.startDate, cohort.endDate, cohort.origin]), cohort,
+      ])).values()];
+      this.shopOperatingTablesRetryAt = Date.now() + 60_000;
+      this.shopOperatingTablesPartial = { cohorts, expiresAt: this.shopOperatingTablesRetryAt };
       return cohorts;
     })().catch(() => {
       this.shopOperatingTablesRetryAt = Date.now() + 60_000;
       // Preserve the last qualified snapshot and original expiry on failure.
-      return this.shopOperatingTables?.cohorts ?? [];
+      return this.previousShopOperatingTables();
     });
     this.shopOperatingTablesPromise = pending;
     void pending.finally(() => { if (this.shopOperatingTablesPromise === pending) this.shopOperatingTablesPromise = undefined; });
     return pending;
+  }
+
+  private previousShopOperatingTables(): ReportedOperatingCohort[] {
+    return this.shopOperatingTablesPartial?.cohorts ?? this.shopOperatingTables?.cohorts ?? [];
+  }
+
+  /** Let the outer financial cache revisit an incomplete optional acquisition. */
+  getOperatingTablesRetryAt(ticker: string): number | undefined {
+    if (normalize(ticker) !== "SHOP") return undefined;
+    if (this.shopOperatingTables && this.shopOperatingTables.expiresAt > Date.now()) return undefined;
+    if (this.shopOperatingTablesPromise) return Date.now() + 60_000;
+    return this.shopOperatingTablesRetryAt || Date.now() + 60_000;
   }
 
   async getFinancialStatements(ticker: string, options: { reportedOperatingResults?: boolean } = {}): Promise<SecCompanyFactsStatements | null> {
@@ -874,7 +900,7 @@ export class SecEdgarClient {
       }),
       operatingTarget ? Promise.race([
         this.loadShopOperatingTables(entry),
-        new Promise<ReportedOperatingCohort[]>(resolve => { timer = setTimeout(() => resolve(this.shopOperatingTables?.cohorts ?? []), 750); }),
+        new Promise<ReportedOperatingCohort[]>(resolve => { timer = setTimeout(() => resolve(this.previousShopOperatingTables()), 750); }),
       ]).finally(() => { if (timer) clearTimeout(timer); }) : Promise.resolve([] as ReportedOperatingCohort[]),
     ]);
     const tables = tableResult.status === "fulfilled" ? tableResult.value : [];

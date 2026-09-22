@@ -585,6 +585,8 @@ export interface EpsEstimateHistory {
 
 export interface TickerFinancials {
   statementHistory?: StatementHistoryAttempt;
+  /** SEC operating-table retry deadline; cache eligibility, not a financial observation. */
+  operatingHistoryRetryAt?: number;
   financialCurrency?: string;
   quote?: Quote;
   quoteMetadata?: QuoteMetadata;
