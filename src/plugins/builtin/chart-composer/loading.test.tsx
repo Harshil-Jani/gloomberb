@@ -52,7 +52,7 @@ for (const outcome of ["success", "disjoint", "empty", "failed"] as const) {
       : history;
     // Reproduce the live range switch: a cached first leg seeds an unusable
     // shared window while the required histories are still in flight.
-    rememberParsedPriceHistory(parsedPriceHistoryKey(firstSymbol, "NASDAQ", "1Y", "1d"), history);
+    rememberParsedPriceHistory(parsedPriceHistoryKey({ symbol: firstSymbol, exchange: "NASDAQ" }, "1Y", "1d"), history);
     let first = deferred<PricePoint[]>();
     let second = deferred<PricePoint[]>();
     const requested = new Set<string>();

@@ -1,4 +1,6 @@
 import type { PricePoint } from "../types/financials";
+import type { InstrumentRef } from "../market-data/request-types";
+import { instrumentIdentityKey } from "../utils/instrument-identity";
 import type { TimeRange } from "./range";
 import type { ManualChartResolution } from "./resolution";
 
@@ -6,17 +8,21 @@ const MAX_PARSED_HISTORY = 32;
 const parsedHistory = new Map<string, PricePoint[]>();
 
 export function parsedPriceHistoryKey(
-  symbol: string,
-  exchange: string,
+  instrument: InstrumentRef,
   range: TimeRange,
   resolution?: ManualChartResolution,
 ): string {
-  return [
-    symbol.trim().toUpperCase(),
-    exchange.trim().toUpperCase(),
+  // This is an in-memory seed cache. Never reuse earlier symbol-only keys:
+  // their observations may have come from a different broker contract.
+  return JSON.stringify([
+    "parsed-history-v2",
+    instrumentIdentityKey({ ...instrument,
+      brokerId: instrument.brokerId ?? instrument.instrument?.brokerId,
+      brokerInstanceId: instrument.brokerInstanceId ?? instrument.instrument?.brokerInstanceId,
+    }),
     range,
     resolution ?? "",
-  ].join("|");
+  ]);
 }
 
 export function rememberParsedPriceHistory(key: string, points: PricePoint[]): void {

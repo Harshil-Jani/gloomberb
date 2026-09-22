@@ -16,6 +16,8 @@ Earnings estimates, corporate actions, analyst research and historical prices re
 
 ## Charts, comparisons, and correlations
 
+Standalone charts bound to follow a research pane retain their range, studies and comparison series when the selected instrument changes. Followed source series keep their identity across saved layouts, even when the selection temporarily matches a comparison. Deleting those followed sources leaves the remaining comparisons independent; it does not make a comparison follow instead. Fixed charts retain their authored instruments. An unresolved contract selection withholds the followed chart until a contract is selected, while preserving its saved settings.
+
 Financial series use their selected date basis. When publication dates are missing, affected observations may use period-end dates; the chart warning identifies that fallback. A period-end date does not establish when the value became public. This limitation stays in shared chart metadata and headless output.
 
 Bond history currently has no source-declared price convention. Charts retain its raw observations with unknown price units and do not append a current bond quote: that quote's per-unit or percent-of-par declaration does not establish the basis of a separate historical series. Overview price returns also use the historical observations without appending that quote. A numeric ratio between a quote and an old close cannot establish compatible units. Historical values and current source quotes remain separate; this does not add bond historical coverage or reconstruct yield.

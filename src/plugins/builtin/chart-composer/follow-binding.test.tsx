@@ -1,0 +1,253 @@
+import { afterEach, expect, test } from "bun:test";
+import { act, useReducer, type Dispatch } from "react";
+import { Text } from "../../../ui";
+import { testRender, emitKeypress } from "../../../renderers/opentui/test-utils";
+import { createInitialState, appReducer, type AppAction, type AppState } from "../../../state/app/context";
+import { TestPaneProvider, createTestTicker } from "../../../test-support/pane";
+import { createTestDataProvider } from "../../../test-support/data-provider";
+import { createTestPluginRuntime } from "../../../test-support/plugin-runtime";
+import { createBrowserConfigStore, BROWSER_RESEARCH_CHART_ID as chartId, BROWSER_RESEARCH_PANE_ID as researchId } from "../../../renderers/browser/config-host";
+import { setConfigStoreHost } from "../../../data/config/store";
+import { flushPendingPersistence } from "../../../state/persist-scheduler";
+import { getPaneDisplayTitle } from "../../../components/layout/pane/title";
+import { updatePaneInstance } from "../../../pane-settings";
+import { findPaneInstance, type AppConfig } from "../../../types/config";
+import type { InstrumentRef } from "../../../market-data/request-types";
+import { ChartComposerPane } from "./pane";
+import { buildComparisonChartPreset, buildCustomChartPreset, buildPriceChartPreset } from "./presets";
+import { CHART_FOLLOW_SERIES_SETTING_KEY, rebindFollowChartSpec, resolveFollowSeriesIds } from "./follow-binding";
+
+let setup: Awaited<ReturnType<typeof testRender>> | undefined;
+let latest: AppState;
+let dispatch: Dispatch<AppAction>;
+afterEach(async () => {
+  if (setup) await act(async () => setup!.renderer.destroy());
+  setup = undefined;
+  await flushPendingPersistence();
+  setConfigStoreHost(null);
+});
+
+function store() {
+  const data = new Map<string, string>();
+  return createBrowserConfigStore({ getItem: key => data.get(key) ?? null,
+    setItem: (key, value) => { data.set(key, value); }, removeItem: key => { data.delete(key); } }, "?ticker=BTC-USD%3ACCC");
+}
+
+async function mount(config: AppConfig, requests: string[], contracts: number[] = []) {
+  const history = [10, 1].map(days => ({ date: new Date(Date.now() - days * 86_400_000), close: 100 + days, volume: 100 }));
+  const provider = createTestDataProvider({
+    getTickerFinancials: async () => ({ annualStatements: [], quarterlyStatements: [], priceHistory: [] }),
+    getPriceHistoryForResolution: async (symbol, exchange, _range, _resolution, context) => {
+      requests.push(`${symbol}:${exchange}`);
+      if (context?.instrument?.conId) contracts.push(context.instrument.conId);
+      return history;
+    },
+  });
+  const runtime = createTestPluginRuntime({ getMarketData: () => provider });
+  function Harness() {
+    [latest, dispatch] = useReducer(appReducer, config, createInitialState);
+    const pane = findPaneInstance(latest.config.layout, chartId)!;
+    return <TestPaneProvider state={latest} dispatch={dispatch} paneId={chartId} pluginId="ticker-research" runtime={runtime}>
+      <Text>{getPaneDisplayTitle(latest, pane, { id: "chart-composer", name: "Chart", component: () => null, defaultPosition: "right" })}</Text>
+      <ChartComposerPane paneId={chartId} focused width={110} height={25} />
+    </TestPaneProvider>;
+  }
+  setup = await testRender(<Harness />, { width: 110, height: 28 });
+}
+
+async function settle(predicate: () => boolean) {
+  for (let i = 0; i < 100; i++) {
+    await act(async () => { await Bun.sleep(1); await setup!.renderOnce(); });
+    if (predicate()) return;
+  }
+  throw new Error(`Chart did not settle: ${setup!.captureCharFrame()}`);
+}
+
+test("follow chart retains range while switching BTC to SHOP, including saved reload and stale saved primary", async () => {
+  const host = store(); setConfigStoreHost(host);
+  const config = await host.loadConfig("browser://local");
+  const requests: string[] = [];
+  await mount(config, requests);
+  await settle(() => requests.includes("BTC-USD:CCC"));
+  // The chart's own keyboard range control persists the formerly implicit spec.
+  await emitKeypress(setup!, { name: "3", sequence: "3" });
+  await settle(() => (findPaneInstance(latest.config.layout, chartId)?.settings?.chartSpec as any)?.viewport.range === "1M");
+  const oldSettings = structuredClone(findPaneInstance(latest.config.layout, chartId)!.settings);
+  const layout = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "SHOP:XNAS" } }));
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout } }));
+  await settle(() => requests.includes("SHOP:NASDAQ") && setup!.captureCharFrame().includes("SHOP:XNAS Price"));
+  expect(setup!.captureCharFrame()).toContain("Chart: SHOP:XNAS");
+  expect(setup!.captureCharFrame()).not.toContain("BTC-USD:CCC Price");
+  const selected = findPaneInstance(latest.config.layout, chartId)!.settings!.chartSpec as any;
+  expect(selected.viewport.range).toBe("1M");
+  expect(selected.studies).toEqual((oldSettings!.chartSpec as any).studies);
+  await flushPendingPersistence();
+  const restored = await host.loadConfig("browser://local");
+  await act(async () => setup!.renderer.destroy()); setup = undefined;
+  requests.length = 0;
+  await mount(restored, requests);
+  await settle(() => requests.includes("SHOP:NASDAQ"));
+  expect(requests).not.toContain("BTC-USD:CCC");
+  await act(async () => setup!.renderer.destroy()); setup = undefined;
+  // Repair an existing saved mismatch on mount, before any BTC request.
+  const staleLayout = updatePaneInstance(restored.layout, chartId, pane => ({ ...pane, settings: oldSettings }));
+  requests.length = 0;
+  await mount({ ...restored, layout: staleLayout }, requests);
+  await settle(() => requests.includes("SHOP:NASDAQ"));
+  expect(requests).not.toContain("BTC-USD:CCC");
+});
+
+test("fixed custom comparison does not follow the research pane", async () => {
+  const host = store(); setConfigStoreHost(host);
+  const config = await host.loadConfig("browser://local");
+  const spec = buildComparisonChartPreset(["BTC-USD:CCC", "SPY:ARCX"]);
+  const layout = updatePaneInstance(config.layout, chartId, pane => ({ ...pane,
+    binding: { kind: "fixed", symbol: "BTC-USD:CCC" }, settings: { chartSpec: spec } }));
+  const requests: string[] = [];
+  await mount({ ...config, layout }, requests);
+  await settle(() => requests.includes("BTC-USD:CCC"));
+  const switched = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "SHOP:XNAS" } }));
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: switched } }));
+  await setup!.renderOnce();
+  expect(findPaneInstance(latest.config.layout, chartId)!.settings!.chartSpec).toEqual(spec);
+  expect(requests).not.toContain("SHOP:NASDAQ");
+});
+
+test("follow ownership survives a comparison collision, range change and reload before another switch", async () => {
+  const host = store(); setConfigStoreHost(host);
+  const config = await host.loadConfig("browser://local");
+  const comparison = buildComparisonChartPreset(["ASML:XAMS", "SPY:ARCX"]);
+  const initial = updatePaneInstance(config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "ASML:XAMS" } }));
+  const layout = updatePaneInstance(initial, chartId, pane => ({ ...pane, settings: { chartSpec: comparison } }));
+  const requests: string[] = [];
+  await mount({ ...config, layout }, requests);
+  await settle(() => requests.includes("ASML:AMS") && Boolean(findPaneInstance(latest.config.layout, chartId)?.settings?.[CHART_FOLLOW_SERIES_SETTING_KEY]));
+  const firstSwitch = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "SPY:ARCX" } }));
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: firstSwitch } }));
+  await settle(() => (findPaneInstance(latest.config.layout, chartId)?.settings?.chartSpec as any)?.series[0].source.instrument.symbol === "SPY");
+  await emitKeypress(setup!, { name: "3", sequence: "3" });
+  await settle(() => (findPaneInstance(latest.config.layout, chartId)?.settings?.chartSpec as any)?.viewport.range === "1M");
+  await flushPendingPersistence();
+  const restored = await host.loadConfig("browser://local");
+  expect(findPaneInstance(restored.layout, chartId)?.settings?.[CHART_FOLLOW_SERIES_SETTING_KEY]).toEqual([comparison.series[0]!.id]);
+  await act(async () => setup!.renderer.destroy()); setup = undefined;
+  await mount(restored, requests);
+  await settle(() => setup!.captureCharFrame().includes("SPY:ARCX"));
+  const secondSwitch = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "SHOP:XNAS" } }));
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: secondSwitch } }));
+  await settle(() => requests.includes("SHOP:NASDAQ"));
+  const saved = findPaneInstance(latest.config.layout, chartId)!.settings!.chartSpec as any;
+  expect(saved.series[0].source.instrument).toMatchObject({ symbol: "SHOP", exchange: "NASDAQ" });
+  expect(saved.series[1]).toEqual(comparison.series[1]);
+  expect(saved.viewport.range).toBe("1M");
+  expect(saved.studies).toEqual(comparison.studies);
+});
+
+test("an unresolved followed contract hides old data without overwriting the authored chart, then recovers", async () => {
+  const host = store(); setConfigStoreHost(host);
+  const config = await host.loadConfig("browser://local");
+  const requests: string[] = [], contracts: number[] = [];
+  await mount(config, requests, contracts);
+  await settle(() => requests.includes("BTC-USD:CCC") && Boolean(findPaneInstance(latest.config.layout, chartId)?.settings?.chartSpec));
+  const saved = structuredClone(findPaneInstance(latest.config.layout, chartId)!.settings);
+  const contract = (conId: number) => ({ brokerId: "ibkr", brokerInstanceId: "fixture-account", symbol: "ES", secType: "FUT", conId, exchange: "CME" });
+  const ticker = createTestTicker("ES", "E-mini", { exchange: "CME", assetCategory: "FUT", broker_contracts: [contract(10), contract(20)] });
+  const unresolved = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "ES" } }));
+  requests.length = 0;
+  await act(async () => {
+    dispatch({ type: "SET_TICKERS", tickers: new Map([["ES", ticker]]) });
+    dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: unresolved } });
+  });
+  await settle(() => setup!.captureCharFrame().includes("Choose a contract in search."));
+  expect(setup!.captureCharFrame()).not.toContain("BTC-USD:CCC Price");
+  expect(requests).toEqual([]);
+  expect(findPaneInstance(latest.config.layout, chartId)!.settings).toEqual(saved);
+  const resolved = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane,
+    binding: { kind: "fixed", symbol: "ES", instrument: contract(20) } }));
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: resolved } }));
+  await settle(() => contracts.includes(20));
+  expect(requests).not.toContain("BTC-USD:CCC");
+  expect(contracts).not.toContain(10);
+});
+
+test("deleting the followed primary leaves the authored comparison independent on subsequent switches", async () => {
+  const host = store(); setConfigStoreHost(host);
+  const config = await host.loadConfig("browser://local");
+  const comparison = buildComparisonChartPreset(["ASML:XAMS", "SPY:ARCX"]);
+  const initial = updatePaneInstance(config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "ASML:XAMS" } }));
+  const layout = updatePaneInstance(initial, chartId, pane => ({ ...pane, settings: { chartSpec: comparison } }));
+  const requests: string[] = [];
+  await mount({ ...config, layout }, requests);
+  await settle(() => Boolean(findPaneInstance(latest.config.layout, chartId)?.settings?.[CHART_FOLLOW_SERIES_SETTING_KEY]));
+  const withoutPrimary = { ...comparison, series: [comparison.series[1]!] };
+  const deleted = updatePaneInstance(latest.config.layout, chartId, pane => ({ ...pane,
+    settings: { ...pane.settings, chartSpec: withoutPrimary } }));
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: deleted } }));
+  await settle(() => (findPaneInstance(latest.config.layout, chartId)?.settings?.[CHART_FOLLOW_SERIES_SETTING_KEY] as unknown[])?.length === 0);
+  const switched = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane, binding: { kind: "fixed", symbol: "SHOP:XNAS" } }));
+  requests.length = 0;
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: switched } }));
+  await settle(() => setup!.captureCharFrame().includes("Chart: SHOP:XNAS"));
+  expect(findPaneInstance(latest.config.layout, chartId)!.settings!.chartSpec).toEqual(withoutPrimary);
+  expect(findPaneInstance(latest.config.layout, chartId)!.settings![CHART_FOLLOW_SERIES_SETTING_KEY]).toEqual([]);
+  expect(requests).not.toContain("SHOP:NASDAQ");
+  expect(requests).not.toContain("ASML:AMS");
+});
+
+test("mounted follower reacts to a different broker contract with the same ticker and venue", async () => {
+  const host = store(); setConfigStoreHost(host);
+  const config = await host.loadConfig("browser://local");
+  const contract = (conId: number) => ({ brokerId: "ibkr", brokerInstanceId: "fixture-account", symbol: "ES", secType: "FUT", conId, exchange: "CME" });
+  const layout = updatePaneInstance(config.layout, researchId, pane => ({ ...pane,
+    binding: { kind: "fixed", symbol: "ES", instrument: contract(10), listing: { exchange: "CME", currency: "USD", type: "FUT" } } }));
+  const requests: string[] = [], contracts: number[] = [];
+  await mount({ ...config, layout }, requests, contracts);
+  await settle(() => contracts.includes(10));
+  const switched = updatePaneInstance(latest.config.layout, researchId, pane => ({ ...pane,
+    binding: { kind: "fixed", symbol: "ES", instrument: contract(20), listing: { exchange: "CME", currency: "USD", type: "FUT" } } }));
+  contracts.length = 0;
+  await act(async () => dispatch({ type: "SET_CONFIG", config: { ...latest.config, layout: switched } }));
+  await settle(() => contracts.includes(20));
+  expect(contracts).not.toContain(10);
+  const spec = findPaneInstance(latest.config.layout, chartId)!.settings!.chartSpec as any;
+  expect(spec.series[0].source.instrument.instrument).toEqual(contract(20));
+});
+
+test("follow projection preserves comparisons, studies, qualified venues and distinct broker contracts", () => {
+  const comparison = buildComparisonChartPreset(["ASML:XAMS", "SPY:ARCX"]);
+  const changed = rebindFollowChartSpec(comparison, { symbol: "ASML", exchange: "AMS" }, { symbol: "ASML", exchange: "NASDAQ" });
+  expect(changed.series[0]!.source).toMatchObject({ instrument: { symbol: "ASML", exchange: "NASDAQ" } });
+  expect(changed.series[1]).toBe(comparison.series[1]);
+  expect(changed.studies).toBe(comparison.studies);
+  expect(changed.viewport).toBe(comparison.viewport);
+  const primary = comparison.series[0]!;
+  const grouped = { ...comparison, series: [...comparison.series, { ...primary, id: "primary-volume", source: {
+    ...primary.source, kind: "security" as const, instrument: { symbol: "ASML", exchange: "AMS" }, fieldId: "market.volume",
+  } }] };
+  const ownerIds = resolveFollowSeriesIds(grouped, { symbol: "ASML", exchange: "AMS" }, { symbol: "SPY", exchange: "ARCA" });
+  const collision = rebindFollowChartSpec(grouped, null, { symbol: "SPY", exchange: "ARCA" }, ownerIds);
+  const afterCollision = rebindFollowChartSpec(collision, null, { symbol: "SHOP", exchange: "NASDAQ" }, ownerIds);
+  expect(afterCollision.series[0]!.source).toMatchObject({ instrument: { symbol: "SHOP" } });
+  expect(afterCollision.series[1]).toBe(comparison.series[1]);
+  expect(afterCollision.series[2]!.source).toMatchObject({ fieldId: "market.volume", instrument: { symbol: "SHOP" } });
+  const economic = buildCustomChartPreset("FRED:CPIAUCSL");
+  expect(rebindFollowChartSpec(economic, null, { symbol: "SHOP" })).toBe(economic);
+  expect(rebindFollowChartSpec(comparison, null, { symbol: "SPY", exchange: "ARCA" })).toBe(comparison);
+  const contract = (conId: number): InstrumentRef => ({ symbol: "ES", exchange: "CME", brokerId: "ibkr", brokerInstanceId: "account",
+    instrument: { brokerId: "ibkr", brokerInstanceId: "account", symbol: "ES", secType: "FUT", conId, exchange: "CME" } });
+  const first = contract(10), second = contract(20), next = contract(30);
+  const price = buildPriceChartPreset("ES:CME");
+  const brokerSpec = { ...price, series: [first, second].map((instrument, i) => ({ ...price.series[0]!, id: `contract-${i}`, label: i === 0 ? "ES" : "Custom comparison",
+    source: { kind: "security" as const, instrument, fieldId: "market.close" } })) };
+  for (const previous of [first, next]) {
+    const rebound = rebindFollowChartSpec(brokerSpec, previous, next);
+    expect(rebound.series[0]!.source).toMatchObject({ instrument: next });
+    expect(rebound.series[1]).toBe(brokerSpec.series[1]);
+  }
+  const publicNext = rebindFollowChartSpec(brokerSpec, first, { symbol: "SHOP", exchange: "NASDAQ", instrument: null });
+  expect(publicNext.series[0]!.source).toMatchObject({ instrument: { symbol: "SHOP", instrument: null } });
+  expect((publicNext.series[0]!.source as any).instrument.brokerId).toBeUndefined();
+  expect(publicNext.series[1]).toBe(brokerSpec.series[1]);
+  expect(publicNext.series[0]!.label).toBe("SHOP:XNAS");
+  expect(publicNext.series[1]!.label).toBe("Custom comparison");
+});
