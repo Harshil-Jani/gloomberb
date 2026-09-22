@@ -21,7 +21,7 @@ import { reconcileQuoteDayRange } from "../../market-data/quotes/day-range";
 import { redactUnavailableFundamentals } from "../../utils/fundamentals";
 import { retractKnownCloudValuation } from "./valuation-observations";
 import { withdrawKnownProviderStatements } from "../../utils/statement-observations";
-import { normalizeFinancialOperatingResults } from "../../utils/operating-result";
+import { hasShopOperatingIdentity, normalizeFinancialOperatingResults } from "../../utils/operating-result";
 
 export const GLOOMBERB_CLOUD_PROVIDER_ID = "gloomberb-cloud" as const;
 
@@ -220,6 +220,10 @@ export function mapCloudFinancials(
     fundamentals: redactUnavailableFundamentals(financials.fundamentals),
     financialCurrency: financials.financialCurrency,
     statementHistory: financials.statementHistory,
+    operatingHistoryRetryAt: typeof financials.operatingHistoryRetryAt === "number" && Number.isFinite(financials.operatingHistoryRetryAt)
+      && financials.operatingHistoryRetryAt > 0 && hasShopOperatingIdentity({
+        quote, quoteMetadata: financials.quoteMetadata, financialCurrency: financials.financialCurrency,
+      }, target) ? financials.operatingHistoryRetryAt : undefined,
     annualStatements: financials.annualStatements ?? [],
     quarterlyStatements: financials.quarterlyStatements ?? [],
     priceHistory: (financials.priceHistory ?? []).map((point) =>

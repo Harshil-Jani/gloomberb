@@ -14,7 +14,7 @@ import { providerFinancialsMatchTarget, providerQuoteMatchesTarget } from "./fin
 import { hasShopOperatingIdentity, normalizeFinancialOperatingResults } from "../../utils/operating-result";
 
 const MARKET_NAMESPACE = "market";
-const FINANCIALS_SCHEMA_VERSION = 10;
+const FINANCIALS_SCHEMA_VERSION = 11;
 const QUOTE_SCHEMA_VERSION = 2;
 
 const DEFAULT_CACHE_POLICIES = {
@@ -103,6 +103,17 @@ export function cacheRouterResource<T>(
   value: T,
   cachePolicy: CachePolicy,
 ): void {
+  if (kind === "financials" && ["provider:yahoo", "provider:gloomberb-cloud"].includes(sourceKey) && !entityKey.startsWith("contract:")) {
+    const financials = value as TickerFinancials;
+    const retryAt = financials.operatingHistoryRetryAt;
+    if (typeof retryAt === "number" && Number.isFinite(retryAt) && hasShopOperatingIdentity(financials, {
+      symbol: entityKey, exchange: variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1],
+    })) {
+      // Keep usable partial statements while allowing the SEC source's
+      // short retry (or completed background load) to escape the normal TTL.
+      cachePolicy = { ...cachePolicy, staleMs: Math.min(cachePolicy.staleMs, Math.max(0, retryAt - Date.now())) };
+    }
+  }
   resources?.set(
     {
       namespace: MARKET_NAMESPACE,
@@ -211,6 +222,14 @@ export function listCachedResources<T>(
     // The scoped reported operating cohort must be reacquired, never invented
     // from legacy independently selected fields. Other issuers/listings survive.
     if (kind === "financials" && record.schemaVersion < 10 && !record.entityKey.startsWith("contract:")
+      && hasShopOperatingIdentity(record.value as TickerFinancials, {
+        symbol: record.entityKey, exchange: record.variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1],
+      })) return false;
+    // The first operating-table implementation discarded independent sibling
+    // documents and stamped the partial aggregate as complete. Reacquire only
+    // affected native/cloud SHOP sources, including saved extended requests.
+    if (kind === "financials" && record.schemaVersion < 11 && !record.entityKey.startsWith("contract:")
+      && ["provider:yahoo", "provider:gloomberb-cloud"].includes(record.sourceKey)
       && hasShopOperatingIdentity(record.value as TickerFinancials, {
         symbol: record.entityKey, exchange: record.variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1],
       })) return false;

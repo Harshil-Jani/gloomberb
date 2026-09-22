@@ -8,6 +8,8 @@ import { YahooFinanceClient } from "./yahoo-finance";
 import { mapCloudFinancials } from "./gloomberb-cloud/normalizers";
 import sec from "./fixtures/sec-operating-expenses.json";
 import yahoo from "./fixtures/shop-operating-provider.json";
+import liveSubmissions from "./fixtures/shop-submissions-20260922.json";
+import { canAggregateOperatingField } from "../utils/operating-result-aggregation";
 import { readFileSync } from "node:fs";
 
 const metrics = parseYahooTimeseries(yahoo.timeseries.result);
@@ -132,7 +134,8 @@ test("Yahoo ownership requires each observation's explicit currency and exact du
 function nativeFixtureClient() {
   const client = new SecEdgarClient() as any;
   const requests: string[] = [];
-  const state = { companyFactsFail: false, tableFail: false, submissionsFail: false, amendment: false };
+  const state = { companyFactsFail: false, tableFail: false, submissionsFail: false, amendment: false,
+    annualFail: false, liveSubmissions: false, tableWait: undefined as Promise<void> | undefined };
   client.loadLookup = async () => new Map([
     ["SHOP", { cik: "0001594805", exchange: "Nasdaq" }],
     ["MSFT", { cik: "0000789019", exchange: "Nasdaq" }],
@@ -144,6 +147,7 @@ function nativeFixtureClient() {
       return url.includes("1594805") ? sec.shop : sec.msft;
     }
     if (state.submissionsFail) throw new Error("fixture submissions unavailable");
+    if (state.liveSubmissions) return liveSubmissions;
     return { cik: "1594805", filings: { recent: {
       accessionNumber: [...(state.amendment ? ["0001594805-26-000048"] : []), "0001594805-26-000047", "0001594805-26-000007"],
       form: [...(state.amendment ? ["10-Q/A"] : []), "10-Q", "10-K"],
@@ -153,7 +157,9 @@ function nativeFixtureClient() {
   };
   client.fetchText = async (url: string) => {
     requests.push(url);
+    if (state.tableWait) await state.tableWait;
     if (state.tableFail) throw new Error("fixture source unavailable");
+    if (state.annualFail && url.includes("20251231")) throw new Error("fixture annual source unavailable");
     return { body: readFileSync(new URL(`./fixtures/shop-${url.includes("20260630") ? "20260630" : "20251231"}-quarterly-summary.html`, import.meta.url), "utf8") };
   };
   return { client, requests, state };
@@ -176,8 +182,8 @@ test("native acquisition loads direct Q4 table cohorts with bounded, cached issu
   expect(requests.filter(url => url.includes("Archives"))).toHaveLength(2);
 });
 
-test("native sources fail independently and failed or unsupported table refresh retains the original qualified snapshot", async () => {
-  for (const failure of ["tableFail", "submissionsFail", "amendment"] as const) {
+test("native sources fail independently and total table refresh failure retains the original qualified snapshot", async () => {
+  for (const failure of ["tableFail", "submissionsFail"] as const) {
     const { client, requests, state } = nativeFixtureClient();
     await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
     const snapshot = client.shopOperatingTables;
@@ -195,7 +201,6 @@ test("native sources fail independently and failed or unsupported table refresh 
     const fallback = await cold.client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
     expect(fallback.annualStatements[0].operatingIncome).toBe(1_468_000_000);
     expect(fallback.quarterlyStatements.find((row: FinancialStatement) => row.date === "2025-12-31")).toBeUndefined();
-    if (failure === "amendment") expect(cold.requests.some(url => url.includes("Archives") && url.includes("20260630"))).toBe(false);
   }
   const tablesOnly = nativeFixtureClient();
   tablesOnly.state.companyFactsFail = true;
@@ -204,4 +209,78 @@ test("native sources fail independently and failed or unsupported table refresh 
   tablesOnly.client.shopOperatingTables = undefined;
   tablesOnly.state.tableFail = true;
   await expect(tablesOnly.client.getFinancialStatements("SHOP", { reportedOperatingResults: true })).rejects.toThrow("fixture companyfacts unavailable");
+});
+
+test("captured annual amendment does not discard the later Q2 filing's direct Q4 and compatible trailing quarters", async () => {
+  const { client, requests, state } = nativeFixtureClient();
+  state.liveSubmissions = true;
+  const first = await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
+  const q4 = first.quarterlyStatements.find((row: FinancialStatement) => row.date === "2025-12-31")!;
+  expect(q4.operatingIncome).toBe(631_000_000);
+  expect(q4.operatingExpense).toBe(1_062_000_000);
+  expect(q4.operatingResult.reported.accessionNumber).toBe("0001594805-26-000047");
+  expect(q4.operatingResult.reported.filed).toBe("2026-08-05");
+  const trailing = first.quarterlyStatements.filter((row: FinancialStatement) => row.date >= "2025-09-30");
+  expect(trailing).toHaveLength(4);
+  expect(canAggregateOperatingField(trailing, "operatingIncome")).toBe(true);
+  expect(canAggregateOperatingField(trailing, "operatingExpense")).toBe(true);
+  expect(trailing.reduce((sum: number, row: FinancialStatement) => sum + row.operatingIncome!, 0)).toBe(1_844_000_000);
+  expect(trailing.reduce((sum: number, row: FinancialStatement) => sum + row.operatingExpense!, 0)).toBe(4_494_000_000);
+  expect(requests.filter(url => url.includes("Archives"))).toHaveLength(1);
+  expect(requests.some(url => url.includes("000159480526000007"))).toBe(false);
+  expect(client.shopOperatingTables).toBeUndefined();
+  const partial = client.shopOperatingTablesPartial;
+  expect(partial.expiresAt - Date.now()).toBeGreaterThan(55_000);
+  expect(partial.expiresAt - Date.now()).toBeLessThanOrEqual(60_000);
+  const count = requests.length;
+  await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
+  expect(requests.length).toBe(count + 1); // companyfacts only; no repeated filings/documents
+  partial.expiresAt = client.shopOperatingTablesRetryAt = 0;
+  await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
+  expect(requests.filter(url => url.includes("submissions"))).toHaveLength(2);
+  expect(client.shopOperatingTablesPartial.cohorts).toHaveLength(partial.cohorts.length);
+});
+
+test("a later quarterly amendment preserves the annual sibling at its actual date without selecting the preceding Q", async () => {
+  const { client, requests, state } = nativeFixtureClient();
+  state.amendment = true;
+  const value = await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
+  const q4 = value.quarterlyStatements.find((row: FinancialStatement) => row.date === "2025-12-31")!;
+  expect(q4.operatingIncome).toBe(631_000_000);
+  expect(q4.operatingResult.reported.filed).toBe("2026-02-11");
+  expect(q4.operatingResult.reported.accessionNumber).toBe("0001594805-26-000007");
+  expect(requests.some(url => url.includes("Archives") && url.includes("20260630"))).toBe(false);
+  expect(client.shopOperatingTables).toBeUndefined();
+});
+
+test("partial refresh, total failure and recovery preserve snapshot expiry and source dates with bounded single-flight acquisition", async () => {
+  const { client, requests, state } = nativeFixtureClient();
+  await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
+  const complete = client.shopOperatingTables;
+  complete.expiresAt = 0;
+  state.annualFail = true;
+  let release!: () => void;
+  state.tableWait = new Promise<void>(resolve => { release = resolve; });
+  const pending = Promise.all([client.getFinancialStatements("SHOP", { reportedOperatingResults: true }),
+    client.getFinancialStatements("SHOP", { reportedOperatingResults: true })]);
+  release();
+  await pending;
+  expect(requests.filter(url => url.includes("submissions"))).toHaveLength(2);
+  expect(requests.filter(url => url.includes("Archives"))).toHaveLength(4);
+  expect(client.shopOperatingTables).toBe(complete);
+  expect(complete.expiresAt).toBe(0);
+  const partial = client.shopOperatingTablesPartial;
+  expect(partial.cohorts).toEqual(complete.cohorts);
+  partial.expiresAt = client.shopOperatingTablesRetryAt = 0;
+  state.tableFail = true;
+  await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
+  expect(client.shopOperatingTablesPartial).toBe(partial);
+  expect(partial.expiresAt).toBe(0);
+  expect(client.shopOperatingTables).toBe(complete);
+  client.shopOperatingTablesRetryAt = 0;
+  state.tableFail = state.annualFail = false;
+  await client.getFinancialStatements("SHOP", { reportedOperatingResults: true });
+  expect(client.shopOperatingTablesPartial).toBeUndefined();
+  expect(client.shopOperatingTables.expiresAt - Date.now()).toBeGreaterThan(5 * 60 * 60_000);
+  expect(client.shopOperatingTablesRetryAt).toBe(0);
 });
