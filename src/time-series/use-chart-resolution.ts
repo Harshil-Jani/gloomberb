@@ -60,15 +60,13 @@ function collectSeedHistory(spec: ChartSpec): Map<string, PricePoint[]> {
     const source = series.source;
     const key = chartQuoteOverrideKeyForSource(source);
     if (history.has(key)) continue;
-    const symbol = source.instrument.symbol;
-    const exchange = source.instrument.exchange ?? "";
     const baseline = createBaselineChartRequest(source.instrument);
     const presetResolution = spec.viewport.resolution === "auto"
       ? getPresetResolution(spec.viewport.range)
       : spec.viewport.resolution;
-    const remembered = readParsedPriceHistory(parsedPriceHistoryKey(symbol, exchange, baseline.bufferRange, baseline.resolution))
-      ?? readParsedPriceHistory(parsedPriceHistoryKey(symbol, exchange, spec.viewport.range, presetResolution))
-      ?? readParsedPriceHistory(parsedPriceHistoryKey(symbol, exchange, baseline.bufferRange, presetResolution));
+    const remembered = readParsedPriceHistory(parsedPriceHistoryKey(source.instrument, baseline.bufferRange, baseline.resolution))
+      ?? readParsedPriceHistory(parsedPriceHistoryKey(source.instrument, spec.viewport.range, presetResolution))
+      ?? readParsedPriceHistory(parsedPriceHistoryKey(source.instrument, baseline.bufferRange, presetResolution));
     if (remembered?.length) {
       history.set(key, remembered);
       continue;

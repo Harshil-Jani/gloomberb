@@ -695,8 +695,7 @@ async function loadPriceHistory(
       ) {
         rememberParsedPriceHistory(
           parsedPriceHistoryKey(
-            source.instrument.symbol,
-            source.instrument.exchange ?? "",
+            source.instrument,
             request.fallbackRange,
             request.resolution,
           ),

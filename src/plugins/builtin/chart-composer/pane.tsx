@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useUiCapabilities, useUiHost } from "../../../ui";
 import {
   ChoiceDialog,
+  EmptyState,
   Tabs,
   usePaneFooter,
   usePaneNoticeFooter,
@@ -26,9 +27,13 @@ import { useShortcut } from "../../../react/input";
 import { useDialog, useDialogState, type PromptContext } from "../../../ui/dialog";
 import {
   useAppDispatch,
+  useAppSelector,
+  usePaneInstance,
   usePaneInstanceId,
   usePaneSettingValue,
   usePaneTicker,
+  useUpdatePaneSettings,
+  type AppState,
 } from "../../../state/app/context";
 import { colors } from "../../../theme/colors";
 import { publicTickerKey } from "../../../utils/exchanges";
@@ -70,6 +75,9 @@ import { ChartSeriesQuickAdd } from "./quick-add";
 import { useLiveStreamingSetting } from "../shared/live-streaming";
 import { usePluginAppActions } from "../../runtime";
 import { isPlainKey } from "../../../utils/keyboard";
+import { resolveInstrumentForPane } from "../../../core/state/app/instrument";
+import { CHART_FOLLOW_SERIES_SETTING_KEY, rebindFollowChartSpec, resolveFollowSeriesIds } from "./follow-binding";
+import type { InstrumentRef } from "../../../market-data/request-types";
 
 const RANGE_TABS = RANGES.map((range, index) => ({ label: `${index + 1}:${range}`, value: range }));
 const AUTO_VIEWPORT_DEBOUNCE_MS = 350;
@@ -708,17 +716,55 @@ function ChartComposerSurface({
 }
 
 export function ChartComposerPane({ paneId, focused, width, height }: PaneProps) {
-  const { symbol } = usePaneTicker();
+  const { symbol, error } = usePaneTicker();
+  const instance = usePaneInstance();
+  const follows = instance?.binding?.kind === "follow";
+  const selectTarget = useMemo(() => {
+    let current: InstrumentRef | null = null;
+    return (state: AppState) => {
+      const next = follows ? resolveInstrumentForPane(state, paneId) : null;
+      // The resolver creates objects; equivalent snapshots must stay stable
+      // while a same-symbol contract selection still triggers a render.
+      if (JSON.stringify(next) !== JSON.stringify(current)) current = next;
+      return current;
+    };
+  }, [follows, paneId]);
+  const target = useAppSelector(selectTarget);
+  const previousTarget = useRef<InstrumentRef | null>(target);
   const fallback = useMemo(
     () => symbol ? buildPriceChartPreset(symbol) : buildEmptyChartPreset(),
     [symbol],
   );
-  const [storedSpec, setStoredSpec] = usePaneSettingValue<unknown>(CHART_SPEC_SETTING_KEY, fallback);
-  const spec = useMemo(() => parseChartSpecOr(storedSpec, fallback), [fallback, storedSpec]);
+  const updateSettings = useUpdatePaneSettings();
+  const storedSpec = instance?.settings?.[CHART_SPEC_SETTING_KEY] ?? fallback;
+  const savedIds = instance?.settings?.[CHART_FOLLOW_SERIES_SETTING_KEY];
+  const stored = useMemo(() => parseChartSpecOr(storedSpec, fallback), [fallback, storedSpec]);
+  const ownedIds = useMemo(
+    () => resolveFollowSeriesIds(stored, previousTarget.current, target, savedIds),
+    [savedIds, stored, target],
+  );
+  // Resolve before rendering so the new title never carries the old asset's data.
+  const spec = useMemo(
+    () => follows ? rebindFollowChartSpec(stored, previousTarget.current, target, ownedIds) : stored,
+    [follows, ownedIds, stored, target],
+  );
+  const setSpec = useCallback((next: ChartSpec) => updateSettings({
+    [CHART_SPEC_SETTING_KEY]: next,
+    ...(follows ? { [CHART_FOLLOW_SERIES_SETTING_KEY]: resolveFollowSeriesIds(next, target, target, ownedIds) } : {}),
+  }), [follows, ownedIds, target, updateSettings]);
+  useEffect(() => {
+    if (follows && target && (spec !== stored || ownedIds !== savedIds)) {
+      setSpec(spec);
+    }
+    if (target) previousTarget.current = target;
+  }, [follows, ownedIds, savedIds, setSpec, spec, stored, target]);
+  if (follows && !target && ownedIds.length > 0) {
+    return <EmptyState title={error ?? "No ticker selected."} />;
+  }
   return (
     <ChartComposerSurface
       spec={spec}
-      setSpec={setStoredSpec}
+      setSpec={setSpec}
       focused={focused}
       width={width}
       height={height}
