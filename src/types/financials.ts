@@ -288,7 +288,61 @@ export interface IncomeStatementSource {
   basis: "parent" | "consolidated" | "common";
 }
 
+export type ReportedOperatingField = "grossProfit" | "operatingExpense" | "operatingIncome";
+export type ProviderOperatingField = ReportedOperatingField | "totalExpenses" | "ebitda";
+
+/** Direct reported operating result; every member belongs to one filing cohort. */
+export interface ReportedOperatingCohort {
+  cik: string;
+  period: "annual" | "quarterly";
+  startDate: string;
+  endDate: string;
+  currency: "USD";
+  accessionNumber: string;
+  filed: string;
+  form: string;
+  values: Record<ReportedOperatingField, number>;
+  anchors?: { totalRevenue?: number; costOfRevenue?: number };
+  origin: { kind: "companyfacts" } | {
+    kind: "filing-table";
+    documentUrl: string;
+    documentSha256: string;
+    table: "summary-quarterly-results";
+    unitScale: 1000000;
+  };
+}
+
+/** A provider metric is independently owned, not a synonym for a reported subtotal. */
+export interface ProviderOperatingObservation {
+  provider: "yahoo" | "twelvedata";
+  sourceField: string;
+  period: "annual" | "quarterly";
+  endDate: string;
+  currency: string;
+  value: number;
+}
+
+export interface OperatingResult {
+  version: 1;
+  reported?: ReportedOperatingCohort;
+  provider?: Partial<Record<ProviderOperatingField, ProviderOperatingObservation>>;
+  derived?: { ebitda?: DerivedOperatingObservation };
+}
+
+export interface DerivedOperatingObservation {
+  definition: "operating-income-plus-depreciation-amortization";
+  period: "annual" | "quarterly";
+  endDate: string;
+  currency: string;
+  value: number;
+  inputs: { operatingIncome: number; depreciationAndAmortization: number };
+}
+
 export interface FinancialStatement {
+  /** Operating concepts have ownership independent of net income and fiscal dates. */
+  operatingResult?: OperatingResult;
+  /** Derived operating sums retain their actual quarter inputs, not a single filing owner. */
+  operatingResultAggregation?: import("../utils/operating-result-aggregation").OperatingResultAggregation;
   /** Unresolved, source-attested observation withdrawals; identifiers are validated on read. */
   withdrawnObservations?: string[];
   /** SEC EPS share basis; raw source values remain available in the evidence. */

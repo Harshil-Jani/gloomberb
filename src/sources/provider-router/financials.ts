@@ -8,6 +8,7 @@ import { isExtendedHoursExchange, isQuoteStaleForCurrentSession } from "../../ma
 import { mergeQuoteMetadata, quoteMetadataFromQuote, quoteMetadataMatchesTarget } from "../../market-data/quotes/metadata";
 import { parsePublicTickerKey } from "../../utils/exchanges";
 import { activeUsMarketSession } from "../../market-data/market/freshness";
+import { normalizeStatementOperatingResult } from "../../utils/operating-result";
 import {
   mergeQuoteContributionMaps,
   isQuoteContributionStaleForCurrentSession,
@@ -73,8 +74,8 @@ export function sanitizeCachedFinancials(
   financials = excludeNonCompanyFinancials({
     ...financials,
     fundamentals: redactUnavailableFundamentals(financials.fundamentals),
-    annualStatements: coalesceFinancialPeriodAliases(financials.annualStatements),
-    quarterlyStatements: coalesceFinancialPeriodAliases(financials.quarterlyStatements),
+    annualStatements: coalesceFinancialPeriodAliases(financials.annualStatements.map(row => normalizeStatementOperatingResult(row, "annual"))),
+    quarterlyStatements: coalesceFinancialPeriodAliases(financials.quarterlyStatements.map(row => normalizeStatementOperatingResult(row, "quarterly"))),
   });
   const stale = financials.quote && (options.allowIncompleteSession
     ? isQuoteContributionStaleForCurrentSession(financials.quote)

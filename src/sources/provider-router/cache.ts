@@ -11,9 +11,10 @@ import { redactUnavailableFundamentals, RETRACTABLE_VALUATION_FIELDS } from "../
 import { isPriceHistoryStaleForCurrentWindow } from "../../utils/price-history";
 import { brokerContractIdentityKey } from "../../utils/instrument-identity";
 import { providerFinancialsMatchTarget, providerQuoteMatchesTarget } from "./financials";
+import { hasShopOperatingIdentity, normalizeFinancialOperatingResults } from "../../utils/operating-result";
 
 const MARKET_NAMESPACE = "market";
-const FINANCIALS_SCHEMA_VERSION = 9;
+const FINANCIALS_SCHEMA_VERSION = 10;
 const QUOTE_SCHEMA_VERSION = 2;
 
 const DEFAULT_CACHE_POLICIES = {
@@ -207,6 +208,12 @@ export function listCachedResources<T>(
       if (!requestedExchange && declaredExchange === "AMEX"
         && record.schemaVersion < (kind === "financials" ? 8 : 2)) return false;
     }
+    // The scoped reported operating cohort must be reacquired, never invented
+    // from legacy independently selected fields. Other issuers/listings survive.
+    if (kind === "financials" && record.schemaVersion < 10 && !record.entityKey.startsWith("contract:")
+      && hasShopOperatingIdentity(record.value as TickerFinancials, {
+        symbol: record.entityKey, exchange: record.variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1],
+      })) return false;
     // Earlier SEC projections used consolidated/common income as parent income.
     // Refetch the filing evidence; unrelated vendor statements remain usable.
     if (kind === "financials" && record.schemaVersion < 9) {
@@ -239,6 +246,11 @@ export function listCachedResources<T>(
         exchange: record.variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1],
       }, record.sourceKey);
       if (withdrawn !== record.value) record = { ...record, stale: true, value: withdrawn as T };
+      if (!record.entityKey.startsWith("contract:")) record = { ...record,
+        value: normalizeFinancialOperatingResults(record.value as TickerFinancials, {
+          symbol: record.entityKey, exchange: record.variantKey.match(/(?:^|;)exchange=([^;]+)/)?.[1],
+        }) as T,
+      };
     }
     if (kind !== "financials" || record.sourceKey !== "provider:gloomberb-cloud") return record;
     // Legacy cloud aggregates lost the nested quote's stale flag. Retain valid

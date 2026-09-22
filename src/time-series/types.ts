@@ -112,6 +112,8 @@ export interface TimeSeriesPoint {
     priceHistoryIntegrity?: import("../utils/price-history-integrity").PriceHistoryIntegrity;
     valuationPriceIssues?: import("./valuation-price").ValuationPriceIssue[];
     secEpsBasis?: import("../utils/sec-eps-basis").SecEpsBasis;
+    operatingResult?: import("../types/financials").OperatingResult;
+    operatingResultAggregation?: import("../utils/operating-result-aggregation").OperatingResultAggregation;
     providerId?: string;
     quality?: "reported" | "derived" | "estimated";
     /** Reporting currency of this monetary statement observation. */

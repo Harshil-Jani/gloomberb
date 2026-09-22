@@ -1,4 +1,5 @@
 import type { FinancialStatement, PricePoint } from "../../types/financials";
+import { addProviderOperatingObservation, OPERATING_PROVIDER_FIELDS } from "../../utils/operating-result";
 import { computePriceReturnForHorizon } from "../../market-data/performance";
 import { isFinancialPeriodDate, latestFinancialPeriod } from "../../utils/latest-financial-period";
 
@@ -184,6 +185,7 @@ export function computeYahooReturn(history: PricePoint[], years: 1 | 3): number 
 export function buildYahooStatements(
   metrics: YahooTimeseriesMetrics,
   prefix: "annual" | "quarterly",
+  operatingOwnership = false,
 ): FinancialStatement[] {
   const byDate = new Map<string, FinancialStatement>();
   const assign = (type: string, field: keyof FinancialStatement) => {
@@ -193,6 +195,13 @@ export function buildYahooStatements(
       if (row.currency && point.currency && row.currency !== point.currency) continue;
       if (point.currency) row.currency = point.currency;
       (row as any)[field] = typeof point.value === "number" && Number.isFinite(point.value) ? point.value : undefined;
+      if (operatingOwnership && OPERATING_PROVIDER_FIELDS.includes(field as typeof OPERATING_PROVIDER_FIELDS[number])) {
+        const operatingField = field as typeof OPERATING_PROVIDER_FIELDS[number];
+        if (row.operatingResult?.provider) delete row.operatingResult.provider[operatingField];
+        if (point.currency && point.currency === row.currency && point.periodType === (prefix === "annual" ? "12M" : "3M")) {
+          addProviderOperatingObservation(row, operatingField, "yahoo", type.slice(prefix.length), prefix);
+        }
+      }
       byDate.set(point.asOfDate, row);
     }
   };

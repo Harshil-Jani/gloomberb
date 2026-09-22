@@ -19,6 +19,7 @@ import {
 } from "./mappers";
 import type { ChartResult } from "./types";
 import { latestFinancialPeriod } from "../../utils/latest-financial-period";
+import { isShopOperatingTarget } from "../../utils/operating-result";
 
 type YahooChartSnapshot = {
   meta: NonNullable<ChartResult["meta"]>;
@@ -168,8 +169,9 @@ export async function loadYahooTickerFinancials(
     ...extHours,
   };
 
-  const annualStatements = buildYahooStatements(metrics, "annual");
-  const quarterlyStatements = buildYahooStatements(metrics, "quarterly");
+  const operatingOwnership = isShopOperatingTarget(symbol, meta.exchangeName ?? "") && normalizedCurrency === "USD";
+  const annualStatements = buildYahooStatements(metrics, "annual", operatingOwnership);
+  const quarterlyStatements = buildYahooStatements(metrics, "quarterly", operatingOwnership);
   // Annual summary metrics must describe one reporting period, even when a
   // provider omits a newer observation from an individual metric's series.
   const annual = latestFinancialPeriod(annualStatements, (statement) => statement.date);

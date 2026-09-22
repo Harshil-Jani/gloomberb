@@ -1,5 +1,6 @@
 import type { FinancialStatement } from "../../../../types/financials";
 import { completeAvailability, statementFieldAvailability } from "../../../../utils/financial-statements";
+import { canAggregateOperatingField, operatingResultAggregation } from "../../../../utils/operating-result-aggregation";
 
 export type FinancialPeriod = "annual" | "quarterly";
 
@@ -8,7 +9,7 @@ export interface FinancialTableStatement extends FinancialStatement {
     kind: "trailing-four-quarters";
     periodEnd: string;
     sourcePeriods: Array<Pick<FinancialStatement,
-      "date" | "currency" | "dateSource" | "providerDate" | "dateEvidence" | "availableAt" | "fieldAvailability" | "fieldSources" | "unavailableFields" | "withdrawnObservations"
+      "date" | "currency" | "dateSource" | "providerDate" | "dateEvidence" | "availableAt" | "fieldAvailability" | "fieldSources" | "unavailableFields" | "withdrawnObservations" | "operatingResult"
     >>;
   };
 }
@@ -173,7 +174,7 @@ function aggregateQuarterlyStatements(
     aggregation: {
       kind: "trailing-four-quarters",
       periodEnd: statements.at(-1)!.date,
-      sourcePeriods: statements.map(({ date, currency, dateSource, providerDate, dateEvidence, availableAt, fieldAvailability, fieldSources, unavailableFields, withdrawnObservations }) => ({
+      sourcePeriods: statements.map(({ date, currency, dateSource, providerDate, dateEvidence, availableAt, fieldAvailability, fieldSources, unavailableFields, withdrawnObservations, operatingResult }) => ({
         date, currency, dateSource, providerDate,
         ...(dateEvidence ? { dateEvidence: { ...dateEvidence } } : {}),
         availableAt,
@@ -181,9 +182,11 @@ function aggregateQuarterlyStatements(
         ...(fieldSources ? { fieldSources: { ...fieldSources } } : {}),
         ...(unavailableFields ? { unavailableFields: [...unavailableFields] } : {}),
         ...(withdrawnObservations ? { withdrawnObservations: [...withdrawnObservations] } : {}),
+        ...(operatingResult ? { operatingResult: structuredClone(operatingResult) } : {}),
       })),
     },
   };
+  aggregate.operatingResultAggregation = operatingResultAggregation(statements);
   const availability: Record<string, string> = {};
   const includedFields: string[] = [];
   const retainAvailability = (key: string, sources: FinancialStatement[]) => {
@@ -192,6 +195,7 @@ function aggregateQuarterlyStatements(
     if (availableAt) availability[key] = availableAt;
   };
   for (const key of FLOW_KEYS) {
+    if (!canAggregateOperatingField(statements, key)) continue;
     const values = statements
       .map((statement) => (statement as unknown as Record<string, unknown>)[key])
       .filter((value): value is number => typeof value === "number" && Number.isFinite(value));

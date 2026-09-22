@@ -1,15 +1,20 @@
 import type { FinancialStatement } from "../types/financials";
 import { copyIncomeField, incomeFieldOwner, INCOME_STATEMENT_FIELDS, isIncomeStatementField } from "./income-statement";
 import { hasStatementWithdrawals, mergeStatementWithdrawals, redactWithdrawnStatement } from "./statement-observations";
+import { mergeStatementOperatingResult, normalizeStatementOperatingResult, reportedOperatingCohort, REPORTED_OPERATING_FIELDS } from "./operating-result";
 
 export const FINANCIAL_VINTAGE_NOTICE = "Latest available statements may include restatements. Historical as-of values are not reconstructed.";
 export const SEC_EPS_BASIS_NOTICE = "SEC EPS uses corroborated split-adjusted share bases. Unverified bases are unavailable.";
 
-const STATEMENT_METADATA_KEYS = new Set(["date", "dateSource", "providerDate", "dateEvidence", "currency", "availableAt", "fieldAvailability", "epsBasis", "fieldSources", "unavailableFields", "withdrawnObservations"]);
+const STATEMENT_METADATA_KEYS = new Set(["date", "dateSource", "providerDate", "dateEvidence", "currency", "availableAt", "fieldAvailability", "epsBasis", "fieldSources", "unavailableFields", "withdrawnObservations", "operatingResult", "operatingResultAggregation"]);
 const NEARBY_PERIOD_END_MS = 7 * 24 * 60 * 60 * 1_000;
 
 /** An explicit field map is authoritative: omitted fields have unknown availability. */
 export function statementFieldAvailability(row: FinancialStatement | undefined, field: string): string | undefined {
+  if (REPORTED_OPERATING_FIELDS.includes(field as typeof REPORTED_OPERATING_FIELDS[number])) {
+    const reported = reportedOperatingCohort(row);
+    if (reported) return reported.filed;
+  }
   const filed = isIncomeStatementField(field) ? row?.fieldSources?.[field]?.filed : undefined;
   const value = filed ?? (row?.fieldAvailability !== undefined ? row.fieldAvailability?.[field] : row?.availableAt);
   return value && Number.isFinite(Date.parse(value)) ? value : undefined;
@@ -78,6 +83,7 @@ function hasMatchingFinancialValues(left: FinancialStatement, right: FinancialSt
 
 function isVerifiedCalendarAlias(left: FinancialStatement, right: FinancialStatement): boolean {
   if (hasStatementWithdrawals(left) || hasStatementWithdrawals(right)) return false;
+  if (left.operatingResult || right.operatingResult) return false;
   if (left.date === right.date || left.date.slice(0, 7) !== right.date.slice(0, 7)) return false;
   const monthEnd = (row: FinancialStatement) => {
     const date = new Date(`${row.date}T00:00:00Z`);
@@ -115,6 +121,7 @@ function matchFallbackRow(
     .flatMap((row) => {
       if (usedFallbackRows.has(row)) return [];
       if (hasStatementWithdrawals(primary) || hasStatementWithdrawals(row)) return [];
+      if (primary.operatingResult || row.operatingResult) return [];
       const fallbackTime = statementDateTime(row);
       if (fallbackTime === null) return [];
       const distance = Math.abs(fallbackTime - primaryTime);
@@ -127,8 +134,8 @@ export function mergeFinancialStatementRows(
   primaryRows: FinancialStatement[],
   fallbackRows: FinancialStatement[],
 ): FinancialStatement[] {
-  primaryRows = coalesceFinancialPeriodAliases(primaryRows.map(redactWithdrawnStatement));
-  fallbackRows = coalesceFinancialPeriodAliases(fallbackRows.map(redactWithdrawnStatement));
+  primaryRows = coalesceFinancialPeriodAliases(primaryRows.map(row => normalizeStatementOperatingResult(redactWithdrawnStatement(row))));
+  fallbackRows = coalesceFinancialPeriodAliases(fallbackRows.map(row => normalizeStatementOperatingResult(redactWithdrawnStatement(row))));
   if (primaryRows.length === 0) return fallbackRows;
   if (fallbackRows.length === 0) return primaryRows;
 
@@ -216,6 +223,9 @@ export function mergeFinancialStatementRows(
 
     // A fallback row-level date cannot safely date a different primary value.
     // Retained fallback fields still carry their own per-field provenance.
+    mergeStatementOperatingResult(merged, row, fallback);
+    const reported = reportedOperatingCohort(merged);
+    if (reported) for (const field of REPORTED_OPERATING_FIELDS) fieldAvailability[field] = reported.filed;
     merged = redactWithdrawnStatement(merged);
     for (const key of keys) if (!hasMetricValue(merged, key)) delete fieldAvailability[key];
     const retainedMetricKeys = keys.filter((key) => hasMetricValue(merged, key));

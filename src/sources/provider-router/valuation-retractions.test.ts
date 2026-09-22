@@ -185,7 +185,7 @@ test("legacy cloud ASML valuation is retired and recovers with a marker-bearing 
       expect(fundamentals.unavailableFields).toEqual(fields);
       const corrected = { ...value, fundamentals: { financialCurrency: "EUR", unavailableFields: [...fields] } };
       cacheRouterResource(persistence.resources, "financials", key.entityKey, key.variantKey, key.sourceKey, corrected, cachePolicy);
-      expect(read().schemaVersion).toBe(9);
+      expect(read().schemaVersion).toBe(10);
       expect(read().stale).toBe(false);
       expect(read().value).toEqual(corrected);
     }
