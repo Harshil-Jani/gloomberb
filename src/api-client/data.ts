@@ -140,6 +140,11 @@ export class CloudDataApi {
     });
   }
 
+  /** EQS endpoints live in the plugin client; one prefix-scoped method keeps the shared client small. */
+  equityScreener<T>(path: string, init?: RequestInit) {
+    return this.request<T>(`/cloud/equity-screener/${path}`, init);
+  }
+
   async searchInstruments(
     query: string,
     limit = 10,
