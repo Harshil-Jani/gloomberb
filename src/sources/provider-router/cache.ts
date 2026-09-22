@@ -10,6 +10,7 @@ import { canonicalExchange, parsePublicTickerKey, resolveExchangeTimeZone } from
 import { redactUnavailableFundamentals, RETRACTABLE_VALUATION_FIELDS } from "../../utils/fundamentals";
 import { isPriceHistoryStaleForCurrentWindow } from "../../utils/price-history";
 import { brokerContractIdentityKey } from "../../utils/instrument-identity";
+import { providerFinancialsMatchTarget, providerQuoteMatchesTarget } from "./financials";
 
 const MARKET_NAMESPACE = "market";
 const FINANCIALS_SCHEMA_VERSION = 9;
@@ -176,6 +177,11 @@ export function listCachedResources<T>(
       && (kind === "financials" || kind === "quote")) {
       const requestedExchange = parsePublicTickerKey(entityKey).exchange
         || canonicalExchange(variantKeys.find((key) => /(?:^|;)exchange=/.test(key))?.match(/(?:^|;)exchange=([^;]+)/)?.[1]);
+      // Check every declared identity before stale-quote sanitation or merging
+      // can hide a conflicting symbol, metadata record or contribution.
+      if (kind === "financials"
+        ? !providerFinancialsMatchTarget(record.value as TickerFinancials, entityKey, requestedExchange)
+        : !providerQuoteMatchesTarget(record.value as Quote, entityKey, requestedExchange)) return false;
       const quote = kind === "quote" ? record.value as Quote : (record.value as TickerFinancials).quote;
       const metadata = kind === "financials" ? (record.value as TickerFinancials).quoteMetadata : undefined;
       const declaredExchange = canonicalExchange(quote?.listingExchangeName || quote?.exchangeName
