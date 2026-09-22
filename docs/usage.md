@@ -160,6 +160,7 @@ Correlation uses matching observation times when inputs have different frequenci
 | `GC [YYYY-MM-DD]` | Treasury yield curve for the latest session or a historical date; CLI also accepts `--date YYYY-MM-DD` |
 | `WIRP` / `FFIP` | Fed funds futures implied FOMC path, conditional target probabilities, SOFR contracts and Fed projections |
 | `BTMM` | Money markets: funding rates, Treasury bill curves and Federal Reserve liquidity |
+| `YAS` | Fixed-coupon bond calculator: price/yield, accrued interest, duration, convexity, DV01 and Treasury spread |
 | `AUCT` | Treasury auction results: high rate, bid-to-cover, indirect share, and size |
 | `VIX` | VIX 30-day/3-month implied-volatility curve |
 | `CRD` | Credit spreads |
@@ -182,6 +183,10 @@ transactions across years.
 The same feed is available through `gloomberb fn CG AAPL --year 2026 --json`.
 Use `--filingOffset` and `--offset` with the returned pagination metadata to read
 additional windows and trades.
+
+`YAS` opens a reactive bond form. Enter settlement, maturity, annual coupon and either yield percent or clean price per 100 face. Tab and Shift+Tab move through fields; Enter opens a selected convention or frequency, and Escape leaves editing. The Cash flows and Sensitivity tabs retain the same terms. The end-of-month control is an explicit schedule choice and requires a month-end maturity.
+
+`gloomberb fn YAS --settlement 2026-09-22 --maturity 2031-09-15 --coupon 5 --yield 4.25 --json` returns valuation, cash flows and yield shocks. Use `--price 103.333937` instead of `--yield` to solve yield, `--frequency 1|2|4`, `--day-count act-act-icma|30-360-us`, and `--end-of-month` as needed. `gloomberb shot YAS --tab valuation|cashflows|sensitivity` accepts the same inputs. Treasury data is optional; all local calculations still work when it is unavailable.
 
 `FUT` keeps each rolling quote alias as its symbol and displays the provider's contract name when available. Search also matches that name. A month in this label describes the captured quote; the app does not derive an expiry date or establish the roll-adjustment basis of the alias's historical series.
 
