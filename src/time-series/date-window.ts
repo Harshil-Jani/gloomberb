@@ -1,34 +1,31 @@
 import { TIME_RANGES, type ChartDateWindow, type TimeRange } from "./range";
+import { calendarMonthsBefore } from "../utils/calendar-date";
 
 export interface DateWindowRange extends ChartDateWindow {}
 
 export function subtractTimeRange(endDate: Date, range: TimeRange): Date {
+  // Research bounds follow source instants and UTC date keys, independently
+  // of the viewing computer's timezone and daylight-saving transitions.
   const startDate = new Date(endDate);
   switch (range) {
     case "1D":
-      startDate.setDate(startDate.getDate() - 1);
+      startDate.setUTCDate(startDate.getUTCDate() - 1);
       break;
     case "1W":
-      startDate.setDate(startDate.getDate() - 7);
+      startDate.setUTCDate(startDate.getUTCDate() - 7);
       break;
     case "1M":
-      startDate.setMonth(startDate.getMonth() - 1);
-      break;
+      return calendarMonthsBefore(endDate, 1);
     case "3M":
-      startDate.setMonth(startDate.getMonth() - 3);
-      break;
+      return calendarMonthsBefore(endDate, 3);
     case "6M":
-      startDate.setMonth(startDate.getMonth() - 6);
-      break;
+      return calendarMonthsBefore(endDate, 6);
     case "1Y":
-      startDate.setFullYear(startDate.getFullYear() - 1);
-      break;
+      return calendarMonthsBefore(endDate, 12);
     case "5Y":
-      startDate.setFullYear(startDate.getFullYear() - 5);
-      break;
+      return calendarMonthsBefore(endDate, 60);
     case "ALL":
-      startDate.setFullYear(startDate.getFullYear() - 50);
-      break;
+      return calendarMonthsBefore(endDate, 600);
   }
   return startDate;
 }

@@ -8,8 +8,10 @@ import {
 import type { PricePoint } from "../types/financials";
 
 function point(date: string, close: number): PricePoint {
-  return { date: new Date(`${date}T00:00:00Z`), close };
+  return { date: new Date(date.length === 10 ? `${date}T00:00:00Z` : date), close };
 }
+
+const horizon = (id: string) => PRICE_RETURN_HORIZONS.find((entry) => entry.id === id)!;
 
 describe("price performance", () => {
   test("computes horizon return from the closest prior baseline", () => {
@@ -51,4 +53,31 @@ describe("price performance", () => {
     expect(withQuote).toHaveLength(3);
     expect(computePriceReturnForHorizon(withQuote, oneYear)).toBeCloseTo(50 / 100);
   });
+
+  test("a month ending on a closed day uses the prior session rather than the next month's price move", () => {
+    const history = [point("2026-02-27", 100), point("2026-03-02", 120), point("2026-03-31", 150)];
+    expect(computePriceReturnForHorizon(history, horizon("1M"))).toBe(0.5);
+  });
+
+  test("an exact clamped cutoff wins over the prior session and excludes observations one millisecond later", () => {
+    const history = [
+      point("2026-02-27T15:45:12.345Z", 90), point("2026-02-28T15:45:12.345Z", 100),
+      point("2026-02-28T15:45:12.346Z", 120), point("2026-03-31T15:45:12.345Z", 150),
+    ];
+    const original = JSON.stringify(history);
+    expect(computePriceReturnForHorizon(history, horizon("1M"))).toBe(0.5);
+    expect(computePriceReturnForHorizon(JSON.parse(original), horizon("1M"))).toBe(0.5);
+    expect(JSON.stringify(history)).toBe(original);
+  });
+
+  test("post-cutoff history cannot supply a full month's return", () => {
+    const history = [point("2026-03-02", 100), point("2026-03-31", 110)];
+    expect(buildPriceReturnFields(history).find((field) => field.id === "1M")?.value).toBeNull();
+  });
+
+  test("a February 28 year boundary does not move forward to February 29 in a leap year", () => {
+    const history = [point("2024-02-28", 100), point("2024-02-29", 150), point("2025-02-28", 200)];
+    expect(computePriceReturnForHorizon(history, horizon("1Y"))).toBe(1);
+  });
+
 });

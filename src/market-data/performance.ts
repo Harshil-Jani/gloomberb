@@ -1,5 +1,6 @@
 import type { PricePoint, Quote } from "../types/financials";
 import { pricePointIntegrity } from "../utils/price-history-integrity";
+import { calendarMonthsBefore } from "../utils/calendar-date";
 
 export interface PriceReturnHorizon {
   id: string;
@@ -66,13 +67,7 @@ export function appendQuoteToPriceReturnHistory(
 }
 
 function subtractHorizon(date: Date, horizon: PriceReturnHorizon): Date {
-  const target = new Date(date);
-  if (horizon.unit === "month") {
-    target.setMonth(target.getMonth() - horizon.amount);
-  } else {
-    target.setFullYear(target.getFullYear() - horizon.amount);
-  }
-  return target;
+  return calendarMonthsBefore(date, horizon.amount * (horizon.unit === "year" ? 12 : 1));
 }
 
 export function computePriceReturnForHorizon(

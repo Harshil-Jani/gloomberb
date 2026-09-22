@@ -2,6 +2,10 @@
 
 Historical-price table CSVs retain the selected listing, requested range, UTC date convention, loading or refresh-failure status, and active integrity warnings. Their numeric values use the provider history units. This table's history contract does not supply general currency or price-basis metadata; the export does not borrow those units from a current quote or a saved holding. Use a chart report when independently sourced listing metadata is needed.
 
+Preset research ranges and return cutoffs use UTC dates and times. Changing the computer's timezone does not change the selected observations or correlation samples; source request timestamps still use the source's required exchange timezone.
+
+Finite month/year ranges preserve the UTC time and clamp dates absent from the target month: March 31 minus one month reaches February 28, or February 29 in a leap year. Price returns use the latest observation on or before that cutoff; history beginning after it cannot supply the requested return.
+
 [User guide](usage.md) · [Price comparisons](price-comparisons.md) · [Economic statistics](economics-reference.md) · [Market valuation](valuation-reference.md)
 
 This reference describes how the terminal calculates and labels research data. Pane bodies show data, units, source dates and blocking failures; recurring methodology belongs here. Active data limitations appear as an amber warning indicator in the existing pane footer. Click it or press `!` in the focused pane to read the details; Escape or Close returns to the research view. The indicator disappears when its warnings clear. Headless reports and shared chart metadata retain source details and limitations.
@@ -25,6 +29,8 @@ Financial series use their selected date basis. When publication dates are missi
 Bond history currently has no source-declared price convention. Charts retain its raw observations with unknown price units and do not append a current bond quote: that quote's per-unit or percent-of-par declaration does not establish the basis of a separate historical series. Overview price returns also use the historical observations without appending that quote. A numeric ratio between a quote and an old close cannot establish compatible units. Historical values and current source quotes remain separate; this does not add bond historical coverage or reconstruct yield.
 
 Local chart snapshots retain the full selected instrument with its captured quote and history, including multiple contracts that share one public symbol. Reconstruction uses only observations captured for that exact contract; older public-symbol snapshots remain usable for public listings. A missing contract capture may be loaded from the corresponding market source, but another contract’s capture does not supply it.
+
+Intraday chart captures retain the earlier observations used to calculate studies separately from the visible session. Replaying an authored chart window uses that captured calculation history without adding later prices. Older captures without this buffer can leave studies unavailable when they lack enough observations.
 
 Historical price charts retain explicit listing currency and instrument type independently of a current quote. A rejected stale quote can supply those static facts, with its original source timestamp and stale flag in exported `quoteMetadata`; it cannot add a price observation or daily change. Snapshot reloads retain those facts without a live lookup. When optional enrichment supplies a missing field, `fieldSources` preserves that field's separate provenance. Missing or mismatched metadata remains unknown; no currency, FX conversion, or share/contract basis is inferred from a price's magnitude.
 
