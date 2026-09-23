@@ -12,11 +12,13 @@ import {
 } from "./test-support";
 
 const originalConsoleError = console.error;
+const originalDateNow = Date.now;
 
 useRegularMarketSession();
 
 afterEach(() => {
   console.error = originalConsoleError;
+  Date.now = originalDateNow;
   cleanupProviderRouterTestFiles();
 });
 
@@ -173,6 +175,45 @@ describe("AssetDataRouter chart history", () => {
       await router.getPriceHistory("MSFT", "NASDAQ", "3M");
       expect((await router.getPriceHistory("MSFT", "NASDAQ", "1M")).length).toBeGreaterThan(20);
       expect(calls).toEqual(["5Y", "1M", "3M"]);
+    } finally { persistence.close(); }
+  });
+
+  test("a 1D answer from a broader cached range keeps only the latest session", async () => {
+    Date.now = () => Date.parse("2026-09-15T14:00:00Z");
+    const persistence = new AppPersistence(createTempDbPath("latest-session-cache"));
+    const FIVE_MIN = 300_000;
+    const session = (open: string, count: number) => Array.from({ length: count }, (_, index) =>
+      ({ date: new Date(Date.parse(open) + index * FIVE_MIN), close: 100 + index, volume: 1_000 }));
+    const calls: string[] = [];
+    const provider: DataProvider = { ...fallbackProvider, id: "gloomberb-cloud", name: "Cloud",
+      async getPriceHistory(_symbol, _exchange, range) {
+        calls.push(range);
+        return [...session("2026-09-14T13:30:00Z", 78), ...session("2026-09-15T13:30:00Z", 6)];
+      } };
+    try {
+      const router = new AssetDataRouter(provider, [], persistence.resources);
+      await router.getPriceHistory("QQQ", "", "1W");
+      const day = await router.getPriceHistory("QQQ", "", "1D");
+      expect(calls).toEqual(["1W"]);
+      expect(day.map((point) => new Date(point.date).toISOString().slice(0, 10))).toEqual(Array(6).fill("2026-09-15"));
+    } finally { persistence.close(); }
+  });
+
+  test("a thin listing's quiet hours within one session are not a session break", async () => {
+    Date.now = () => Date.parse("2026-09-15T18:00:00Z");
+    const persistence = new AppPersistence(createTempDbPath("quiet-session-cache"));
+    const FIVE_MIN = 300_000;
+    const bars = (open: string, count: number) => Array.from({ length: count }, (_, index) =>
+      ({ date: new Date(Date.parse(open) + index * FIVE_MIN), close: 1 + index / 100, volume: 100 }));
+    // Nothing trades between 09:40 and 13:00 New York time.
+    const today = [...bars("2026-09-15T13:30:00Z", 2), ...bars("2026-09-15T17:00:00Z", 12)];
+    const provider: DataProvider = { ...fallbackProvider, id: "gloomberb-cloud", name: "Cloud",
+      async getPriceHistory() { return [...bars("2026-09-14T13:30:00Z", 78), ...today]; } };
+    try {
+      const router = new AssetDataRouter(provider, [], persistence.resources);
+      await router.getPriceHistory("THIN", "NASDAQ", "1W");
+      const day = await router.getPriceHistory("THIN", "NASDAQ", "1D");
+      expect(day.map((point) => new Date(point.date).toISOString())).toEqual(today.map((bar) => bar.date.toISOString()));
     } finally { persistence.close(); }
   });
 
