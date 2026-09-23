@@ -20,8 +20,8 @@ import { loadStoredSurface, loadSurfaceDates } from "../iv-history/client";
 import { formatIvRank, useIvRank } from "../iv-history/rank";
 import { storedSurfaceSnapshot, type DatedSurfaceSnapshot } from "./stored";
 import { useVolSurfaceEvidence } from "./evidence";
-import { buildSurfaceGrid, DEFAULT_SURFACE_SETTINGS, windowSurfaceGrid, type SurfaceExpiry, type SurfaceGridRow,
-  type SurfaceSettings, type SurfaceSnapshot } from "./model";
+import { buildSurfaceGrid, DEFAULT_SURFACE_SETTINGS, SURFACE_3D_DELTAS, windowSurfaceGrid, type SurfaceExpiry, type SurfaceGridRow,
+  surfaceSheetSnapshot, surfaceSheetTenors, type SurfaceSettings, type SurfaceSnapshot } from "./model";
 import { DEFAULT_SURFACE_CAMERA, rotateSurfaceCamera, zoomSurfaceCamera, type SurfaceCamera } from "./raster";
 import { VolatilitySurface } from "./surface";
 import { expiryLabel, formatIv, formatPrice, SmileChart, TermChart } from "./charts";
@@ -56,7 +56,12 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
   const [requestedExpiration, setRequestedExpiration] = useState(expiration);
   const expirationRef = useRef(expiration);
   expirationRef.current = expiration;
-  const [surfaceCoordinate, setSurfaceCoordinate] = usePluginPaneState("surfaceCoordinate", 1);
+  const [surfaceAxis, setSurfaceAxis] = usePaneSettingValue<"delta" | "moneyness">("surfaceAxis", "delta");
+  const deltaSurface = surfaceAxis !== "moneyness";
+  const [surfaceMoneyness, setSurfaceMoneyness] = usePluginPaneState("surfaceCoordinate", 1);
+  const [surfaceDelta, setSurfaceDelta] = usePluginPaneState("surfaceDelta", 0);
+  const surfaceCoordinate = deltaSurface ? surfaceDelta : surfaceMoneyness;
+  const setSurfaceCoordinate = deltaSurface ? setSurfaceDelta : setSurfaceMoneyness;
   const [coordinate, setCoordinate] = usePluginPaneState("coordinate", 1);
   const [limit, setLimit] = usePluginPaneState("expiryLimit", 18);
   const [camera, setCamera] = usePluginPaneState<SurfaceCamera>("camera", DEFAULT_SURFACE_CAMERA);
@@ -117,8 +122,21 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
     setRequestedExpiration(expiration);
   }, [expiration, requestedExpiration, resource.loading, snapshot]);
   const grid = useMemo(() => snapshot ? buildSurfaceGrid(snapshot, { axis, tenors }) : null, [axis, snapshot, tenors]);
-  const denseGrid = useMemo(() => snapshot ? windowSurfaceGrid(buildSurfaceGrid(snapshot, { axis: "forward", tenors: "listed",
-    coordinates: Array.from({ length: 41 }, (_, i) => 0.8 + i * 0.01) }), snapshot) : null, [snapshot]);
+  // Delta columns give every expiry the same quoted wing span, so the 3D
+  // surface is a full sheet; moneyness keeps each row within 2.5 ATM sigmas.
+  const sheet = useMemo(() => snapshot ? surfaceSheetSnapshot(snapshot) : null, [snapshot]);
+  // Constant maturities, interpolated in total variance, keep a near-dated
+  // event from folding the sheet into walls between listed weeklies.
+  const sheetTenors = useMemo(() => sheet && deltaSurface ? surfaceSheetTenors(sheet.snapshot) : null, [sheet, deltaSurface]);
+  const denseGrid = useMemo(() => !sheet ? null : deltaSurface
+    ? { ...buildSurfaceGrid(sheet.snapshot, sheetTenors
+      ? { axis: "delta", tenors: "fixed", fixedTenors: sheetTenors, coordinates: SURFACE_3D_DELTAS }
+      : { axis: "delta", tenors: "listed", coordinates: SURFACE_3D_DELTAS }), axis: "delta" as const }
+    : { ...windowSurfaceGrid(buildSurfaceGrid(sheet.snapshot, { axis: "forward", tenors: "listed",
+      coordinates: Array.from({ length: 41 }, (_, i) => 0.8 + i * 0.01) }), sheet.snapshot), axis: "moneyness" as const }, [sheet, deltaSurface, sheetTenors]);
+  // Sheet rows may be constant maturities: pair them with the nearest listed expiry.
+  const nearestRow = (years: number | undefined) => years == null || !denseGrid?.tenors.length ? -1
+    : denseGrid.tenors.reduce((best, value, index) => Math.abs(value - years) < Math.abs(denseGrid.tenors[best]! - years) ? index : best, 0);
   // A one-day front expiry is the noisiest smile on the board; the default
   // selection is the first expiry at least four weeks out.
   const defaultExpiry = snapshot?.expiries.find((entry) => entry.years * 365 >= DEFAULT_EXPIRY_MIN_DAYS) ?? snapshot?.expiries[0];
@@ -133,13 +151,13 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
     });
   }, [createPaneFromTemplate, expiration, selectedExpiry?.expiration, snapshot?.symbol, symbol, ticker, target?.instrument]);
   useVolSurfaceEvidence({ snapshot, view: activeTab, grid: activeTab === "surface" && bitmapAvailable ? denseGrid : grid,
-    selectedExpiry, loading: active.loading, bitmapAvailable, axis: activeTab === "surface" && bitmapAvailable ? "forward" : axis,
+    selectedExpiry, loading: active.loading, bitmapAvailable, axis: activeTab === "surface" && bitmapAvailable ? (deltaSurface ? "delta" : "forward") : axis,
     tenors: activeTab === "surface" && bitmapAvailable ? "listed" : tenors, overlaySmiles });
   const tableSelectedRow = grid?.rows.find((row) => tenors === "fixed"
     ? row.years === (fixedYears ?? grid.rows[0]?.years) : row.expiration === selectedExpiry?.expiration) ?? null;
   const nearestIndex = (row: SurfaceGridRow | null, value: number) => row?.cells.reduce((best, cell, index) =>
     Math.abs(cell.coordinate - value) < Math.abs(row.cells[best]!.coordinate - value) ? index : best, 0) ?? 0;
-  const denseSelectedRow = denseGrid?.rows.find((row) => row.expiration === selectedExpiry?.expiration) ?? null;
+  const denseSelectedRow = denseGrid?.rows[nearestRow(selectedExpiry?.years)] ?? null;
   const selectedRow = activeTab === "surface" && bitmapAvailable ? denseSelectedRow : tableSelectedRow;
   const cellIndex = nearestIndex(selectedRow, activeTab === "surface" && bitmapAvailable ? surfaceCoordinate : coordinate);
   const tableCellIndex = nearestIndex(tableSelectedRow, coordinate);
@@ -190,6 +208,7 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
     else if (key === "[") nextExpiry(-1);
     else if (key === "]") nextExpiry(1);
     else if (key === "c" && snapshot) openChain();
+    else if (key === "d" && activeTab === "surface" && bitmapAvailable) setSurfaceAxis(deltaSurface ? "moneyness" : "delta");
     else if (activeTab === "surface" && bitmapAvailable && ["left", "right", "up", "down", "h", "j", "k", "l", "+", "=", "-", "0"].includes(key ?? "")) {
       setCamera((value) => key === "0" ? DEFAULT_SURFACE_CAMERA : ["+", "=", "-"].includes(key!)
         ? zoomSurfaceCamera(value, key === "-" ? 1 / 1.08 : 1.08)
@@ -204,6 +223,7 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
   useShortcut((event) => { if (focused && !["table", "skew", "forwards"].includes(activeTab) && !(activeTab === "surface" && !bitmapAvailable)) handleKey(event); });
   const failures = snapshot?.failures.map((failure) => `${failure.expiration ? expiryLabel(failure.expiration) : "Catalogue"}: ${failure.message}`) ?? [];
   const notices = [...(snapshot?.warnings ?? []), ...failures,
+    ...(activeTab === "surface" && sheet?.omitted.length ? [`3D sheet omits ${sheet.omitted.map((entry) => expiryLabel(entry.expiration)).join(", ")}: smile fit fell back to interpolation (shown in Table)`] : []),
     ...(snapshot?.expiries.flatMap((entry) => entry.warnings.map((warning) => `${expiryLabel(entry.expiration)}: ${warning}`)) ?? []),
     ...(!spotAvailable && symbol && !historyDate ? ["Underlying price unavailable or stale"] : []),
     ...(historyDate && !stored.loading && !stored.data && !stored.error ? [`No stored ${underlying} surface for ${historyDate}`] : []),
@@ -228,10 +248,12 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
       ...(snapshot ? [{ id: "chain", key: "c", label: "hain", onPress: openChain }] : []),
       ...(selectedCell?.volatility ? [{ id: "pricer", key: "p", label: "rice", onPress: openPricer }] : []),
       ...(canLoadMore ? [{ id: "more", key: "m", label: "ore expiries", onPress: loadMore }] : []),
-      ...(activeTab === "surface" && bitmapAvailable ? [{ id: "reset", key: "0", label: "reset view", onPress: () => setCamera(DEFAULT_SURFACE_CAMERA) }] : []),
+      ...(activeTab === "surface" && bitmapAvailable ? [
+        { id: "axis", key: "d", label: deltaSurface ? "moneyness axis" : "delta axis", onPress: () => setSurfaceAxis(deltaSurface ? "moneyness" : "delta") },
+        { id: "reset", key: "0", label: "reset view", onPress: () => setCamera(DEFAULT_SURFACE_CAMERA) }] : []),
       ...(storedDates.length ? [{ id: "history", key: "t", label: historyDate ? " live" : " stored dates", onPress: toggleHistory }] : []),
     ],
-  }), [snapshot, active.loading, historyDate, storedDates, selectedExpiry, activeTab, selectedCell, canLoadMore, camera, bitmapAvailable, arbitrageWarnings, openChain]);
+  }), [snapshot, active.loading, historyDate, storedDates, selectedExpiry, activeTab, selectedCell, canLoadMore, camera, bitmapAvailable, arbitrageWarnings, openChain, deltaSurface]);
   const exportMetadata = () => [["method", ...(snapshot?.stored ? ["recomputed", "mid", `stored close ${snapshot.stored.sessionDate}`, snapshot.stored.capturedAt] : [ivSource, priceSide])], ["filters", JSON.stringify(snapshot?.settings)],
     ["underlying", snapshot?.symbol, snapshot?.spot], ["rate source", "Treasury", snapshot?.rateAsOf],
     ["warnings", ...notices], ...(snapshot?.expiries.map((expiry) => ["expiry", expiryLabel(expiry.expiration), expiry.asOf,
@@ -261,13 +283,15 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
     message={`${liveQuotes.zeroBid === liveQuotes.contracts ? "All" : `${liveQuotes.zeroBid.toLocaleString()} of`} ${liveQuotes.contracts.toLocaleString()} contracts across ${liveQuotes.expiries} expiries have a zero bid${liveQuotes.zeroBid === liveQuotes.contracts ? "" : ", and none of the rest passes the quote filters"}. The delayed feed publishes zero bids outside regular hours (09:30 to 16:00 New York); the surface fills in when quotes return.`} />
     : activeTab === "surface" && denseGrid ? <VolatilitySurface width={width} height={tableHeight}
     grid={denseGrid} camera={camera} onCameraChange={setCamera} selected={{
-      tenorIndex: denseGrid.tenors.findIndex((years) => years === selectedExpiry?.years),
-      moneynessIndex: selectedCell?.strike && selectedExpiry?.forward
-        ? denseGrid.moneyness.reduce((best, value, index) => Math.abs(value - selectedCell.strike! / selectedExpiry.forward!) < Math.abs(denseGrid.moneyness[best]! - selectedCell.strike! / selectedExpiry.forward!) ? index : best, 0) : 20,
+      tenorIndex: nearestRow(selectedExpiry?.years),
+      moneynessIndex: denseGrid.moneyness.reduce((best, value, index) =>
+        Math.abs(value - surfaceCoordinate) < Math.abs(denseGrid.moneyness[best]! - surfaceCoordinate) ? index : best, 0),
     }} onSelect={(selection) => {
-      const expiry = snapshot?.expiries.find((entry) => entry.years === denseGrid.tenors[selection.tenorIndex]);
+      const years = denseGrid.tenors[selection.tenorIndex];
+      const expiry = years == null ? undefined : snapshot?.expiries.filter((entry) => entry.points.length)
+        .reduce<SurfaceExpiry | undefined>((best, entry) => !best || Math.abs(entry.years - years) < Math.abs(best.years - years) ? entry : best, undefined);
       if (expiry) setExpiration(expiry.expiration);
-      setSurfaceCoordinate(denseGrid.moneyness[selection.moneynessIndex] ?? 1);
+      setSurfaceCoordinate(denseGrid.moneyness[selection.moneynessIndex] ?? (deltaSurface ? 0 : 1));
     }} fallback={table} /> : activeTab === "smile" && snapshot ? <SmileChart snapshot={snapshot} expiry={selectedExpiry}
       overlay={overlaySmiles} axis={axis} width={width} height={tableHeight} />
       : activeTab === "term" && snapshot ? <TermChart snapshot={snapshot} width={width} height={tableHeight} />
@@ -290,7 +314,7 @@ export function VolSurfacePane({ focused, width, height }: PaneProps) {
       {content}
       <Box height={1} paddingX={1} overflow="hidden"><Text fg={colors.textDim}>{selectedCell?.point
         ? `Nearest ${selectedCell.point.contract.contractSymbol} · mid ${formatPrice(selectedCell.point.mid)} · spread ${formatPrice(selectedCell.point.spread)} · OI ${selectedCell.point.openInterest} · residual ${formatIv(selectedCell.fitResidual)}`
-        : selectedCell?.volatility != null ? `${selectedRow?.label} · K ${selectedCell.strike == null ? "--" : formatStrikeLabel(selectedCell.strike)} · fitted IV ${formatIv(selectedCell.volatility)}` : "No clean quoted cell selected"}</Text></Box>
+        : selectedCell?.volatility != null ? `${selectedRow?.label} · K ${selectedCell.strike == null ? "--" : formatPrice(selectedCell.strike)} · fitted IV ${formatIv(selectedCell.volatility)}` : "No clean quoted cell selected"}</Text></Box>
     </PaneStatusBody>}
   </Box>;
 }
