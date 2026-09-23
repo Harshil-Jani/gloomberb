@@ -20,6 +20,7 @@ import {
   CSS_TEXT_BRIGHT,
   CSS_TEXT_DIM,
   TABLE_INLINE_PADDING_PX,
+  tableHeaderPx,
   cellTextStyle,
   clippedCellTextStyle,
   eventWithCellCoordinates,
@@ -105,7 +106,7 @@ export function WebDataTableHeader<C extends DataTableColumn>({
         alignItems: "center",
         width: "100%",
         minWidth: 0,
-        height: WEB_CELL_HEIGHT,
+        height: tableHeaderPx(),
         paddingLeft: inlinePaddingPx(horizontalPadding),
         paddingRight: inlinePaddingPx(horizontalPadding),
         boxSizing: "border-box",
@@ -131,7 +132,7 @@ export function WebDataTableHeader<C extends DataTableColumn>({
               paddingLeft: columnIndex > 0 ? insets[columnIndex] : undefined,
               paddingRight: headerTouchesNext(columns, columnIndex, text) ? WEB_CELL_WIDTH : undefined,
               boxSizing: "border-box",
-              height: WEB_CELL_HEIGHT,
+              height: tableHeaderPx(),
               overflow: "hidden",
               backgroundColor: column.headerBackgroundColor ?? CSS_PANEL,
               boxShadow: freezeFirstColumn && columnIndex === 0 ? `-${inlinePaddingPx(horizontalPadding)}px 0 0 ${column.headerBackgroundColor ?? CSS_PANEL}, ${columnGap * WEB_CELL_WIDTH}px 0 0 ${column.headerBackgroundColor ?? CSS_PANEL}` : undefined,
@@ -151,6 +152,9 @@ export function WebDataTableHeader<C extends DataTableColumn>({
                   isSorted ? CSS_TEXT : column.headerColor ?? CSS_TEXT_DIM,
                   TextAttributes.BOLD,
                 ),
+                // Fill the chrome-height header row so labels sit on its
+                // centre line like the pane header and query bar above.
+                lineHeight: `${tableHeaderPx()}px`,
                 whiteSpace: "pre",
               }}
             >
