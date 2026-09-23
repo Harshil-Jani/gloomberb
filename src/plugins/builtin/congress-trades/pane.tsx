@@ -77,6 +77,7 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
   const mineTickers = useMineTickers();
   const [mine, setMine] = usePluginPaneState(`${statePrefix}mine`, false);
   const [filters, setFilters] = usePluginPaneState<CongressFilters>(`${statePrefix}filters`, {});
+  const chamberControl = useRef<SelectControl | null>(null);
   const sideControl = useRef<SelectControl | null>(null);
   const ownerControl = useRef<SelectControl | null>(null);
   const assetControl = useRef<SelectControl | null>(null);
@@ -104,6 +105,7 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
     direction: "desc",
   });
   const fetchGenRef = useRef(0);
+  const openFiltersRef = useRef<() => Promise<void>>(async () => {});
   const pageBusy = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -118,6 +120,7 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
     pageBusy.current = false;
     loadCongressHouse({
       ...filters,
+      chamber: filters.chamber ?? "all",
       limit: CONGRESS_TRADE_LIMIT,
       filingLimit: CONGRESS_FILING_LIMIT,
       refresh,
@@ -145,6 +148,7 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
     setLoadingMore(true);
     loadCongressHouse({
       ...filters,
+      chamber: filters.chamber ?? "all",
       ...request,
       limit: CONGRESS_TRADE_LIMIT,
       filingLimit: CONGRESS_FILING_LIMIT,
@@ -204,6 +208,8 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
       event.preventDefault?.(); event.stopPropagation?.(); setDetailMode(null); return;
     }
     if (!payload && isPlainKey(event, "r")) { event.preventDefault?.(); event.stopPropagation?.(); refresh(); }
+    // Without a table there is no row handler, and a failing filter must stay changeable.
+    if (!payload && isPlainKey(event, "f")) { event.preventDefault?.(); event.stopPropagation?.(); void openFiltersRef.current(); }
   }, { phase: "before" });
   useAutoRefresh(lastLoadedAt, refresh);
 
@@ -332,13 +338,14 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
   const openFilters = useCallback(async () => {
     const choice = await dialog.prompt<string>({
       content: (ctx: PromptContext<string>) => <ChoiceDialog {...ctx} title="Filter trades" choices={[
-        { id: "side", label: "Side" }, { id: "owner", label: "Owner" },
+        { id: "chamber", label: "Chamber" }, { id: "side", label: "Side" }, { id: "owner", label: "Owner" },
         { id: "asset", label: "Asset type" }, { id: "amount", label: "Minimum amount" },
       ]} />,
     });
-    const control = choice === "side" ? sideControl : choice === "owner" ? ownerControl : choice === "asset" ? assetControl : choice === "amount" ? amountControl : null;
+    const control = choice === "chamber" ? chamberControl : choice === "side" ? sideControl : choice === "owner" ? ownerControl : choice === "asset" ? assetControl : choice === "amount" ? amountControl : null;
     control?.current?.open();
   }, [dialog]);
+  openFiltersRef.current = openFilters;
   const handleFiltersKey = (event: DataTableKeyEvent) => {
     if (isPlainKey(event, "f") || isPlainKey(event, "i")) {
       event.preventDefault?.(); event.stopPropagation?.();
@@ -352,7 +359,7 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
     { id: "mine", key: "i", label: mine ? "all tickers" : "mine", onPress: () => setMine(!mine) },
   ] : [] }), [detailMode, mine, setMine, openFilters]);
   const filterBar = <CongressFilterBar filters={filters} onChange={setFilters} mine={mine} onMine={setMine} width={width}
-    controls={{ side: sideControl, owner: ownerControl, assetType: assetControl, minAmount: amountControl }} />;
+    controls={{ chamber: chamberControl, side: sideControl, owner: ownerControl, assetType: assetControl, minAmount: amountControl }} />;
   const filterHeight = width < 100 ? 2 : 1;
 
   const detailContent = detailMode?.kind === "ticker" ? (
@@ -395,7 +402,12 @@ export function CongressTradesPane({ focused, width, height, tickerFilter }: Pan
     return (
       <Box flexDirection="column" width={width} height={height}>
         {tabs}
-        <PaneStatusBody loading={status === "loading"} error={error} subject="House PTR filings" />
+        {filterBar}
+        <PaneStatusBody
+          loading={status === "loading"}
+          error={error}
+          subject={filters.chamber === "senate" ? "Senate PTR filings" : filters.chamber === "house" ? "House PTR filings" : "Congress PTR filings"}
+        />
       </Box>
     );
   }
