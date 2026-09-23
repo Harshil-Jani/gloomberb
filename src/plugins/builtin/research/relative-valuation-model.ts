@@ -1,6 +1,6 @@
 import { comparablePriceEarnings } from "../../../utils/price-earnings";
 import { selectMarketCapitalization } from "../../../utils/market-capitalization";
-import type { TickerFinancials } from "../../../types/financials";
+import type { Quote, TickerFinancials } from "../../../types/financials";
 export { convertMarketCapitalization as comparableMarketCap } from "../../../utils/market-capitalization";
 
 export const RELATIVE_VALUATION_STALE_QUOTE_NOTICE = "Quote stale: quote-based values unavailable";
@@ -50,5 +50,53 @@ export function relativeValuationValues(financials: TickerFinancials | null) {
       ? fundamentals.freeCashFlow / capitalization.value : null,
     revenueGrowth: fundamentals?.revenueGrowth ?? fundamentals?.lastQuarterGrowth ?? null,
     operatingMargin: fundamentals?.operatingMargin ?? null,
+  };
+}
+
+function scaled(value: number | undefined, ratio: number): number | undefined {
+  return value != null && Number.isFinite(value) ? value * ratio : value;
+}
+
+/**
+ * The snapshot with a newer quote laid over it. Fundamentals stay from the
+ * snapshot. Values measured against the price move by live price / snapshot
+ * price, but only from a price they were measured at: the quote's market cap
+ * (and through it the FCF yield) when the snapshot quote is not stale, and the
+ * P/E multiples and the fundamentals' cap when the fundamentals are not stale
+ * either. A stale snapshot quote drops its cap, so the row falls back to the
+ * fundamentals' cap as it would without the live quote. EV/Sales stays at the
+ * snapshot: only its equity part moves with the price, and the snapshot does
+ * not say how large that part is. A quote in another currency, or a stale one,
+ * leaves the snapshot alone.
+ */
+export function withLiveQuote(financials: TickerFinancials | null, live: Quote | null | undefined): TickerFinancials | null {
+  const base = financials?.quote;
+  if (!financials || !base || !live || live === base || live.stale) return financials;
+  if (!live.currency || live.currency !== base.currency) return financials;
+  if (!(live.price > 0) || !Number.isFinite(live.price)) return financials;
+  if (live.lastUpdated < base.lastUpdated) return financials;
+  const quote: Quote = {
+    ...base,
+    price: live.price,
+    change: live.change,
+    changePercent: live.changePercent,
+    lastUpdated: live.lastUpdated,
+    stale: live.stale,
+    ...(live.dataSource ? { dataSource: live.dataSource } : {}),
+  };
+  if (base.stale || !(base.price > 0)) {
+    return { ...financials, quote: { ...quote, marketCap: undefined } };
+  }
+  const ratio = live.price / base.price;
+  const fundamentals = financials.fundamentals;
+  return {
+    ...financials,
+    quote: { ...quote, marketCap: scaled(base.marketCap, ratio) },
+    fundamentals: fundamentals && fundamentals.stale !== true ? {
+      ...fundamentals,
+      trailingPE: scaled(fundamentals.trailingPE, ratio),
+      forwardPE: scaled(fundamentals.forwardPE, ratio),
+      marketCap: fundamentals.marketCapCurrency === live.currency ? scaled(fundamentals.marketCap, ratio) : fundamentals.marketCap,
+    } : fundamentals,
   };
 }
