@@ -7,9 +7,10 @@ import { HISTORY_RETENTION_MAX_AGE_MS, canonicalHistoryInterval, isHistoryRetent
 import { getRouterEntityKey } from "../sources/provider-router/cache";
 import { publicListingTarget } from "../sources/listing-target";
 import { fetchHistoryResult } from "../sources/history-result";
-import type { PriceHistoryResult } from "../types/price-history";
+import type { HistorySession, PriceHistoryResult } from "../types/price-history";
 import { FINANCIAL_VINTAGE_NOTICE, SEC_EPS_BASIS_NOTICE } from "../utils/financial-statements";
 import { appendLiveQuotePoint, hasUnknownBondHistoryBasis } from "./chart-data";
+import { LiveBarAccumulator } from "./live-bars";
 import {
   getTimeRangeForDateWindow,
   isDateWindowWithinTimeRange,
@@ -102,6 +103,11 @@ export interface ChartResolveSources {
   now?: Date;
   /** Latest streamed quote per security identity, layered over snapshot data. */
   quoteOverrides?: ReadonlyMap<string, Quote>;
+  /**
+   * Start of the current uninterrupted quote observation. Bars formed from
+   * quotes inside it are continuous with the loaded history.
+   */
+  liveSince?: number;
   /** Capture the resolved inputs, including the calculation buffer, for an export. */
   onSecurityData?: (series: ChartSeriesSpec, data: TickerFinancials, includesHistory: boolean) => void;
   /** Provider-neutral boundary for plugin-owned chart series. */
@@ -130,6 +136,16 @@ export interface ChartResolveOptions {
   onResolutionSupportSettled?: () => void;
 }
 
+/** A current-window intraday history whose newest bars can be refreshed in place. */
+interface LiveTailRequest {
+  source: Extract<ChartSeriesSpec["source"], { kind: "security" }>;
+  resolution: ManualChartResolution;
+  accumulationKey: string;
+}
+
+/** Recent-window requests for the same history, shared by every chart asking at once. */
+const tailRequestsInFlight = new WeakMap<DataProvider, Map<string, Promise<PriceHistoryResult | null>>>();
+
 /** Raw source data retained while live quotes recompute the chart tail. */
 export class ChartResolveCache {
   readonly financialsByInstrument = new Map<string, Promise<TickerFinancials | null>>();
@@ -143,6 +159,40 @@ export class ChartResolveCache {
   readonly rejectedResolutionSupport = new Set<string>();
   readonly fredSeriesByRequest = new Map<string, Promise<FredSeriesLoadResult>>();
   readonly capabilitySeriesByRequest = new Map<string, Promise<ResolvedSeries>>();
+  /** Forming bars per accumulated history, kept across live re-resolves. */
+  readonly liveBars = new Map<string, LiveBarAccumulator>();
+  /** The loaded history each accumulated history last merged, so an unchanged load is not merged again. */
+  readonly accumulatedFrom = new Map<string, LoadedPriceHistory>();
+  /** Histories plotted by the latest resolve that follow the present. */
+  liveTails: ReadonlyMap<string, LiveTailRequest> = new Map();
+  tailReconcile: Promise<boolean> | null = null;
+  /**
+   * Bumped whenever source data enters the cache. A resolve that ran without a
+   * bump changed at most what the quotes change: the newest points.
+   */
+  revision = 0;
+
+  /** Broker history endpoints are paced per account, so their recent windows are requested less often. */
+  get liveTailsUseBroker(): boolean {
+    for (const tail of this.liveTails.values()) if (requestContext(tail.source).brokerId) return true;
+    return false;
+  }
+
+  liveBarsFor(accumulationKey: string): LiveBarAccumulator {
+    let bars = this.liveBars.get(accumulationKey);
+    if (!bars) {
+      bars = new LiveBarAccumulator();
+      this.liveBars.set(accumulationKey, bars);
+    }
+    return bars;
+  }
+
+  /** True once after a streamed quote met a gap between the loaded history and now. */
+  takeTailReconcileRequest(): boolean {
+    let requested = false;
+    for (const bars of this.liveBars.values()) requested = bars.takeReconcileRequest() || requested;
+    return requested;
+  }
 }
 
 interface DateBounds {
@@ -166,6 +216,7 @@ interface PriceHistoryRequest {
 interface LoadedPriceHistory extends PriceHistoryResult {
   expiresAt?: number;
   requestKey?: string;
+  accumulationKey?: string | null;
   recovery?: {
     sourceKey: string;
     start: number;
@@ -610,6 +661,10 @@ export function mergePriceHistoryWindows(
     sorted = [];
     let currentIndex = 0;
     let incomingIndex = 0;
+    // An intraday point strictly inside a later window's bar is that window's
+    // earlier observation of it, such as a trade-time final print.
+    const step = isIntradayResolution(resolution) ? CHART_RESOLUTION_STEP_MS[resolution] : 0;
+    let coveredUntil = Number.NEGATIVE_INFINITY;
     const append = (
       point: TickerFinancials["priceHistory"][number],
       timestamp: number,
@@ -630,10 +685,13 @@ export function mergePriceHistoryWindows(
       } else if (incomingPoint && !Number.isFinite(incomingTimestamp)) {
         incomingIndex += 1;
       } else if (currentPoint && currentTimestamp <= incomingTimestamp) {
-        append(currentPoint, currentTimestamp);
+        if (!(incomingPoint && currentTimestamp < incomingTimestamp && currentTimestamp < coveredUntil)) {
+          append(currentPoint, currentTimestamp);
+        }
         currentIndex += 1;
       } else if (incomingPoint) {
         append(incomingPoint, incomingTimestamp);
+        if (step) coveredUntil = incomingTimestamp + step;
         incomingIndex += 1;
       }
     }
@@ -701,13 +759,19 @@ function mergeHistory(
   exchange?: string,
   appendQuote = true,
   assetCategory?: string,
+  live?: { bars: LiveBarAccumulator; since?: number; session?: HistorySession },
 ): TickerFinancials {
   const base = financials ?? emptyFinancials();
   const quote = latestQuote(base.quote, quoteOverride);
   const unknownHistoryBasis = hasUnknownBondHistoryBasis(quote, assetCategory, base.quoteMetadata?.instrumentType);
-  const priceHistory = appendQuote && !unknownHistoryBasis ? appendLiveQuotePoint(history, quote, liveBarResolution
-    ? { now, mode: "ohlc", resolution: liveBarResolution, exchange }
-    : { now }) : history;
+  if (!appendQuote || unknownHistoryBasis) return { ...base, quote, priceHistory: history };
+  // Market bars fold every observed quote into the forming bar; other series
+  // price their latest point from the current quote alone.
+  const priceHistory = live && liveBarResolution
+    ? live.bars.apply(history, quote, { now, resolution: liveBarResolution, exchange, liveSince: live.since, session: live.session })
+    : appendLiveQuotePoint(history, quote, liveBarResolution
+      ? { now, mode: "ohlc", resolution: liveBarResolution, exchange }
+      : { now });
   return { ...base, quote, priceHistory };
 }
 
@@ -1152,6 +1216,7 @@ export async function resolveChartSpecData(
 
   const resolutionStartedAt = Date.now();
   const referenceNow = sources.now ?? new Date(resolutionStartedAt);
+  const liveTails = new Map<string, LiveTailRequest>();
   const comparedSeriesIds = new Set(priceComparisonSeriesIds(spec) ?? []);
   const initialVisibleBounds = requestedBounds(spec, referenceNow);
 
@@ -1181,6 +1246,7 @@ export async function resolveChartSpecData(
         })
         .catch(() => { cache.financialsByInstrument.delete(key); return null; });
       cache.financialsByInstrument.set(key, pending);
+      cache.revision += 1;
     }
     return pending;
   };
@@ -1196,6 +1262,7 @@ export async function resolveChartSpecData(
         .then((metadata) => { if (!metadata) cache.quoteMetadataByInstrument.delete(key); return metadata; })
         .catch(() => { cache.quoteMetadataByInstrument.delete(key); return null; });
       cache.quoteMetadataByInstrument.set(key, pending);
+      cache.revision += 1;
     }
     return pending;
   };
@@ -1224,6 +1291,7 @@ export async function resolveChartSpecData(
         pending = Promise.reject(error);
         cache.resolutionSupportByInstrument.set(key, pending);
         cache.rejectedResolutionSupport.add(key);
+        cache.revision += 1;
         return pending;
       }
       if (Array.isArray(result)) {
@@ -1238,10 +1306,13 @@ export async function resolveChartSpecData(
           .catch(() => [] as ChartResolutionSupport[]);
         const settledPending = pending;
         settledPending.then((settled) => {
-          if (cache.resolutionSupportByInstrument.get(key) === settledPending) cache.settledResolutionSupport.set(key, settled);
+          if (cache.resolutionSupportByInstrument.get(key) !== settledPending) return;
+          cache.settledResolutionSupport.set(key, settled);
+          cache.revision += 1;
         });
       }
       cache.resolutionSupportByInstrument.set(key, pending);
+      cache.revision += 1;
     }
     return pending;
   };
@@ -1370,6 +1441,7 @@ export async function resolveChartSpecData(
     const acquire = () => {
       const next = loadPriceHistory(sources.dataProvider!, source, request);
       cache.priceHistoryByRequest.set(key, next);
+      cache.revision += 1;
       // Retention expiry is independent of the current session/bar boundary.
       void next.then((value) => {
         if (cache.priceHistoryByRequest.get(key) !== next) return;
@@ -1430,13 +1502,30 @@ export async function resolveChartSpecData(
         `Price history for the requested window is unavailable for ${instrumentLabel(source)}.`,
       );
     }
-    const accumulated = loaded.resolution === null ? history : mergePriceHistoryWindows(
-      previousHistory, history, loaded.resolution,
-    );
-    const tail = priceHistoryTailAcquisition(previous, loaded);
-    const combined = { ...loaded, session: tail.session, sourceKey: tail.sourceKey, points: accumulated };
-    if (accumulationKey) cache.accumulatedPriceHistory.set(accumulationKey, combined);
-    return { ...combined, requestKey: key,
+    // Live passes resolve the same load again; merging it again changes nothing.
+    const unchanged = previous !== undefined && accumulationKey !== null
+      && cache.accumulatedFrom.get(accumulationKey) === loaded;
+    let combined: LoadedPriceHistory;
+    if (unchanged) {
+      combined = previous;
+    } else {
+      const accumulated = loaded.resolution === null ? history : mergePriceHistoryWindows(
+        previousHistory, history, loaded.resolution,
+      );
+      const tail = priceHistoryTailAcquisition(previous, loaded);
+      combined = { ...loaded, session: tail.session, sourceKey: tail.sourceKey, points: accumulated };
+      if (accumulationKey) {
+        cache.accumulatedPriceHistory.set(accumulationKey, combined);
+        cache.accumulatedFrom.set(accumulationKey, loaded);
+        cache.revision += 1;
+      }
+    }
+    const accumulated = combined.points;
+    if (accumulationKey && loaded.resolution && isIntradayResolution(loaded.resolution)
+      && isMarketFieldId(source.fieldId) && currentWindow()) {
+      liveTails.set(key, { source, resolution: loaded.resolution, accumulationKey });
+    }
+    return { ...combined, requestKey: key, accumulationKey,
       ...(loaded.recovery ? { recovery: { ...loaded.recovery,
         requiredWarmupPoints: request.requiredWarmupPoints,
         usableWarmupPoints: retainedWarmup(accumulated, request.visibleBounds.start),
@@ -1450,6 +1539,7 @@ export async function resolveChartSpecData(
     if (!pending) {
       pending = sources.loadFredSeries(request);
       cache.fredSeriesByRequest.set(key, pending);
+      cache.revision += 1;
     }
     return pending;
   };
@@ -1480,6 +1570,7 @@ export async function resolveChartSpecData(
         if (!pending) {
           pending = sources.resolveCapabilitySeries(seriesSpec.source, capabilityViewport, seriesSpec);
           cache.capabilitySeriesByRequest.set(key, pending);
+          cache.revision += 1;
         }
         return baseCapabilitySeries(seriesSpec, await pending, index);
       }
@@ -1565,7 +1656,10 @@ export async function resolveChartSpecData(
         // could otherwise update only one leg within a shared weekly bar.
         merged = { ...mergeHistory(merged, history.points, undefined, observationNow,
           liveBarResolution ?? undefined, resolvedSource.instrument.exchange,
-          liveBarResolution != null && !comparedSeriesIds.has(seriesSpec.id), resolvedSource.instrument.instrument?.secType),
+          liveBarResolution != null && !comparedSeriesIds.has(seriesSpec.id), resolvedSource.instrument.instrument?.secType,
+          marketField && history.accumulationKey
+            ? { bars: cache.liveBarsFor(history.accumulationKey), since: sources.liveSince, session: history.session }
+            : undefined),
           priceHistoryResolution: history.resolution, priceHistoryRequestKey: history.requestKey,
           priceHistorySession: history.session, priceHistorySourceKey: history.sourceKey };
       }
@@ -1720,6 +1814,7 @@ export async function resolveChartSpecData(
     }
   }
 
+  cache.liveTails = liveTails;
   const exposeViewport = hasExplicitWindow || spec.viewport.maxPoints === undefined;
   const viewport = exposeViewport && displayBounds.start !== null && displayBounds.end !== null
     ? { start: new Date(displayBounds.start), end: new Date(displayBounds.end) }
@@ -1738,4 +1833,105 @@ export async function resolveChartSpecData(
     viewport,
     resolution,
   };
+}
+
+/** Older tails are left to a full history refresh rather than a recent-window request. */
+const MAX_TAIL_RECONCILE_LAG_MS = 3 * DAY_MS;
+
+function latestObservationTime(points: TickerFinancials["priceHistory"]): number {
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const point = points[index]!;
+    const time = getPricePointTimestamp(point);
+    if (Number.isFinite(time) && Number.isFinite(point.close)) return time;
+  }
+  return Number.NaN;
+}
+
+function samePricePoints(left: TickerFinancials["priceHistory"], right: TickerFinancials["priceHistory"]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = left.length - 1; index >= 0; index -= 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (a === b) continue;
+    if (getPricePointTimestamp(a) !== getPricePointTimestamp(b) || a.open !== b.open || a.high !== b.high
+      || a.low !== b.low || a.close !== b.close || a.volume !== b.volume) return false;
+  }
+  return true;
+}
+
+/**
+ * Refreshes the newest bars of each intraday history the last resolve plotted
+ * up to the present, so bars formed from quotes settle to the provider's
+ * version shortly after they close. Only the recent window is requested, and a
+ * window from a different source or session contract is never mixed in.
+ * Resolves true when any plotted bar changed.
+ */
+export function reconcileChartTail(
+  sources: Pick<ChartResolveSources, "dataProvider">,
+  cache: ChartResolveCache,
+  now = Date.now(),
+): Promise<boolean> {
+  if (cache.tailReconcile) return cache.tailReconcile;
+  const provider = sources.dataProvider;
+  if (!provider || cache.liveTails.size === 0
+    || !(provider.getDetailedPriceHistoryWithMetadata || provider.getDetailedPriceHistory)) {
+    return Promise.resolve(false);
+  }
+  const run: Promise<boolean> = Promise.all([...cache.liveTails].map(async ([key, tail]) => {
+    const pending = cache.priceHistoryByRequest.get(key);
+    const loaded = pending ? await pending.catch(() => null) : null;
+    if (!pending || !loaded || loaded.resolution !== tail.resolution) return false;
+    const accumulated = cache.accumulatedPriceHistory.get(tail.accumulationKey);
+    const latest = latestObservationTime(accumulated?.points ?? loaded.points);
+    if (!Number.isFinite(latest) || now - latest > MAX_TAIL_RECONCILE_LAG_MS) return false;
+    // The newest loaded bar may still have been forming when it was fetched.
+    // Whole-bar starts and whole-minute ends let every chart of this history
+    // that asks at the same boundary share one request and one cached window.
+    const step = CHART_RESOLUTION_STEP_MS[tail.resolution];
+    const start = Math.floor((latest - step) / step) * step;
+    const end = Math.ceil(now / 60_000) * 60_000;
+    const { symbol, exchange } = tail.source.instrument;
+    const context = requestContext(tail.source);
+    const requestKey = JSON.stringify([symbol, exchange ?? "", context.brokerId ?? null,
+      context.brokerInstanceId ?? null, context.instrument ?? null, tail.resolution, start, end]);
+    const shared = tailRequestsInFlight.get(provider) ?? new Map<string, Promise<PriceHistoryResult | null>>();
+    tailRequestsInFlight.set(provider, shared);
+    let request = shared.get(requestKey);
+    if (!request) {
+      const fetched = fetchHistoryResult(provider, symbol, exchange ?? "",
+        { kind: "detail", start: new Date(start), end: new Date(end), interval: tail.resolution }, context)
+        .catch(() => null)
+        .finally(() => {
+          if (shared.get(requestKey) === fetched) shared.delete(requestKey);
+        });
+      shared.set(requestKey, fetched);
+      request = fetched;
+    }
+    const result = await request;
+    if (!result || result.resolution !== loaded.resolution
+      || priceHistoryAcquisitionIdentity(result) !== priceHistoryAcquisitionIdentity(loaded)) return false;
+    const points = result.points.filter((point) => {
+      const time = getPricePointTimestamp(point);
+      return Number.isFinite(time) && time >= start && Number.isFinite(point.close);
+    });
+    // A full refetch that landed meanwhile supersedes this window.
+    if (points.length === 0 || cache.priceHistoryByRequest.get(key) !== pending) return false;
+    const refreshed = mergePriceHistoryWindows(loaded.points, points, tail.resolution);
+    if (samePricePoints(refreshed, loaded.points)) return false;
+    const acquisition = priceHistoryTailAcquisition(loaded, result);
+    cache.priceHistoryByRequest.set(key, Promise.resolve({ ...loaded, points: refreshed,
+      session: acquisition.session, sourceKey: acquisition.sourceKey }));
+    if (accumulated) {
+      const accumulatedAcquisition = priceHistoryTailAcquisition(accumulated, result);
+      cache.accumulatedPriceHistory.set(tail.accumulationKey, { ...accumulated,
+        points: mergePriceHistoryWindows(accumulated.points, points, tail.resolution),
+        session: accumulatedAcquisition.session, sourceKey: accumulatedAcquisition.sourceKey });
+    }
+    cache.revision += 1;
+    return true;
+  })).then((changes) => changes.some(Boolean)).finally(() => {
+    if (cache.tailReconcile === run) cache.tailReconcile = null;
+  });
+  cache.tailReconcile = run;
+  return run;
 }
