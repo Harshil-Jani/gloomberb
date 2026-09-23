@@ -9,7 +9,6 @@ import type { InstrumentRef } from "../market-data/request-types";
 import type { QueryEntry } from "../market-data/result-types";
 import { buildQuoteKey, resolveEntryData } from "../market-data/selectors";
 import { instrumentIdentityKey } from "../utils/instrument-identity";
-import { LIVE_QUOTE_FUTURE_TOLERANCE_MS } from "./chart-data";
 
 /**
  * A terminal chart re-rasterizes its whole bitmap for each redraw. It follows
@@ -50,8 +49,15 @@ function supportsLiveQuote(
   return isMarketFieldId(fieldId) || valuationSeriesUsesLiveQuote(fieldId);
 }
 
-/** Displayed or study-required quote-sensitive instruments, deduplicated by routing identity. */
-export function getLiveChartQuoteTargets(spec: ChartSpec, priority: { selected?: boolean } = {}): QuoteSubscriptionTarget[] {
+/**
+ * Displayed or study-required quote-sensitive instruments, deduplicated by
+ * routing identity. `visible: false` marks a chart that is not on screen, so
+ * its quotes arrive at the off-screen cadence.
+ */
+export function getLiveChartQuoteTargets(
+  spec: ChartSpec,
+  priority: { selected?: boolean; visible?: boolean } = {},
+): QuoteSubscriptionTarget[] {
   const targets = new Map<string, QuoteSubscriptionTarget>();
   const activeStudyInputs = activeStudyInputSeriesIds(spec.studies);
   for (const series of spec.series) {
@@ -65,8 +71,8 @@ export function getLiveChartQuoteTargets(spec: ChartSpec, priority: { selected?:
         instrument: series.source.instrument.instrument ?? null,
       },
       surface: "detail",
-      visible: true,
-      ...(priority.selected ? { selected: true } : {}),
+      visible: priority.visible !== false,
+      ...(priority.selected && priority.visible !== false ? { selected: true } : {}),
       weight: 1,
     };
     targets.set(chartQuoteOverrideKeyForTarget(target), target);
@@ -83,10 +89,11 @@ export function liveChartQuoteTargetSignature(spec: ChartSpec): string {
 
 /**
  * A malformed timestamp cannot outrank a usable source observation forever. A
- * stamp just ahead of the local clock is a clock difference, not a malformed one.
+ * stamp just ahead of the local clock is a clock difference, not a malformed
+ * one; the observation check already allows the shared clock tolerance.
  */
 export function compareChartQuoteRecency(next: Quote, current: Quote): number {
-  const now = Date.now() + LIVE_QUOTE_FUTURE_TOLERANCE_MS;
+  const now = Date.now();
   const sourceTime = (quote: Quote) => hasValidQuoteObservationTime(quote, now) ? quote.lastUpdated : -Infinity;
   const nextTime = sourceTime(next);
   const currentTime = sourceTime(current);
