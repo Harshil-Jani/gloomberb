@@ -27,6 +27,7 @@ import type { TimeRange } from "../../time-series/range";
 import type { ChartResolutionSupport, ManualChartResolution } from "../../time-series/resolution";
 import { debugLog } from "../../utils/debug-log";
 import { ProviderRouterBatchRoutes } from "./batches";
+import { createSignedInRealtimeCloudAccess, type RealtimeCloudAccess } from "./realtime-access";
 import { mapListingTargets, publicListingExchange } from "../listing-target";
 import { ProviderRouterCachedRoutes } from "./cached-routes";
 import { ProviderRouterFinancialRoutes } from "./financial-routes";
@@ -77,6 +78,7 @@ export class AssetDataRouter implements DataProvider {
   private readonly financialRoutes: ProviderRouterFinancialRoutes;
   private readonly cachedRoutes: ProviderRouterCachedRoutes;
   private readonly healthyProviders = new WeakMap<DataProvider, DataProvider>();
+  private realtimeCloudAccess: RealtimeCloudAccess = createSignedInRealtimeCloudAccess();
   /** A short-lived process exits before a background refresh can land, so it must await stale entries. */
   private revalidateInBackground = true;
 
@@ -121,6 +123,8 @@ export class AssetDataRouter implements DataProvider {
       getBrokerCandidatesForContext: (context, includeFallbackInstances) => this.getBrokerCandidatesForContext(context, includeFallbackInstances),
       hasBrokerContext: (context) => this.hasBrokerContext(context),
       brokerSourceKey: (candidate) => this.brokerSourceKey(candidate),
+      hasRealtimeCloudAccess: () => this.realtimeCloudAccess.has(),
+      subscribeRealtimeCloudAccess: (listener) => this.realtimeCloudAccess.subscribe?.(listener) ?? (() => {}),
       logInfo: (message, data) => providerLog.info(message, data),
       logWarn: (message, data) => providerLog.warn(message, data),
     });
@@ -152,6 +156,11 @@ export class AssetDataRouter implements DataProvider {
 
   setConfigAccessor(getConfig: () => AppConfig): void {
     this.getConfigFn = getConfig;
+  }
+
+  /** Replaces the signed-in plan check that decides when cloud quotes beat a delayed broker. */
+  setRealtimeCloudAccess(access: RealtimeCloudAccess): void {
+    this.realtimeCloudAccess = access;
   }
 
   async canProvide(ticker: string, exchange?: string, context?: MarketDataRequestContext): Promise<boolean> {

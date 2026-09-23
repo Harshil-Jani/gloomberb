@@ -2,6 +2,7 @@ import type { TickerFinancials } from "../../../../types/financials";
 import type { TickerRecord } from "../../../../types/ticker";
 import { convertCurrency } from "../../../../utils/format";
 import { getActiveQuoteDisplay } from "../../../../market-data/market/status";
+import { isQuoteStaleForCurrentSession } from "../../../../market-data/quotes/freshness";
 import {
   getPortfolioPositionMetrics,
   getPortfolioQuoteDisplay,
@@ -10,6 +11,16 @@ import {
   portfolioPnlPercent,
   type PortfolioPositionPnl,
 } from "../position-metrics";
+
+/** A position lot valued from a current quote, in the base currency. */
+export interface PricedPortfolioLot {
+  /** Stable for the lot while the positions stay as imported. */
+  key: string;
+  direction: 1 | -1;
+  value: number;
+  /** The broker's value for the lot at the last import, when it gave one. */
+  brokerValue: number | null;
+}
 
 export interface PortfolioSummaryTotals {
   totalMktValue: number;
@@ -29,6 +40,10 @@ export interface PortfolioSummaryTotals {
   watchlistCount: number;
   /** Currency pairs preventing the full portfolio from being valued. */
   unavailableConversions?: string[];
+  /** Every position is valued from a current, real-time quote. */
+  livePriced?: boolean;
+  /** Lots with a current quote. Broker account snapshots move by these. */
+  pricedLots?: PricedPortfolioLot[];
 }
 
 export function calculatePortfolioSummaryTotals(
@@ -54,6 +69,9 @@ export function calculatePortfolioSummaryTotals(
   let watchlistChangeSum = 0;
   let watchlistCount = 0;
   const unavailableConversions = new Set<string>();
+  let livePriced = true;
+  const pricedLots: PricedPortfolioLot[] = [];
+  const now = Date.now();
   const toBase = (value: number, currency: string) => {
     const converted = convertCurrency(value, currency, baseCurrency, exchangeRates);
     if (Number.isFinite(value) && !Number.isFinite(converted)) unavailableConversions.add(`${currency}/${baseCurrency}`);
@@ -93,7 +111,26 @@ export function calculatePortfolioSummaryTotals(
     pnlBases.add(positionPnl.basis);
     if (positionPnl.basis === "broker-snapshot" || positionPnl.basis === "mixed") brokerPnlSymbols.add(ticker.metadata.ticker);
 
-    const marketValue = resolvePortfolioMarketValue(positionMetrics, activeQuote ? toBaseQuote(activeQuote.price) : null);
+    const currentUnitPrice = activeQuote ? toBaseQuote(activeQuote.price) : null;
+    const freshQuote = currentUnitPrice != null && Number.isFinite(currentUnitPrice)
+      && !!quote && !isQuoteStaleForCurrentSession(quote, now);
+    if (!freshQuote || quote.dataSource === "delayed" || quote.dataSource === "snapshot") livePriced = false;
+    for (let index = 0; index < positionMetrics.pnlLots.length; index++) {
+      const lot = positionMetrics.pnlLots[index]!;
+      const value = freshQuote ? Math.abs(lot.priceUnits) * currentUnitPrice : Number.NaN;
+      if (!Number.isFinite(value)) {
+        livePriced = false;
+        continue;
+      }
+      pricedLots.push({
+        key: `${ticker.metadata.ticker}:${index}`,
+        direction: lot.direction,
+        value,
+        brokerValue: lot.brokerMarketValue !== null && Number.isFinite(lot.brokerMarketValue) ? lot.brokerMarketValue : null,
+      });
+    }
+
+    const marketValue = resolvePortfolioMarketValue(positionMetrics, currentUnitPrice);
     if (marketValue) {
       totalMktValue += marketValue.gross;
       netMktValue += marketValue.net;
@@ -136,5 +173,7 @@ export function calculatePortfolioSummaryTotals(
     avgWatchlistChange,
     watchlistCount,
     ...(unavailableConversions.size > 0 ? { unavailableConversions: [...unavailableConversions].sort() } : {}),
+    ...(isPortfolio ? { livePriced: hasPositions && livePriced } : {}),
+    ...(pricedLots.length > 0 ? { pricedLots } : {}),
   };
 }
