@@ -5,31 +5,19 @@ import { WebPopover } from "./popover";
 import { WebMenu } from "./menu";
 import { useHorizontalOverflow } from "../host/overflow-fade";
 import { StackHeaderContext } from "./stack-header";
-import { BackChevron, CheckboxBox } from "./controls";
+import { CheckboxBox } from "./controls";
+import { WebIcon } from "./icons";
 
 function Chevron() {
-  return (
-    <svg className="gloom-qb-chevron" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-      <path d="M2.5 4l2.5 2.5L7.5 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
+  return <span className="gloom-qb-chevron"><WebIcon name="chevron-down" size={9} /></span>;
 }
 
 function Cross() {
-  return (
-    <svg viewBox="0 0 10 10" fill="none" aria-hidden="true">
-      <path d="M3 3l4 4M7 3L3 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
+  return <WebIcon name="close" size={10} />;
 }
 
 function SearchIcon() {
-  return (
-    <svg className="gloom-qb-search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="7" cy="7" r="4.25" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M10.3 10.3L13.5 13.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
+  return <span className="gloom-qb-search-icon"><WebIcon name="search" size={11} /></span>;
 }
 
 function QueryMenu({ item, onClose }: { item: HostQueryBarItem; onClose: () => void }) {
@@ -92,7 +80,7 @@ function FilterChip({ item, open, onOpenChange }: { item: HostQueryBarItem; open
   }, [open]);
   if (item.kind === "select" && item.inline) {
     return (
-      <div className="gloom-qb-inline" data-narrowing={item.narrowing ? "true" : undefined}>
+      <div className="gloom-qb-inline" data-item-id={item.id} data-narrowing={item.narrowing ? "true" : undefined}>
         <span className="gloom-qb-label">{item.label}</span>
         <div className="gloom-qb-view gloom-qb-segments" role="radiogroup" aria-label={item.label}>
           {item.options.map((option) => (
@@ -102,6 +90,7 @@ function FilterChip({ item, open, onOpenChange }: { item: HostQueryBarItem; open
               role="radio"
               aria-checked={option.selected}
               disabled={option.disabled}
+              title={option.hint ? `${option.label} (${option.hint})` : undefined}
               data-active={option.selected ? "true" : undefined}
               onMouseDown={(event) => event.stopPropagation()}
               onClick={() => item.onSelect(option.value)}
@@ -191,6 +180,30 @@ export function WebQueryBar({ search, items, view, onClearAll, meta, openRequest
   }, [stack]);
   const overflow = useHorizontalOverflow(scrollRef, [items.length, !!search, !!view, !!onClearAll, meta]);
   const searchRef = useRef<HTMLDivElement | null>(null);
+  // When an inline choice or the view changes (a shortcut, the next expiry),
+  // bring the new selection into a scrolled bar. Not on mount: a view at the
+  // right edge must not scroll the search away when the pane opens.
+  const selectionKey = [
+    ...items.filter((item) => item.inline).map((item) => `${item.id}=${item.options.find((option) => option.selected)?.value ?? ""}`),
+    `view=${view?.value ?? ""}`,
+  ].join("|");
+  const previousSelectionKey = useRef(selectionKey);
+  useEffect(() => {
+    const previous = previousSelectionKey.current;
+    previousSelectionKey.current = selectionKey;
+    if (previous === selectionKey) return;
+    const before = new Map(previous.split("|").map((entry) => entry.split("=") as [string, string]));
+    const bar = scrollRef.current;
+    if (!bar) return;
+    for (const entry of selectionKey.split("|")) {
+      const [id, value] = entry.split("=") as [string, string];
+      if (before.get(id) === value) continue;
+      const group = id === "view"
+        ? bar.querySelector(":scope > .gloom-qb-view")
+        : bar.querySelector(`[data-item-id="${CSS.escape(id)}"]`);
+      group?.querySelector<HTMLElement>("button[data-active=true]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [selectionKey]);
   useEffect(() => {
     if (search?.active) searchRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [search?.active]);
@@ -243,7 +256,7 @@ export function WebQueryBar({ search, items, view, onClearAll, meta, openRequest
             onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
             onClick={(event) => { event.stopPropagation(); stack.onBack(); }}
           >
-            <BackChevron />
+            <WebIcon name="back" size={11} />
             <span className="gloom-qb-text">{stack.backLabel}</span>
           </button>
           {stack.title ? <span className="gloom-qb-title" title={stack.title}>{stack.title}</span> : null}
@@ -271,6 +284,8 @@ export function WebQueryBar({ search, items, view, onClearAll, meta, openRequest
               type="button"
               role="radio"
               aria-checked={option.value === view.value}
+              title={option.hint ? `${option.label} (${option.hint})` : undefined}
+              disabled={option.disabled}
               data-active={option.value === view.value ? "true" : undefined}
               onMouseDown={(event) => event.stopPropagation()}
               onClick={() => { if (option.value !== view.value) view.onChange(option.value); }}
