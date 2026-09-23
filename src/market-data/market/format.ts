@@ -127,10 +127,17 @@ function getQuantityMaxFractionDigits(kind: AssetDisplayKind, value: number): nu
   }
 }
 
+function integerDigits(value: number): number {
+  const absolute = Math.abs(value);
+  return absolute >= 1 && Number.isFinite(absolute) ? Math.floor(Math.log10(absolute)) + 1 : 0;
+}
+
 function getBasePriceMaxFractionDigits(kind: AssetDisplayKind, value: number): number {
   switch (kind) {
     case "cash":
-      return 6;
+      // Six decimals, but no more than seven significant digits: providers send
+      // float32 rates, so 157.8800048828125 must not print as 157.880005.
+      return Math.max(2, Math.min(6, 7 - integerDigits(value)));
     case "crypto":
       // Sub-cent coins need eight decimals to stay distinguishable from zero,
       // but a four-figure coin does not. Scaling the ceiling by magnitude keeps
@@ -328,8 +335,16 @@ export function formatSignedMarketPrice(value: number | undefined, options: Mark
   return formatMarketPrice(value, options);
 }
 
-/** Preserve ordinary monetary change formatting while retaining declared par units. */
-export function formatMarketChangeWithCurrency(value: number | undefined, currency: string, options: MarketFormatOptions = {}): string {
+/** Preserve ordinary monetary change formatting while retaining declared par units.
+ * `referencePrice` is the quote's price: a change below a cent keeps its digits
+ * only when that price is itself quoted past cents and the change survives the
+ * price's precision, so float residue on a flat equity still prints $0.00. */
+export function formatMarketChangeWithCurrency(
+  value: number | undefined,
+  currency: string,
+  options: MarketFormatOptions = {},
+  referencePrice?: number,
+): string {
   if (value == null || !Number.isFinite(value)) return "—";
   if (resolvePriceBasis(options.priceBasis, options.assetCategory) !== "per-unit") return formatSignedMarketPrice(value, options);
   if (resolveAssetDisplayKind(options) === "contract") {
@@ -337,6 +352,15 @@ export function formatMarketChangeWithCurrency(value: number | undefined, curren
       ...options, minimumFractionDigits: Math.max(2, options.minimumFractionDigits ?? 0),
     })}`;
   }
+  // Cents hide the whole move of a sub-cent asset (-$0.00 for a SHIB day change).
+  if (Math.abs(value) < 0.005 && referencePrice != null && Number.isFinite(referencePrice)) {
+    const priceDigits = marketPriceFractionDigitCeiling(referencePrice, options);
+    if (priceDigits > 2 && Math.abs(value) >= 0.5 * 10 ** -priceDigits) {
+      return `${value > 0 ? "+" : ""}${formatMarketPriceWithCurrency(value, currency, options)}`;
+    }
+  }
+  // A move that rounds to zero cents is unsigned rather than -$0.00.
+  if (Math.abs(value) < 0.005) return formatCurrency(0, currency);
   return `${value > 0 ? "+" : ""}${formatCurrency(value, currency)}`;
 }
 
