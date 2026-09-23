@@ -27,6 +27,11 @@ export interface CompositeAxisDomain {
   /** Each source's price category, retained when different assets share an axis. */
   priceAssetCategories?: string[];
   seriesIds: string[];
+  /** Most labeled ticks the axis shows, sized to the panel height. */
+  maxTicks?: number;
+  /** Rows the labels snap to, one per row, in the terminal. Unset where labels
+   * sit at their exact heights. */
+  tickRows?: number;
 }
 
 export interface CompositeProjectedPoint {

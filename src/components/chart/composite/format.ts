@@ -1,6 +1,6 @@
 import { formatMarketPriceWithCurrency, type MarketFormatOptions } from "../../../market-data/market/format";
 import type { ResolvedSeries, TimeSeriesPoint } from "../../../time-series/types";
-import type { CompositeAxisDomain } from "./types";
+import type { CompositeAxisDomain, CompositePanelScene } from "./types";
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: "$",
@@ -59,6 +59,10 @@ function formatAxisPriceValue(value: number, domain: CompositeAxisDomain, option
 }
 
 const AXIS_TICK_COUNT = 3;
+const DEFAULT_AXIS_MAX_TICKS = 5;
+// How far a row-snapped label may sit from its value, as a share of the axis
+// range: about half a row on a 12-row panel, near exact on a 3-row one.
+const ROW_SNAP_TOLERANCE = 0.04;
 
 function axisTickValue(domain: CompositeAxisDomain, ratio: number): number {
   return domain.scale === "log"
@@ -66,14 +70,103 @@ function axisTickValue(domain: CompositeAxisDomain, ratio: number): number {
     : domain.max + (domain.min - domain.max) * ratio;
 }
 
+/** How many labeled ticks a panel of this many rows can hold, two rows apart. */
+export function compositeAxisMaxTicks(rows: number): number {
+  return Math.max(AXIS_TICK_COUNT, Math.min(DEFAULT_AXIS_MAX_TICKS, 1 + Math.floor((rows - 1) / 2)));
+}
+
+/** The next 1, 2 or 5 times power-of-ten step above (or below) a nice step. */
+function adjacentNiceStep(step: number, direction: 1 | -1): number {
+  const power = 10 ** Math.floor(Math.log10(step) + 1e-9);
+  const mantissa = Math.round(step / power);
+  const next = direction > 0
+    ? (mantissa === 1 ? 2 : mantissa === 2 ? 5 : 10) * power
+    : (mantissa === 5 ? 2 : mantissa === 2 ? 1 : 0.5) * power;
+  return Number(next.toPrecision(12));
+}
+
+/** The smallest 1, 2 or 5 times power-of-ten step at least as large as `raw`. */
+function niceCeilStep(raw: number): number {
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const error = raw / power;
+  const factor = error <= 1 + 1e-9 ? 1 : error <= 2 ? 2 : error <= 5 ? 5 : 10;
+  return Number((factor * power).toPrecision(12));
+}
+
+function stepMultiples(min: number, max: number, step: number): number[] {
+  const tolerance = step * 1e-9;
+  const first = Math.ceil((min - tolerance) / step);
+  const last = Math.floor((max + tolerance) / step);
+  const values: number[] = [];
+  // Multiplying integer counts keeps float drift out of the labels.
+  for (let index = last; index >= first && values.length <= 50; index -= 1) {
+    values.push(Number((index * step).toPrecision(12)));
+  }
+  return values;
+}
+
+/** The top, middle and bottom of the axis. Row-snapped labels take the values
+ * of the rows they sit on, so each reads exactly at its own row. */
+function edgeTickValues(domain: CompositeAxisDomain): number[] {
+  const rows = domain.tickRows;
+  if (rows !== undefined && rows >= 1) {
+    const lastRow = Math.max(rows - 1, 0);
+    return [...new Set([0, Math.round(lastRow / 2), lastRow])]
+      .map((row) => axisTickValue(domain, lastRow > 0 ? row / lastRow : 0));
+  }
+  return Array.from(
+    { length: AXIS_TICK_COUNT },
+    (_, index) => axisTickValue(domain, index / (AXIS_TICK_COUNT - 1)),
+  );
+}
+
+/** Terminal labels and gridlines snap to whole rows. A round tick only works
+ * there if it gets a row of its own and that row's value stays close to it. */
+function ticksFitRows(domain: CompositeAxisDomain, values: number[]): boolean {
+  const rows = domain.tickRows;
+  if (rows === undefined) return true;
+  const lastRow = rows - 1;
+  if (lastRow < 1) return false;
+  const used = new Set<number>();
+  for (const value of values) {
+    const position = axisTickRatio(domain, value) * lastRow;
+    const row = Math.round(position);
+    if (used.has(row) || Math.abs(position - row) / lastRow > ROW_SNAP_TOLERANCE) return false;
+    used.add(row);
+  }
+  return true;
+}
+
+/** Round values inside a linear domain, so every gridline carries a readable
+ * value. A log axis, or a short terminal panel no round step fits, keeps its
+ * top, middle and bottom values. */
+function axisTickValues(domain: CompositeAxisDomain): number[] {
+  const span = domain.max - domain.min;
+  if (domain.scale === "log" || !Number.isFinite(span) || span <= 0) return edgeTickValues(domain);
+  const maxTicks = Math.max(2, domain.maxTicks ?? DEFAULT_AXIS_MAX_TICKS);
+  // Walk the 1-2-5 ladder around the target spacing and keep the step whose
+  // tick count lands nearest the target, one extra tick allowed.
+  let step = adjacentNiceStep(adjacentNiceStep(niceCeilStep(span / (maxTicks - 1)), -1), -1);
+  let best: number[] = [];
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const values = stepMultiples(domain.min, domain.max, step);
+    if (values.length >= 2 && values.length <= maxTicks + 1
+      && (best.length === 0 || Math.abs(values.length - maxTicks) < Math.abs(best.length - maxTicks))
+      && ticksFitRows(domain, values)) {
+      best = values;
+    }
+    step = adjacentNiceStep(step, 1);
+  }
+  // Round labels win only where they are at least as many as the exact ones.
+  const edges = edgeTickValues(domain);
+  return best.length >= Math.max(2, edges.length) ? best : edges;
+}
+
 /** The narrowest distance between neighbouring ticks. A log axis bunches its
  * lowest ticks together, so the tightest pair is what every label has to stay
  * legible against. */
 function narrowestAxisTickGap(domain: CompositeAxisDomain): number | null {
-  const values = Array.from(
-    { length: AXIS_TICK_COUNT },
-    (_, index) => axisTickValue(domain, index / (AXIS_TICK_COUNT - 1)),
-  );
+  const values = axisTickValues(domain);
   const gap = Math.min(...values.slice(1).map((value, index) => Math.abs(value - values[index]!)));
   return Number.isFinite(gap) && gap > 0 ? gap : null;
 }
@@ -109,9 +202,9 @@ export function formatChartLegendValue(value: number, unit: string, unitGroup = 
     const scale = ([[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]] as const)
       .find(([divisor]) => Math.abs(value) >= divisor);
     if (scale) {
-      const amount = `${Number((value / scale[0]).toFixed(2))}${scale[1]}`;
       const prefix = currencyPrefix(trimmed);
-      return prefix ? `${prefix}${amount}` : `${amount} ${trimmed}`.trim();
+      const amount = `${Number(((prefix ? Math.abs(value) : value) / scale[0]).toFixed(2))}${scale[1]}`;
+      return prefix ? `${value < 0 ? "-" : ""}${prefix}${amount}` : `${amount} ${trimmed}`.trim();
     }
   }
   const fullPrice = formatFullCurrencyValue(value, trimmed, assetCategory);
@@ -119,8 +212,29 @@ export function formatChartLegendValue(value: number, unit: string, unitGroup = 
   return trimmed && trimmed.length <= 6 ? `${compact}${trimmed.startsWith("/") ? "" : " "}${trimmed}` : compact;
 }
 
-export function formatCompositeAxisValue(value: number, domain: CompositeAxisDomain): string {
+const COMPACT_LABEL = /^(-?\d+)(?:\.(\d+))?([KMBT]?)$/;
+
+function trimmedDecimals(label: string): number {
+  const match = COMPACT_LABEL.exec(label);
+  return match ? (match[2] ?? "").replace(/0+$/, "").length : Number.POSITIVE_INFINITY;
+}
+
+/** Round ticks drop the trailing zeros compact formatting pads them with, down
+ * to the digits the finest tick needs, so the column reads $0 / $50 / $100. */
+function compactAxisNumber(value: number, domain: CompositeAxisDomain): string {
   const compact = compactNumber(value);
+  if (domain.scale === "log") return compact;
+  const ticks = axisTickValues(domain);
+  if (!ticks.some((tick) => Math.abs(tick - value) <= Math.abs(tick) * 1e-9)) return compact;
+  const decimals = Math.max(...ticks.map((tick) => trimmedDecimals(compactNumber(tick))));
+  const match = COMPACT_LABEL.exec(compact);
+  if (!match || !Number.isFinite(decimals)) return compact;
+  const fraction = (match[2] ?? "").slice(0, decimals);
+  return `${match[1]}${fraction ? `.${fraction}` : ""}${match[3]}`;
+}
+
+export function formatCompositeAxisValue(value: number, domain: CompositeAxisDomain): string {
+  const compact = compactAxisNumber(value, domain);
   const group = domain.unitGroup.toLowerCase();
   if (group.includes("percent") || domain.unit === "%") return `${compact}%`;
   if (group.includes("ratio") || domain.unit.toLowerCase() === "x") return `${compact}x`;
@@ -138,7 +252,8 @@ export function formatCompositeAxisValue(value: number, domain: CompositeAxisDom
     });
     if (resolved) return resolved;
   }
-  return `${currencyPrefix(domain.unit)}${compact}`;
+  const prefix = currencyPrefix(domain.unit);
+  return prefix && compact.startsWith("-") ? `-${prefix}${compact.slice(1)}` : `${prefix}${compact}`;
 }
 
 export function formatCompositeCursorValue(value: number, domain: CompositeAxisDomain): string {
@@ -156,15 +271,32 @@ export type CompositeAxisValueFormatter = (value: number, domain: CompositeAxisD
 
 export function compositeAxisTicks(
   domain: CompositeAxisDomain,
-  count = 3,
   format: CompositeAxisValueFormatter = formatCompositeAxisValue,
 ): Array<{ ratio: number; value: number; label: string }> {
-  const tickCount = Math.max(2, Math.floor(count));
-  return Array.from({ length: tickCount }, (_, index) => {
-    const ratio = index / (tickCount - 1);
-    const value = axisTickValue(domain, ratio);
-    return { ratio, value, label: format(value, domain) };
-  });
+  return axisTickValues(domain).map((value) => ({
+    ratio: axisTickRatio(domain, value),
+    value,
+    label: format(value, domain),
+  }));
+}
+
+/** Gridlines follow the ticks of the panel's labeled axis, left first. The
+ * plot edges are not redrawn. */
+export function compositeGridRatios(panel: Pick<CompositePanelScene, "axes">): number[] {
+  const domain = panel.axes.left ?? panel.axes.right;
+  if (!domain) return [0.25, 0.5, 0.75];
+  return axisTickValues(domain)
+    .map((value) => axisTickRatio(domain, value))
+    .filter((ratio) => ratio > 0.01 && ratio < 0.99);
+}
+
+function axisTickRatio(domain: CompositeAxisDomain, value: number): number {
+  if (domain.scale === "log") {
+    const span = Math.log(domain.max) - Math.log(domain.min);
+    return span > 0 ? (Math.log(domain.max) - Math.log(value)) / span : 0.5;
+  }
+  const span = domain.max - domain.min;
+  return span > 0 ? (domain.max - value) / span : 0.5;
 }
 
 function utcDate(date: Date): string {

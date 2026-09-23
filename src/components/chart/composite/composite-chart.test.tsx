@@ -347,11 +347,12 @@ describe("CompositeChart", () => {
       testSetup = undefined;
       return frame;
     };
-    // The lowest price-axis label sits on the boundary between the two panels,
-    // so it moves down the moment the lower panel gives up its rows.
-    const priceAxisFloor = (frame: string) => frame
+    // Price labels and the price line stay above the lower panel's first row,
+    // and would spill into it the moment the lower panel gave up its rows.
+    const lastPriceRow = (frame: string) => frame
       .split("\n")
-      .reduce((row, line, index) => line.includes("$") ? index : row, -1);
+      .reduce((row, line, index) => /[$•]/.test(line) ? index : row, -1);
+    const volumeTop = (frame: string) => frame.split("\n").findIndex((line) => /^\s+[\d.]+K /.test(line));
 
     const loaded = await renderChart(volume);
     // Panned to a window the upper panel covers and the lower panel has no bars in.
@@ -362,9 +363,12 @@ describe("CompositeChart", () => {
     // The same chart before the lower panel's data has loaded at all.
     const loading = await renderChart({ ...volume, points: [] });
 
-    expect(priceAxisFloor(loaded)).toBeGreaterThan(0);
-    expect(priceAxisFloor(panned)).toBe(priceAxisFloor(loaded));
-    expect(priceAxisFloor(loading)).toBe(priceAxisFloor(loaded));
+    const lowerPanelTop = volumeTop(loaded);
+    expect(lowerPanelTop).toBeGreaterThan(0);
+    expect(volumeTop(panned)).toBe(lowerPanelTop);
+    expect(lastPriceRow(panned)).toBeLessThan(lowerPanelTop);
+    expect(lastPriceRow(loading)).toBe(lastPriceRow(loaded));
+    expect(lastPriceRow(loaded)).toBe(lowerPanelTop - 1);
     // A panel with loaded history keeps its axis while the window holds no bars.
     expect(panned).toMatch(/\dK/);
   });
@@ -1490,7 +1494,7 @@ describe("CompositeChart", () => {
 
   test.each([
     ["USD", "currency-total:USD", 90_007_000_000, "$90.01B"],
-    ["EUR", "currency-total:EUR", -12_345_600_000, "€-12.35B"],
+    ["EUR", "currency-total:EUR", -12_345_600_000, "-€12.35B"],
     ["CAD", "currency-total:CAD", 123_456_000, "123.46M CAD"],
     ["USD", "price:USD", 1_234_567.89, "$1,234,567.89"],
     ["USD", "price:USD", 0.0123, "$0.0123"],
