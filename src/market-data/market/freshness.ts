@@ -2,6 +2,7 @@ import type { MarketState } from "../../types/financials";
 import { canonicalExchange, EXCHANGE_TIME_ZONES } from "../../utils/exchanges";
 import { isPublishedJpxClosure } from "../published-jpx-sessions";
 import { getPublishedUsEquityCalendarDay } from "../published-us-sessions";
+import { quoteFutureToleranceMs } from "../quotes/clock";
 
 const US_EXTENDED_HOURS_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX", "ARCA", "BATS"]);
 const ALWAYS_OPEN_EXCHANGES = new Set(["CCC"]);
@@ -45,6 +46,24 @@ const usSessionFormatter = new Intl.DateTimeFormat("en-US", {
 
 type UsSessionState = Exclude<MarketState, never>;
 
+// Every streamed tick asks for local dates and session states, and each
+// Intl.DateTimeFormat call costs microseconds. Their inputs only matter to the
+// minute (sessions and dates change on whole minutes), so answers are reused
+// per minute and zone; the caches stay small across a day of streaming.
+const MINUTE_CACHE_LIMIT = 4096;
+const localDateCache = new Map<string, string | null>();
+const localMinuteCache = new Map<string, number | null>();
+const usSessionCache = new Map<number, UsSessionState>();
+
+function perMinute<K, V>(cache: Map<K, V>, key: K, compute: () => V): V {
+  const cached = cache.get(key);
+  if (cached !== undefined || cache.has(key)) return cached as V;
+  const value = compute();
+  if (cache.size >= MINUTE_CACHE_LIMIT) cache.clear();
+  cache.set(key, value);
+  return value;
+}
+
 function isUsExtendedHoursExchange(exchange?: string): boolean {
   return US_EXTENDED_HOURS_EXCHANGES.has(canonicalExchange(exchange));
 }
@@ -80,7 +99,11 @@ function getExchangeLocalTimeFormatter(timeZone: string): Intl.DateTimeFormat {
 function exchangeLocalDate(exchange: string, timestampMs: number): string | null {
   const timeZone = EXCHANGE_TIME_ZONES[canonicalExchange(exchange)];
   if (!timeZone) return null;
+  const minute = Math.floor(timestampMs / 60_000);
+  return perMinute(localDateCache, `${timeZone}:${minute}`, () => formatExchangeLocalDate(timeZone, minute * 60_000));
+}
 
+function formatExchangeLocalDate(timeZone: string, timestampMs: number): string | null {
   const parts = getExchangeLocalDateFormatter(timeZone).formatToParts(new Date(timestampMs));
   const year = parts.find((part) => part.type === "year")?.value;
   const month = parts.find((part) => part.type === "month")?.value;
@@ -92,7 +115,11 @@ function exchangeLocalDate(exchange: string, timestampMs: number): string | null
 function exchangeLocalMinuteOfDay(exchange: string, timestampMs: number): number | null {
   const timeZone = EXCHANGE_TIME_ZONES[canonicalExchange(exchange)];
   if (!timeZone) return null;
+  const minute = Math.floor(timestampMs / 60_000);
+  return perMinute(localMinuteCache, `${timeZone}:${minute}`, () => formatExchangeLocalMinuteOfDay(timeZone, minute * 60_000));
+}
 
+function formatExchangeLocalMinuteOfDay(timeZone: string, timestampMs: number): number | null {
   const parts = getExchangeLocalTimeFormatter(timeZone).formatToParts(new Date(timestampMs));
   const hour = Number(parts.find((part) => part.type === "hour")?.value);
   const minute = Number(parts.find((part) => part.type === "minute")?.value);
@@ -146,6 +173,11 @@ function localWeekday(date: string): number | null {
 }
 
 function usSessionState(timestampMs: number): UsSessionState {
+  const minute = Math.floor(timestampMs / 60_000);
+  return perMinute(usSessionCache, minute, () => formatUsSessionState(minute * 60_000));
+}
+
+function formatUsSessionState(timestampMs: number): UsSessionState {
   const parts = usSessionFormatter.formatToParts(new Date(timestampMs));
 
   const weekday = parts.find((part) => part.type === "weekday")?.value ?? "";
@@ -190,7 +222,7 @@ export function isUsPriorSessionPremarketQuote(
 ): boolean {
   const canonical = canonicalExchange(exchange);
   if (marketState !== "PRE" || !isUsExtendedHoursExchange(canonical)) return false;
-  if (!Number.isFinite(timestampMs) || !Number.isFinite(now) || timestampMs > now) return false;
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(now) || timestampMs > now + quoteFutureToleranceMs()) return false;
   if (!Number.isFinite(new Date(now).getTime()) || usSessionState(now) !== "PRE") return false;
   const timestampDate = exchangeLocalDate(canonical, timestampMs);
   const currentDate = exchangeLocalDate(canonical, now);

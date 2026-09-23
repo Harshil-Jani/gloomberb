@@ -30,6 +30,19 @@ import {
   normalizeFreshChartData,
 } from "./chart";
 import { MarketDataCoordinatorEvents } from "./events";
+import type { DataFrameScheduler } from "../frame-scheduler";
+import {
+  FX_LIVE_RATE_MAX_AGE_MS,
+  FX_LIVE_RATE_MAX_DEVIATION,
+  FX_LIVE_RATE_MAX_OBSERVATION_AGE_MS,
+  FX_LIVE_RATE_MIN_CHANGE,
+  FX_LIVE_RATE_REFRESH_MS,
+  FX_LIVE_RATE_STALE_MS,
+  fxLegForCurrency,
+  fxObservationAgeMs,
+  fxRateFromLegQuote,
+  type FxLeg,
+} from "./fx-legs";
 import {
   CHART_CACHE_TTL_MS,
   OPTIONS_CACHE_TTL_MS,
@@ -68,6 +81,12 @@ import {
 
 /** How long a streamed tick may reuse the quote fields read from the cache. */
 const STREAM_QUOTE_BASELINE_TTL_MS = 60_000;
+/**
+ * A repeat of an unchanged quote only moves its arrival time. Writing that
+ * would re-render every reader per heartbeat, so it is recorded at most this
+ * often: often enough that quote ages and the stream watchdog see a live feed.
+ */
+const STREAM_RECEIPT_REFRESH_MS = 5_000;
 /** Keeps a long session of browsing from holding a baseline per visited symbol. */
 const STREAM_QUOTE_BASELINE_LIMIT = 256;
 
@@ -77,8 +96,13 @@ function sameQueryEntry<T>(left: QueryEntry<T>, right: QueryEntry<T>): boolean {
   return left === right || (left.phase === "idle" && right.phase === "idle" && left.data === null && right.data === null);
 }
 
+export interface MarketDataCoordinatorOptions {
+  /** The frame clock for stream applies and notifications; tests inject a manual one. */
+  frames?: DataFrameScheduler;
+}
+
 export class MarketDataCoordinator {
-  private readonly events = new MarketDataCoordinatorEvents();
+  private readonly events: MarketDataCoordinatorEvents;
   private readonly inFlight = new Map<string, Promise<unknown>>();
   private readonly optionsLoads = new Map<string, Promise<QueryEntry<OptionsChain>>>();
   private readonly chartRequests = new Map<string, ChartRequest>();
@@ -95,17 +119,33 @@ export class MarketDataCoordinator {
   private readonly secDocumentsStore = new QueryStore<SecFilingDocument[]>((key) => this.events.bump(key));
   private readonly secContentStore = new QueryStore<string | null>((key) => this.events.bump(key));
   private readonly articleSummaryStore = new QueryStore<string | null>((key) => this.events.bump(key));
-  private readonly fxStore = new QueryStore<number>((key) => this.events.bump(key));
+  private readonly liveFxRates = new Map<string, { rate: number; observedAt: number; receivedAt: number }>();
+  /**
+   * The last rate a request loaded per currency; a streamed rate must stay
+   * near it to be believed, and one observed before it does not replace it.
+   */
+  private readonly loadedFxRates = new Map<string, { rate: number; asOf: number | null }>();
+  /** The last pair quote each currency's leg received, as the stream sent it. */
+  private readonly fxLegFrames = new Map<string, Quote>();
+  private writingLiveFxRate = false;
+  private readonly fxLegsByQuoteKey = new Map<string, FxLeg>();
+  private readonly fxLegsByCurrency = new Map<string, FxLeg>();
+  private readonly fxStore = new QueryStore<number>(
+    (key) => this.events.bump(key),
+    (key, entry) => this.projectLiveFxRate(key, entry),
+  );
   private readonly financialCacheStores: FinancialCacheStores = {
     quoteStore: this.quoteStore,
     snapshotStore: this.snapshotStore,
     chartStore: this.chartStore,
   };
 
-  constructor(private readonly dataProvider: DataProvider) {
+  constructor(private readonly dataProvider: DataProvider, options: MarketDataCoordinatorOptions = {}) {
+    this.events = new MarketDataCoordinatorEvents(options.frames);
     this.quoteSubscriptionManager = new QuoteSubscriptionManager(
       dataProvider,
       (instrument, quote) => this.applyStreamQuote(instrument, quote),
+      options.frames,
     );
   }
 
@@ -487,6 +527,8 @@ export class MarketDataCoordinator {
 
   destroy(): void {
     this.destroyed = true;
+    this.quoteSubscriptionManager.dispose();
+    this.events.dispose();
     for (const { dispose } of this.cachedQueries.values()) dispose();
     this.cachedQueries.clear();
     this.streamQuoteBaselines.clear();
@@ -496,6 +538,85 @@ export class MarketDataCoordinator {
     return this.quoteSubscriptionManager.subscribe(targets);
   }
 
+  /**
+   * Streams the USD pair behind each currency so converted values move with
+   * the market. The pairs ride the normal quote subscription (one per pair,
+   * shared by every caller) at background priority, and their mids replace
+   * the loaded rate while they are current; the loaded rate stays the fallback.
+   */
+  subscribeFxRates(currencies: readonly string[]): QuoteSubscriptionHandle {
+    const legs = new Map<string, FxLeg>();
+    for (const currency of currencies) {
+      const leg = fxLegForCurrency(currency);
+      if (!leg) continue;
+      const key = buildQuoteKey(leg.instrument);
+      legs.set(key, leg);
+      this.fxLegsByQuoteKey.set(key, leg);
+      this.fxLegsByCurrency.set(leg.currency, leg);
+    }
+    return this.quoteSubscriptionManager.subscribe([...legs.values()].map((leg) => ({
+      instrument: leg.instrument,
+      priority: { visible: false, selected: false, weight: 20 },
+    })));
+  }
+
+  private applyLiveFxLeg(leg: FxLeg, quote: Quote | undefined): void {
+    if (!quote || quote.stale === true) return;
+    const now = Date.now();
+    // Only a current observation is a live rate; a delayed or quiet pair
+    // leaves the loaded rate in charge.
+    if (!Number.isFinite(quote.lastUpdated) || quote.lastUpdated <= 0
+      || fxObservationAgeMs(quote.lastUpdated, now) > FX_LIVE_RATE_MAX_OBSERVATION_AGE_MS) return;
+    const observedAt = Math.min(quote.lastUpdated, now);
+    const rate = fxRateFromLegQuote(leg, quote);
+    if (rate == null) return;
+    // Without a loaded rate there is nothing to catch a wrong pair or a bad print.
+    const reference = this.loadedFxRates.get(leg.currency);
+    if (reference == null || Math.abs(rate / reference.rate - 1) > FX_LIVE_RATE_MAX_DEVIATION) return;
+    if (reference.asOf != null && reference.asOf > observedAt) return;
+    const previous = this.liveFxRates.get(leg.currency);
+    if (previous && Math.abs(rate / previous.rate - 1) < FX_LIVE_RATE_MIN_CHANGE && now - previous.receivedAt < FX_LIVE_RATE_REFRESH_MS) return;
+    this.liveFxRates.set(leg.currency, { rate, observedAt, receivedAt: now });
+    const key = buildFxKey(leg.currency);
+    this.writingLiveFxRate = true;
+    try {
+      this.fxStore.set(key, this.fxStore.get(key));
+    } finally {
+      this.writingLiveFxRate = false;
+    }
+  }
+
+  private projectLiveFxRate(key: string, entry: QueryEntry<number>): QueryEntry<number> {
+    const currency = key.slice(key.indexOf(":") + 1);
+    const live = this.liveFxRates.get(currency);
+    const loaded = entry.data ?? entry.lastGoodData;
+    // A loading or error entry built from the current one still carries the
+    // streamed value; only a rate a request produced is a reference.
+    if (!this.writingLiveFxRate && loaded != null && Number.isFinite(loaded) && loaded > 0 && loaded !== live?.rate) {
+      const firstReference = !this.loadedFxRates.has(currency);
+      const asOf = typeof entry.asOf === "number" && Number.isFinite(entry.asOf) ? entry.asOf : null;
+      this.loadedFxRates.set(currency, { rate: loaded, asOf });
+      // A pair that streamed before any rate loaded can be checked now.
+      const leg = firstReference && !live ? this.fxLegsByCurrency.get(currency) : undefined;
+      if (leg) queueMicrotask(() => this.applyLiveFxLeg(leg, this.fxLegFrames.get(leg.currency)));
+    }
+    if (!live || fxObservationAgeMs(live.observedAt, Date.now()) > FX_LIVE_RATE_MAX_AGE_MS) return entry;
+    // A request that observed the market after the last tick is the better rate.
+    const loadedAsOf = this.loadedFxRates.get(currency)?.asOf;
+    if (loadedAsOf != null && loadedAsOf > live.observedAt) return entry;
+    if (entry.data === live.rate && entry.asOf === live.observedAt) return entry;
+    return {
+      ...entry,
+      phase: "ready",
+      data: live.rate,
+      lastGoodData: live.rate,
+      error: null,
+      asOf: live.observedAt,
+      fetchedAt: Math.max(entry.fetchedAt ?? 0, live.receivedAt),
+      staleAt: live.observedAt + FX_LIVE_RATE_STALE_MS,
+    };
+  }
+
   private applyStreamQuote(instrument: InstrumentRef, quote: Quote): void {
     const key = buildQuoteKey(instrument);
     const current = this.quoteStore.get(key);
@@ -503,9 +624,19 @@ export class MarketDataCoordinator {
     const startedAt = Date.now();
     const receivedAt = resolvedQuote.stale === true ? resolvedQuote.receivedAt : startedAt;
     const storedQuote = receivedAt == null ? resolvedQuote : { ...resolvedQuote, receivedAt };
-    if (areStreamQuotesEquivalent(current.data ?? current.lastGoodData, storedQuote)) return;
+    const currentQuote = current.data ?? current.lastGoodData;
+    if (areStreamQuotesEquivalent(currentQuote, storedQuote)) {
+      const previousReceipt = currentQuote?.receivedAt;
+      if (receivedAt == null || (previousReceipt != null && receivedAt - previousReceipt < STREAM_RECEIPT_REFRESH_MS)) return;
+    }
     const attempts = [createAttempt(resolvedQuote.providerId ?? this.dataProvider.id, startedAt, "success")];
-    this.quoteStore.set(key, readyQuoteEntry(current, storedQuote, resolvedQuote.providerId ?? this.dataProvider.id, attempts));
+    const entry = readyQuoteEntry(current, storedQuote, resolvedQuote.providerId ?? this.dataProvider.id, attempts);
+    this.quoteStore.set(key, entry);
+    const fxLeg = this.fxLegsByQuoteKey.get(key);
+    if (fxLeg && entry.data) {
+      this.fxLegFrames.set(fxLeg.currency, quote);
+      this.applyLiveFxLeg(fxLeg, quote);
+    }
   }
 
   private resolveIncomingQuote(instrument: InstrumentRef, quote: Quote): Quote {

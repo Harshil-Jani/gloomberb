@@ -9,6 +9,12 @@ import { safeExternalUrl } from "../../utils/external-url";
 import { buildTerminalMediaArgs, createTerminalMediaReaper, terminalMediaStateFile } from "./terminal-media";
 import { saveTextFileToDownloads } from "../../utils/save-text-file";
 import { installInteractionPerformanceRecorder } from "./interaction-performance";
+import {
+  createTimerFrameDriver,
+  installMarketDataFrameDriver,
+  TERMINAL_DATA_FRAME_INTERVAL_MS,
+  withLoadPacing,
+} from "../../market-data/frame-scheduler";
 
 export { useKeyboard, useTerminalDimensions };
 
@@ -102,6 +108,10 @@ export async function createOpenTuiHost(): Promise<OpenTuiHost> {
   });
   const root = createRoot(renderer);
   installResolutionEventBridge(renderer);
+  // Streamed quotes apply and notify on one clock of up to 10 Hz: every
+  // visible row stays live while a burst of ticks costs one terminal redraw,
+  // and a layout whose redraws are expensive gets fewer of them.
+  installMarketDataFrameDriver(withLoadPacing(createTimerFrameDriver(TERMINAL_DATA_FRAME_INTERVAL_MS)));
   const stopInteractionPerformanceRecorder = installInteractionPerformanceRecorder(renderer);
   renderer.once("destroy", stopInteractionPerformanceRecorder);
 

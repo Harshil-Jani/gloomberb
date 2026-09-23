@@ -52,7 +52,7 @@ export function mapQuote(
   const changePercent = typeof quote.changePercent === "number" && Number.isFinite(quote.changePercent)
     ? quote.changePercent
     : Number.NaN;
-  return reconcileQuoteDayRange({
+  return withoutUndefinedFields(reconcileQuoteDayRange({
     ...quote,
     currency: currency || quote.currency,
     price: normalizePriceValueByDivisor(quote.price, divisor) ?? quote.price,
@@ -114,7 +114,22 @@ export function mapQuote(
           },
         }
       : quote.provenance,
-  });
+  }));
+}
+
+/**
+ * JSON has no undefined, so a field the server left out must stay absent here
+ * too; the desktop window only ever sees the JSON form. Whether an omitted
+ * field keeps the earlier value is decided when contributions merge: the
+ * 52-week range and name carry over, a close or volume from another trading
+ * day does not.
+ */
+function withoutUndefinedFields<T extends object>(value: T): T {
+  const result = {} as T;
+  for (const key in value) {
+    if (value[key] !== undefined) result[key] = value[key];
+  }
+  return result;
 }
 
 const LOCAL_DATE_TIME_PATTERN =

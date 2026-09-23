@@ -105,9 +105,16 @@ function dailyReferenceRank(providerId?: string): number {
   }
 }
 
-function priceRank(quote: QuoteContribution): number {
-  if (quote.providerId === "ibkr" && quote.dataSource === "live") return 0;
-  return 1;
+/**
+ * A broker's live feed first, then any fresh live feed, then everything else
+ * by observation time. A delayed source can carry a later stamp (its fetch
+ * time, a different clock) without being the later price, so live data wins
+ * while it is current; once stale it competes on time like any other.
+ */
+function priceRank(quote: QuoteContribution, now: number): number {
+  if (quote.dataSource !== "live") return 2;
+  if (quote.providerId === "ibkr") return 0;
+  return isQuoteContributionStaleForCurrentSession(quote, now) ? 2 : 1;
 }
 
 function priceProviderTieRank(providerId?: string): number {
@@ -230,16 +237,17 @@ function assignDailyChangeFields(
   }
 }
 
-function buildAcceptedPriceCandidates(contributions: QuoteContribution[]): {
+function buildAcceptedPriceCandidates(contributions: QuoteContribution[], now: number): {
   accepted: QuoteContribution[];
   rejectedProviders: string[];
 } {
+  const ranks = new Map(contributions.map((quote) => [quote, priceRank(quote, now)] as const));
   const sorted = [...contributions]
     .filter((quote) => Number.isFinite(quote.price))
     .sort((left, right) => {
-      const rankDelta = priceRank(left) - priceRank(right);
+      const rankDelta = ranks.get(left)! - ranks.get(right)!;
       if (rankDelta !== 0) return rankDelta;
-      if (priceRank(left) > 0) {
+      if (ranks.get(left)! > 0) {
         const updateDelta = quoteUpdateTime(right) - quoteUpdateTime(left);
         if (updateDelta !== 0) return updateDelta;
       }
@@ -276,8 +284,9 @@ export function isQuoteContributionStaleForCurrentSession(contribution: Quote, n
   if (contribution.marketState != null) return isQuoteStaleForCurrentSession(contribution, now);
   // A price-only source can be combined with independent session metadata.
   // Its observation must still belong to the current active session.
-  const timestamp = contribution.lastUpdated;
   if (contribution.stale === true || !hasValidQuoteObservationTime(contribution, now)) return true;
+  // A tolerated future stamp belongs to the session in progress, not the next one.
+  const timestamp = Math.min(contribution.lastUpdated, now);
   const activeSession = isExtendedHoursExchange(contribution) ? activeUsExtendedHoursSession(now) : null;
   if (activeSession && activeUsExtendedHoursSession(timestamp) !== activeSession) return true;
   return isTimestampStaleForExchangeSession(timestamp, contribution.listingExchangeName || contribution.exchangeName, now);
@@ -375,7 +384,7 @@ export function resolveCanonicalQuote(
 
   const { accepted: freshQuoteCandidates } = filterFreshQuoteCandidates(contributions, now);
   const effectiveQuoteCandidates = freshQuoteCandidates.length > 0 ? freshQuoteCandidates : contributions;
-  const { accepted: acceptedPriceCandidates, rejectedProviders } = buildAcceptedPriceCandidates(effectiveQuoteCandidates);
+  const { accepted: acceptedPriceCandidates, rejectedProviders } = buildAcceptedPriceCandidates(effectiveQuoteCandidates, now);
   if (acceptedPriceCandidates.length === 0) return {};
 
   const sessionCandidates = buildSessionCandidates(effectiveQuoteCandidates);

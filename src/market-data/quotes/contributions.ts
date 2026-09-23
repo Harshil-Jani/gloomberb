@@ -6,7 +6,32 @@ import type {
   SessionConfidence,
   TickerFinancials,
 } from "../../types/financials";
-import { reconcileQuoteDayRange } from "./day-range";
+import { quoteTradingDay, reconcileQuoteDayRange } from "./day-range";
+
+const RETAINED_DESCRIPTIVE_FIELDS = ["high52w", "low52w", "marketCap", "name", "instrumentType"] as const;
+const PRICE_DENOMINATED_DESCRIPTIVE_FIELDS: ReadonlySet<string> = new Set(["high52w", "low52w", "marketCap"]);
+/**
+ * Values that belong to one trading day. A quote from another day that leaves
+ * them out has no anchor for its own day yet, and keeping the old day's value
+ * would show yesterday's close, open or volume as today's. The day range is
+ * reconciled separately (reconcileQuoteDayRange).
+ */
+const TRADING_DAY_FIELDS = [
+  "changeSessionDate", "previousClose", "open", "volume", "mark", "bid", "ask", "bidSize", "askSize",
+  "lastTradePrice", "lastTradeTime",
+] as const;
+
+/**
+ * Whether two observations from one source describe different trading days.
+ * Only sources that declare the day they anchor to are judged; for the rest a
+ * partial tick may legitimately rely on the fields it already sent.
+ */
+function isOtherTradingDay(current: Quote, next: Quote): boolean {
+  if (!current.changeSessionDate && !next.changeSessionDate) return false;
+  const currentDay = quoteTradingDay(current);
+  const nextDay = quoteTradingDay(next);
+  return currentDay !== null && nextDay !== null && nextDay !== currentDay;
+}
 
 function inferQuoteProviderId(quote: Quote | QuoteContribution): string {
   if (quote.providerId?.trim()) return quote.providerId;
@@ -147,6 +172,21 @@ export function mergeQuoteContribution(
     regularClose: next.regularClose,
     regularCloseSessionDate: next.regularClose != null ? next.regularCloseSessionDate : undefined,
   };
+
+  if (isOtherTradingDay(current, next)) {
+    const record = merged as unknown as Record<string, unknown>;
+    for (const field of TRADING_DAY_FIELDS) {
+      if (next[field] === undefined) delete record[field];
+    }
+  }
+
+  // Leaving a descriptive field out is not a retraction. Price-denominated
+  // ones only carry over while the price convention is unchanged.
+  for (const field of RETAINED_DESCRIPTIVE_FIELDS) {
+    if (merged[field] === undefined && current[field] !== undefined && (samePriceBasis || !PRICE_DENOMINATED_DESCRIPTIVE_FIELDS.has(field))) {
+      (merged as unknown as Record<string, unknown>)[field] = current[field];
+    }
+  }
 
   if (next.marketState == null && current.marketState != null) {
     merged.marketState = current.marketState;
