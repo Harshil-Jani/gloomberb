@@ -21,6 +21,8 @@ export interface PortfolioPositionMetrics {
   totalPriceUnits: number;
   grossPriceUnits: number;
   multiplierHint: number;
+  /** Listed option contracts are valued at the two-sided midpoint when one is quoted. */
+  valuesAtMark: boolean;
   brokerMktValue: number;
   brokerNetMktValue: number;
   hasBrokerMktValue: boolean;
@@ -30,8 +32,27 @@ export interface PortfolioPositionMetrics {
   pnlLots: { signedCost: number; priceUnits: number; direction: 1 | -1; brokerMarketValue: number | null; brokerPnl: number | null }[];
 }
 
+/** Listed option categories, including options on futures, valued at their mark. */
+const OPTION_CATEGORIES = new Set(["OPT", "OPTION", "OPTIONS", "FOP"]);
+
+function isListedOption(ticker: TickerRecord): boolean {
+  return OPTION_CATEGORIES.has(ticker.metadata.assetCategory?.trim().toUpperCase() ?? "");
+}
+
+function hasContractMultiplier(multiplier: number | undefined): multiplier is number {
+  return typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier > 0;
+}
+
 function normalizePositionMultiplier(multiplier: number | undefined): number {
-  return typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1;
+  return hasContractMultiplier(multiplier) ? multiplier : 1;
+}
+
+/** An option lot without a contract multiplier (a manual entry) is valued per
+ * unit. The multiplier is not guessed, so the pane flags the row instead. */
+export function hasUnknownOptionMultiplier(ticker: TickerRecord, activeTab: string | undefined): boolean {
+  return isListedOption(ticker) && ticker.metadata.positions.some((position) =>
+    (!activeTab || position.portfolio === activeTab) && position.shares !== 0
+    && !hasContractMultiplier(position.multiplier));
 }
 
 export function signedPositionDirection(position: { shares: number; side?: "long" | "short" }): 1 | -1 {
@@ -84,6 +105,7 @@ export function getPortfolioPositionMetrics(
     positionCurrency, positionCount: positions.length, hasShorts: false,
     totalShares: 0, totalCost: 0, hasCostBasis: positions.length > 0, priceBasis, signedCost: 0, totalCostUnits: 0,
     totalPriceUnits: 0, grossPriceUnits: 0, multiplierHint: 1,
+    valuesAtMark: isListedOption(ticker),
     brokerMktValue: 0, brokerNetMktValue: 0, hasBrokerMktValue: positions.length > 0,
     brokerPnl: 0, hasBrokerPnl: positions.length > 0,
     brokerMarkPrice: positions.length === 1 && priceBasis ? positions[0]?.markPrice : undefined,
@@ -145,9 +167,34 @@ export function getPortfolioPositionMetrics(
   return metrics;
 }
 
-/** Only a compatible, finite quote may replace independently usable broker totals. */
+/**
+ * A thin contract's last print can be hours old while its market moves; the
+ * midpoint of a two-sided quote is the mark, against the same prior close.
+ * A last inside the market, or a print known to predate the quote, yields to
+ * the mark. A last outside a market of unknown age keeps the last: the bid and
+ * ask may be the leftovers, not the print.
+ */
+function optionMarkDisplay(quote: Quote, active: ActiveQuoteDisplay): ActiveQuoteDisplay | null {
+  const { bid, ask } = quote;
+  if (typeof bid !== "number" || typeof ask !== "number" || !Number.isFinite(bid) || !Number.isFinite(ask)
+    || bid < 0 || ask <= 0 || ask < bid) return null;
+  const printInsideMarket = active.price >= bid && active.price <= ask;
+  const printPredatesQuote = typeof quote.lastTradeTime === "number" && Number.isFinite(quote.lastTradeTime)
+    && quote.lastTradeTime < quote.lastUpdated;
+  if (!printInsideMarket && !printPredatesQuote) return null;
+  const mark = (bid + ask) / 2;
+  const reference = typeof active.change === "number" && Number.isFinite(active.change)
+    ? active.price - active.change : quote.previousClose;
+  if (reference == null || !Number.isFinite(reference)) return { price: mark };
+  const change = mark - reference;
+  return { price: mark, change, changePercent: reference > 0 ? change / reference * 100 : undefined };
+}
+
+/** Only a compatible, finite quote may replace independently usable broker
+ * totals. This is the valuation price: an option's mark rather than its last. */
 export function getPortfolioQuoteDisplay(metrics: PortfolioPositionMetrics, quote: Quote | null | undefined): ActiveQuoteDisplay | null {
-  const active = getActiveQuoteDisplay(quote);
+  const displayed = getActiveQuoteDisplay(quote);
+  const active = displayed && metrics.valuesAtMark ? optionMarkDisplay(quote!, displayed) ?? displayed : displayed;
   return active && Number.isFinite(active.price)
     && (metrics.positionCount === 0 || metrics.pnlLots.some(lot => Number.isFinite(lot.priceUnits))) ? active : null;
 }
