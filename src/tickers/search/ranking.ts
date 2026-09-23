@@ -10,6 +10,7 @@ const DERIVATIVE_TYPES = new Set(["OPT", "OPTION", "OPTIONS", "FUT", "FUTURE", "
 const EQUITY_TYPES = new Set(["STK", "STOCK", "EQUITY", "COMMONSTOCK", "COMMON STOCK", "ADR", "DEPOSITARY RECEIPT", "DEPOSITARYRECEIPT", "ORDINARYSHARES", "ORDINARY SHARES"]);
 const COMPANY_NAME_SUFFIXES = new Set([
   "AG",
+  "AKTIENGESELLSCHAFT",
   "CO",
   "COMPANY",
   "CORP",
@@ -66,6 +67,13 @@ const ASSET_HINT_MAP: Record<string, TickerSearchInstrumentClass> = {
 };
 
 const SAVED_MATCH_BONUS = 900;
+/**
+ * How many times more popular a company whose name only starts with the query
+ * must be to lead one named exactly as typed. TSMC is searched about five
+ * times as often as Taiwan Semiconductor Co.; Siemens Energy about as often as
+ * Siemens AG, so there the exact name keeps leading.
+ */
+const POPULARITY_LEAD_RATIO = 2;
 
 interface SearchQueryIntent {
   rawQuery: string;
@@ -207,6 +215,7 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
         item,
         index,
         companyMatchRank,
+        companyRank: companyMatchRank,
         companyNameKey,
         issuerGroupKey: companyMatchRank > 0 && item.instrumentClass === "equity"
           ? getIssuerGroupKey(item.detail)
@@ -214,6 +223,8 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
         explicitIntentScore,
         normalizedSymbol: normalizeSearchText(item.symbol || item.label),
         symbolMatchRank: scoreSymbolMatchRank(intent, item),
+        nameOnly: companyMatchRank > 0 && labelScore + aliasScore <= 0
+          && !(isQualifiedTickerQuery(query) && matchesQualifiedTicker(item, query)),
         textScore,
         score: textScore + priorityScore + (textScore > 0 && saved ? SAVED_MATCH_BONUS : 0),
       };
@@ -233,6 +244,8 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
     return !matchedLocalListings.has(getTickerSearchListingKey(item));
   });
 
+  promoteMuchMorePopularCompanies(filtered);
+
   type RankedEntry = (typeof ranked)[number];
   const compareFallbackEntries = (a: RankedEntry, b: RankedEntry): number => {
     if (b.symbolMatchRank !== a.symbolMatchRank) return b.symbolMatchRank - a.symbolMatchRank;
@@ -251,7 +264,7 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
     const bucketKey = [
       exactSymbolRank,
       hasExplicitHint ? entry.explicitIntentScore : 0,
-      entry.companyMatchRank,
+      entry.companyRank,
     ].join(":");
     const groupKey = entry.issuerGroupKey
       ? `issuer:${entry.issuerGroupKey}`
@@ -271,8 +284,21 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
         representative: entries.reduce((best, entry) =>
           compareFallbackEntries(entry, best) < 0 ? entry : best
         ),
+        nameOnly: entries.every((entry) => entry.nameOnly && entry.symbolMatchRank === 0),
+        saved: entries.some((entry) => isSavedSearchItem(entry.item)),
+        providerRank: Math.min(...entries.map((entry) => entry.item.providerRank ?? Number.POSITIVE_INFINITY)),
       }))
-      .sort((a, b) => compareFallbackEntries(a.representative, b.representative));
+      .sort((a, b) => {
+        // Companies matched by name alone differ in text score only by name
+        // and type length. The provider's popularity order is the better
+        // signal there; a symbol match keeps its text relevance.
+        if (a.nameOnly !== b.nameOnly) return a.nameOnly ? 1 : -1;
+        if (a.nameOnly) {
+          if (a.saved !== b.saved) return a.saved ? -1 : 1;
+          if (a.providerRank !== b.providerRank) return a.providerRank - b.providerRank;
+        }
+        return compareFallbackEntries(a.representative, b.representative);
+      });
     orderedGroups.forEach(({ entries }, order) => {
       entries.forEach((entry) => groupOrderByIndex.set(entry.index, order));
     });
@@ -288,8 +314,8 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
     if (hasExplicitHint && b.explicitIntentScore !== a.explicitIntentScore) {
       return b.explicitIntentScore - a.explicitIntentScore;
     }
-    if (b.companyMatchRank !== a.companyMatchRank) {
-      return b.companyMatchRank - a.companyMatchRank;
+    if (b.companyRank !== a.companyRank) {
+      return b.companyRank - a.companyRank;
     }
     const aGroupOrder = groupOrderByIndex.get(a.index) ?? a.index;
     const bGroupOrder = groupOrderByIndex.get(b.index) ?? b.index;
@@ -307,6 +333,15 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
       const aSynthetic = isMixedCode(a.item.label);
       const bSynthetic = isMixedCode(b.item.label);
       if (aSynthetic !== bSynthetic) return aSynthetic ? 1 : -1;
+      // A company searched by name leads with its home listing when the
+      // provider types the other line as a receipt. An exact ticker search
+      // (ASML) keeps provider order, and untyped ADRs (Yahoo's TM) cannot be
+      // told apart from a second home listing, so they stay in provider order.
+      if (a.nameOnly && b.nameOnly) {
+        const aReceipt = isDepositaryReceiptType(a.item.instrumentType);
+        const bReceipt = isDepositaryReceiptType(b.item.instrumentType);
+        if (aReceipt !== bReceipt) return aReceipt ? 1 : -1;
+      }
       const aProviderRank = a.item.providerRank ?? Number.POSITIVE_INFINITY;
       const bProviderRank = b.item.providerRank ?? Number.POSITIVE_INFINITY;
       if (aProviderRank !== bProviderRank) return aProviderRank - bProviderRank;
@@ -325,12 +360,17 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
   return deduped;
 }
 
+// Folding accents keeps "Nestlé" matchable as "nestle" instead of "NESTL".
+function foldSearchText(text: string): string {
+  return text.normalize("NFKD").replace(/\p{M}/gu, "").trim().toUpperCase();
+}
+
 export function normalizeSearchText(text: string): string {
-  return text.trim().toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+  return foldSearchText(text).replace(/[^A-Z0-9]+/g, " ").trim();
 }
 
 export function compactSearchText(text: string): string {
-  return text.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  return foldSearchText(text).replace(/[^A-Z0-9]+/g, "");
 }
 
 export function normalizeTickerSymbol(symbol: string): string {
@@ -530,6 +570,46 @@ function scoreExchangePreference(
   );
 
   return matchesHint ? 2_000 : -800;
+}
+
+function isDepositaryReceiptType(type?: string): boolean {
+  const normalized = normalizeSearchText(type || "");
+  return normalized.includes("DEPOSITARY") || ["ADR", "ADS", "GDR", "CDR", "BDR"].includes(normalized);
+}
+
+/**
+ * A name typed exactly ("Taiwan Semiconductor") normally beats names that only
+ * start with it, which keeps Apple Inc. above Apple Hospitality. When the
+ * provider scores popularity, a company searched at least
+ * POPULARITY_LEAD_RATIO times as often as every exactly named one that it
+ * scored leads instead. Without scores the order is unchanged.
+ */
+function promoteMuchMorePopularCompanies(entries: Array<{
+  item: Partial<TickerSearchRankableItem>;
+  index: number;
+  companyMatchRank: number;
+  companyRank: number;
+  issuerGroupKey: string | null;
+}>): void {
+  const issuerKey = (entry: (typeof entries)[number]) => entry.issuerGroupKey ?? `item:${entry.index}`;
+  const popularity = new Map<string, number>();
+  for (const entry of entries) {
+    const score = entry.item.popularity;
+    if (typeof score !== "number" || !Number.isFinite(score)) continue;
+    popularity.set(issuerKey(entry), Math.max(score, popularity.get(issuerKey(entry)) ?? score));
+  }
+  if (popularity.size === 0) return;
+  let exactPopularity = 0;
+  for (const entry of entries) {
+    if (entry.companyMatchRank === 3) exactPopularity = Math.max(exactPopularity, popularity.get(issuerKey(entry)) ?? 0);
+  }
+  if (exactPopularity <= 0) return;
+  for (const entry of entries) {
+    const score = popularity.get(issuerKey(entry));
+    if (entry.companyMatchRank === 2 && score != null && score >= exactPopularity * POPULARITY_LEAD_RATIO) {
+      entry.companyRank = 4;
+    }
+  }
 }
 
 function isMixedCode(label: string): boolean {
