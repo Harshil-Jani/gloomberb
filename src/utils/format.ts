@@ -49,6 +49,13 @@ export function formatPercent(value: number | undefined): string {
   return `${sign}${(value * 100).toFixed(2)}%`;
 }
 
+/** Format a level such as a yield or margin (0.0123 -> 1.23%). Levels are not changes, so they carry no sign. */
+export function formatLevelPercent(value: number | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const fixed = (value * 100).toFixed(2);
+  return `${/[1-9]/.test(fixed) ? fixed : fixed.replace("-", "")}%`;
+}
+
 /** Format a percentage that's already in percent form (e.g., 1.23 -> +1.23%) */
 export function formatPercentRaw(value: number | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -56,15 +63,19 @@ export function formatPercentRaw(value: number | undefined): string {
   return `${sign}${value.toFixed(2)}%`;
 }
 
-/** Format large numbers compactly (e.g., 1.5T, 234B, 12.3M, 5k) */
-export function formatCompact(value: number | undefined): string {
+/**
+ * Format large numbers compactly (e.g., 1.5T, 234B, 12.3M, 5k). Table columns
+ * pass `fixedDecimals` so 1.70T lines up with 1.33T.
+ */
+export function formatCompact(value: number | undefined, { fixedDecimals = false }: { fixedDecimals?: boolean } = {}): string {
   if (value == null || !Number.isFinite(value)) return "—";
   const abs = Math.abs(value);
-  const sign = value < 0 ? "-" : "";
   const fmt = (n: number, decimals: number, suffix: string) => {
     const fixed = n.toFixed(decimals);
     // Strip unnecessary trailing zeros after decimal point
-    const trimmed = fixed.includes(".") ? fixed.replace(/\.?0+$/, "") : fixed;
+    const trimmed = fixed.includes(".") && (!fixedDecimals || !suffix) ? fixed.replace(/\.?0+$/, "") : fixed;
+    // A value that rounds to zero carries no sign.
+    const sign = value < 0 && /[1-9]/.test(trimmed) ? "-" : "";
     return `${sign}${trimmed}${suffix}`;
   };
   if (abs >= 1e12) return fmt(abs / 1e12, 2, "T");
@@ -90,9 +101,9 @@ export function formatNumber(value: number | undefined, decimals = 2): string {
 export function formatGrowthShort(value: number): string {
   const pct = value * 100;
   const sign = pct > 0 ? "+" : "";
-  return Math.abs(pct) >= 10
-    ? `${sign}${Math.round(pct)}%`
-    : `${sign}${pct.toFixed(1)}%`;
+  if (Math.abs(pct) >= 10) return `${sign}${Math.round(pct)}%`;
+  // A change that rounds to zero prints 0.0%, never -0.0%.
+  return Math.abs(pct) < 0.05 ? "0.0%" : `${sign}${pct.toFixed(1)}%`;
 }
 
 /** Pick a common unit suffix for a set of numbers */

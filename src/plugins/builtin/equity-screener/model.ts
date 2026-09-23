@@ -13,7 +13,10 @@ import {
 import { canonicalExchange } from "../../../utils/exchanges";
 import { formatCompact } from "../../../utils/format";
 
-/** Column headers. Currency sits in the footer; percentage fields carry %. */
+/**
+ * Column headers. Currency sits in the footer; percentage fields carry %.
+ * Growth and margins come from the latest fiscal-year statement, so they say FY.
+ */
 export const SHORT_LABELS: Record<NumericField, string> = {
   price: "PRICE",
   changePercent: "CHG %",
@@ -25,11 +28,11 @@ export const SHORT_LABELS: Record<NumericField, string> = {
   forwardPE: "FWD P/E",
   enterpriseToRevenue: "EV/REV",
   dividendYieldPercent: "DIV YLD %",
-  revenueGrowthPercent: "REV GR %",
-  earningsGrowthPercent: "EARN GR %",
-  grossMarginPercent: "GROSS MGN %",
-  operatingMarginPercent: "OP MGN %",
-  netMarginPercent: "NET MGN %",
+  revenueGrowthPercent: "FY REV GR %",
+  earningsGrowthPercent: "FY EARN GR %",
+  grossMarginPercent: "FY GROSS MGN %",
+  operatingMarginPercent: "FY OP MGN %",
+  netMarginPercent: "FY NET MGN %",
   shortInterestShares: "SHORT INT",
   shortInterestChangePercent: "SI CHG %",
   daysToCover: "DAYS COVER",
@@ -48,11 +51,12 @@ const CONTEXT_FIELDS: NumericField[] = ["marketCap", "price", "changePercent", "
 
 export function formatScreenValue(field: NumericField, value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "--";
-  if (COMPACT.has(field)) return formatCompact(value);
+  if (COMPACT.has(field)) return formatCompact(value, { fixedDecimals: true });
   if (COUNTS.has(field)) return value.toFixed(0);
   if (field === "price") return value.toFixed(2);
-  const fixed = value.toFixed(1);
-  return SIGNED.has(field) && value > 0 ? `+${fixed}` : fixed;
+  // A value that rounds to zero prints 0.0, never -0.0.
+  const fixed = Math.abs(value) < 0.05 ? "0.0" : value.toFixed(1);
+  return SIGNED.has(field) && value > 0 && fixed !== "0.0" ? `+${fixed}` : fixed;
 }
 
 /** Source observation date, or the collection date when the provider gives none. */
