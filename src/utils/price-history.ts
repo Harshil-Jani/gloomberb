@@ -1,8 +1,8 @@
 import type { PricePoint, TickerFinancials } from "../types/financials";
 import { canonicalExchange, resolveExchangeTimeZone } from "./exchanges";
-import { isTimestampStaleForExchangeSession } from "../market-data/market/freshness";
+import { hasPublishedSessionCalendar, isTimestampStaleForExchangeSession, latestRegularSessionClose, sessionCalendarTimeZone } from "../market-data/market/freshness";
+import { zonedDateTimeParts } from "./zoned-date-time";
 import { regularHistorySessionStaleness } from "../market-data/history-session";
-import { getPublishedUsEquityCalendarYears, getPublishedUsEquitySession } from "../market-data/published-us-sessions";
 import type { HistorySession } from "../types/price-history";
 
 const MAX_CURRENT_INTRADAY_HISTORY_LAG_MS = 18 * 60 * 60 * 1000;
@@ -190,46 +190,109 @@ export function isPriceHistoryStaleForCurrentWindow(
 }
 
 // Sources finish the closing auction and late prints some minutes after the
-// bell. Cloud expires its own daily copies at the same point.
+// bell, past the delayed feed's lag. A copy fetched later can still carry an
+// unfinished bar when its source had not settled it; only the source can tell.
 const SESSION_BAR_SETTLE_MS = 30 * 60 * 1000;
 const CRYPTO_BAR_MAX_AGE_MS = 60 * 60 * 1000;
-const newYorkDate = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
-});
+// A copy missing a settled session is asked again at most this often, and less
+// often as that close recedes, so a halted, delisted or late listing costs a
+// handful of requests per session rather than one per request.
+const BEHIND_RECHECK_MS = 60 * 60 * 1000;
+const BEHIND_RECHECK_BACKOFF = 4;
+// A copy fetched before that close is asked again at most this often when the
+// re-check fails, answers nothing usable, or is rejected.
+const UNSETTLED_RETRY_MS = 5 * 60 * 1000;
 
-function latestUsSessionClose(exchange: string, time: number): number | null {
-  const parts = new Map(newYorkDate.formatToParts(time).map((part) => [part.type, part.value]));
-  const today = Date.parse(`${parts.get("year")}-${parts.get("month")}-${parts.get("day")}T00:00:00Z`);
-  for (let offset = 0; offset <= 10; offset++) {
-    const session = getPublishedUsEquitySession(exchange, new Date(today - offset * DAY_MS).toISOString().slice(0, 10));
-    if (!session) return null;
-    if (session.kind === "session" && session.close <= time) return session.close;
+interface CalendarHistoryFetchOptions extends Pick<PriceHistoryFreshnessOptions, "exchange" | "intervalMs"> {
+  /**
+   * The latest check of this request, including a failed or empty one; the
+   * fetch of the copy itself when absent.
+   */
+  checkedAt?: number;
+}
+
+/**
+ * - current: holds every settled session it can.
+ * - unsettled: fetched before the latest settled close, so it can hold that
+ *   session in progress.
+ * - pending: unsettled, and re-checked since that close without replacing it;
+ *   the next re-check waits.
+ * - behind: fetched after that close but without its bar; not due a re-check.
+ * - recheck: behind, and due a re-check.
+ */
+export type CalendarHistoryFetchState = "current" | "unsettled" | "pending" | "behind" | "recheck";
+
+function dayNumber(date: string): number {
+  return Date.parse(`${date}T00:00:00Z`) / DAY_MS;
+}
+
+/** Daily labels at UTC midnight name that date; others read in the venue's zone. */
+function barDate(time: number, timeZone: string): string {
+  if (time % DAY_MS === 0) return new Date(time).toISOString().slice(0, 10);
+  const { year, month, day } = zonedDateTimeParts(time, timeZone);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * The venue date of the latest bar, read as calendarHistoryFetchState reads
+ * it, so copies whose sources label a session differently compare equal.
+ */
+export function calendarHistoryLastBarDate(points: PricePoint[], exchange?: string): string | null {
+  const latest = normalizePriceHistory(points).findLast(hasFiniteClose);
+  if (!latest) return null;
+  const time = getPricePointTimestamp(latest);
+  if (!Number.isFinite(time)) return null;
+  // Bare symbols resolve to their US listing at the sources.
+  return barDate(time, sessionCalendarTimeZone(canonicalExchange(exchange) || "NYSE") ?? "UTC");
+}
+
+function unsettledState(settledAt: number, checkedAt: number | undefined, now: number): CalendarHistoryFetchState {
+  return checkedAt !== undefined && checkedAt >= settledAt && now - checkedAt < UNSETTLED_RETRY_MS ? "pending" : "unsettled";
+}
+
+/** True when the session date falls in a later bar than the latest one. */
+function isBarBeforeSession(latestTime: number, session: string, intervalMs: number, timeZone: string): boolean {
+  const bar = barDate(latestTime, timeZone);
+  if (intervalMs >= 28 * DAY_MS) {
+    const month = (date: string) => Number(date.slice(0, 4)) * 12 + Number(date.slice(5, 7));
+    return month(session) >= month(bar) + Math.max(1, Math.round(intervalMs / (30 * DAY_MS)));
   }
-  return null;
+  return dayNumber(session) >= dayNumber(bar) + Math.max(1, Math.round(intervalMs / DAY_MS));
 }
 
 /**
  * A daily or coarser series changes at every close. A copy fetched before the
- * latest settled close is outdated whatever its cache TTL, and a copy of a
- * 24/7 series goes out of date within the hour.
+ * latest settled close is outdated whatever its cache TTL. A copy fetched
+ * after it but without its bar is behind only where the venue's closures are
+ * published (US venues, JPX): elsewhere, and for a bare symbol whose venue is
+ * unknown, a local holiday would read as a missing session. A copy of a 24/7
+ * series goes out of date within the hour.
  */
-export function isCalendarHistoryFetchOutdated(
+export function calendarHistoryFetchState(
   points: PricePoint[],
   fetchedAt: number,
   now = Date.now(),
-  options: Pick<PriceHistoryFreshnessOptions, "exchange" | "intervalMs"> = {},
-): boolean {
-  if (!Number.isFinite(fetchedAt) || !Number.isFinite(now) || fetchedAt >= now) return false;
-  const intervalMs = options.intervalMs ?? inferredHistoryIntervalMs(normalizePriceHistory(points));
-  if (intervalMs == null || intervalMs < DAY_MS) return false;
+  options: CalendarHistoryFetchOptions = {},
+): CalendarHistoryFetchState {
+  if (!Number.isFinite(fetchedAt) || !Number.isFinite(now) || fetchedAt >= now) return "current";
+  const normalized = normalizePriceHistory(points);
+  const intervalMs = options.intervalMs ?? inferredHistoryIntervalMs(normalized);
+  if (intervalMs == null || intervalMs < DAY_MS) return "current";
   const exchange = canonicalExchange(options.exchange);
-  if (exchange === "CCC") return now - fetchedAt > CRYPTO_BAR_MAX_AGE_MS;
-  // Bare symbols resolve to their US listing at the sources.
-  if (!exchange || getPublishedUsEquityCalendarYears(exchange)) {
-    const close = latestUsSessionClose(exchange || "NYSE", now - SESSION_BAR_SETTLE_MS);
-    if (close != null) return fetchedAt < close + SESSION_BAR_SETTLE_MS;
+  if (exchange === "CCC") {
+    return now - fetchedAt > CRYPTO_BAR_MAX_AGE_MS
+      ? unsettledState(fetchedAt + CRYPTO_BAR_MAX_AGE_MS, options.checkedAt, now) : "current";
   }
-  return isTimestampStaleForExchangeSession(fetchedAt, exchange, now);
+  // Bare symbols resolve to their US listing at the sources.
+  const session = latestRegularSessionClose(exchange || "NYSE", now - SESSION_BAR_SETTLE_MS);
+  if (!session) return "current";
+  if (fetchedAt < session.close + SESSION_BAR_SETTLE_MS) return unsettledState(session.close + SESSION_BAR_SETTLE_MS, options.checkedAt, now);
+  if (!exchange || !hasPublishedSessionCalendar(exchange, session.date)) return "current";
+  const latest = normalized.findLast(hasFiniteClose);
+  if (!latest || !isBarBeforeSession(getPricePointTimestamp(latest), session.date, intervalMs, session.timeZone)) return "current";
+  const lastCheck = options.checkedAt ?? fetchedAt;
+  const pace = Math.max(BEHIND_RECHECK_MS, (now - session.close) / BEHIND_RECHECK_BACKOFF);
+  return now - lastCheck >= pace ? "recheck" : "behind";
 }
 
 export function normalizeTickerFinancialsPriceHistory(financials: TickerFinancials): TickerFinancials {

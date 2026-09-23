@@ -22,7 +22,7 @@ import { repairIsolatedIntradayOhlcOutliers } from "../../time-series/history-qu
 import { canonicalExchange, parsePublicTickerKey, resolveExchangeTimeZone } from "../../utils/exchanges";
 import { zonedDateTimeParts } from "../../utils/zoned-date-time";
 import { resolvePriceHistoryCurrencyUnit } from "../../utils/currency-units";
-import { getPricePointTimestamp, hasUsablePriceHistory, isCalendarHistoryFetchOutdated, preservePriceHistoryGaps, isPriceHistoryStaleForCurrentWindow, normalizePriceHistory, priceHistoryIntervalMs } from "../../utils/price-history";
+import { calendarHistoryFetchState, calendarHistoryLastBarDate, getPricePointTimestamp, hasUsablePriceHistory, preservePriceHistoryGaps, isPriceHistoryStaleForCurrentWindow, normalizePriceHistory, priceHistoryIntervalMs, type CalendarHistoryFetchState } from "../../utils/price-history";
 import { shouldLogProviderError } from "../provider-errors";
 import { hasUnverifiedShellHistory, HistoryCoverageError } from "../history-coverage";
 import {
@@ -311,9 +311,40 @@ function historyCoverage(request: HistoryRequestDescriptor) {
   };
 }
 
+const CALENDAR_RECHECK_MARKER_POLICY = { staleMs: 7 * DAY_MS, expireMs: 7 * DAY_MS };
+
+function calendarRecheckMarkerKey(request: HistoryRequestDescriptor) {
+  return { namespace: "market", kind: "price-history-recheck", entityKey: request.identity.entityKey,
+    variantKey: request.identity.variantKey, sourceKey: "router" };
+}
+
 export class ProviderRouterHistoryRoutes {
   constructor(private readonly deps: ProviderRouterCoreDeps) {}
   private readonly historyRefreshInFlight = new Map<string, Promise<unknown>>();
+  private readonly calendarRecheckAt = new Map<string, number>();
+
+  /** The latest calendar re-check of this request, kept with the cache so it binds every process. */
+  private calendarCheckedAt(request: HistoryRequestDescriptor): number | undefined {
+    let persisted: number | undefined;
+    try {
+      const marker = this.deps.resources?.get<{ checkedAt?: unknown }>(calendarRecheckMarkerKey(request));
+      if (typeof marker?.value?.checkedAt === "number") persisted = marker.value.checkedAt;
+    } catch {
+      // Without the store, the in-memory mark bounds this process.
+    }
+    const local = this.calendarRecheckAt.get(request.identity.revalidationKey);
+    return persisted === undefined ? local : local === undefined ? persisted : Math.max(persisted, local);
+  }
+
+  private markCalendarChecked(request: HistoryRequestDescriptor, checkedAt: number): void {
+    if (this.calendarRecheckAt.size >= 4096) this.calendarRecheckAt.clear();
+    this.calendarRecheckAt.set(request.identity.revalidationKey, checkedAt);
+    try {
+      this.deps.resources?.set(calendarRecheckMarkerKey(request), { checkedAt }, { cachePolicy: CALENDAR_RECHECK_MARKER_POLICY });
+    } catch {
+      // Without the store, the in-memory mark bounds this process.
+    }
+  }
 
   async getPriceHistory(ticker: string, exchange: string, range: TimeRange, context?: MarketDataRequestContext): Promise<PricePoint[]> {
     return (await this.getPriceHistoryWithMetadata(ticker, exchange, range, context)).points;
@@ -567,7 +598,39 @@ export class ProviderRouterHistoryRoutes {
       return request.cachePolicyKey === "priceHistoryIntraday"
         || !hasUnverifiedShellHistory(record.value.points, request.target, record.sourceKey, request.requestedStart);
     });
-    const cached = cachedRecords.find((record) => hasUsablePriceHistory(record.value.points)) ?? cachedRecords[0] ?? null;
+    // A background revalidation cannot correct bars from before a close in
+    // time: a one-shot CLI exits first, and this caller keeps the old bars.
+    // Broader variants answer the same way. A current copy under another key
+    // (such as the refetch of this range) answers first. Next come copies
+    // fetched after the latest settled close that are behind, due a re-check
+    // or not, the one reaching furthest first. A copy fetched before that close
+    // answers only when no later copy exists: its latest bar may be the session
+    // in progress, and ranking it by that bar would refetch on every request
+    // without ever replacing it.
+    const target = parsePublicTickerKey(request.target.symbol);
+    const currentWindow = request.requestedEnd === undefined || isCurrentHistoryWindow(new Date(request.requestedEnd));
+    const now = Date.now();
+    const fetchState = (record: { fetchedAt: number; value: PriceHistoryResult }, checkedAt?: number): CalendarHistoryFetchState => currentWindow
+      ? calendarHistoryFetchState(record.value.points, record.fetchedAt, now, {
+        exchange: target.exchange || request.target.exchange,
+        checkedAt,
+        // Bar size comes from the request: a cached weekly or monthly series
+        // can end in a trade-time row that hides its cadence.
+        intervalMs: record.value.resolution ? priceHistoryIntervalMs(record.value.resolution)
+          : request.cachePolicyKey === "priceHistoryDaily" ? DAY_MS : undefined,
+      })
+      : "current";
+    const fetchTier: Record<CalendarHistoryFetchState, number> = { current: 0, behind: 1, recheck: 1, pending: 2, unsettled: 2 };
+    const ranked = cachedRecords.filter((record) => hasUsablePriceHistory(record.value.points)).map((record) => {
+      const tier = fetchTier[fetchState(record)];
+      return { record, tier, exact: request.exactCacheVariantKeys.includes(record.variantKey),
+        lastBar: tier === 0 ? "" : calendarHistoryLastBarDate(record.value.points, target.exchange || request.target.exchange) ?? "" };
+    });
+    // Current copies keep their listed order. Otherwise ties go to this key's
+    // own copy, then the latest fetch, rather than to row order.
+    ranked.sort((a, b) => a.tier - b.tier || (a.tier === 0 ? 0 : b.lastBar.localeCompare(a.lastBar)
+      || Number(b.exact) - Number(a.exact) || b.record.fetchedAt - a.record.fetchedAt));
+    const cached = ranked[0]?.record ?? cachedRecords[0] ?? null;
     const cachedValue: PriceHistoryResult = cached?.value ?? { points: [], resolution: historyResolutionForInterval(request.interval) };
     const reportedGaps = cachedRecords.map((record) => record.value)
       .filter((value) => !hasUsablePriceHistory(value.points));
@@ -576,22 +639,21 @@ export class ProviderRouterHistoryRoutes {
       ? clipHistoryToRange(value, request.requestedRange, request.target.exchange) : value;
     const cachedHistoryStale = request.isCachedValueStale(cachedValue);
     const forceRefresh = request.context?.cacheMode === "refresh";
-    // A background revalidation cannot correct bars from before a close in
-    // time: a one-shot CLI exits first, and this caller keeps the old bars.
-    const cachedBeforeClose = !!cached
-      && (request.requestedEnd === undefined || isCurrentHistoryWindow(new Date(request.requestedEnd)))
-      && isCalendarHistoryFetchOutdated(cachedValue.points, cached.fetchedAt, Date.now(), {
-        exchange: parsePublicTickerKey(request.target.symbol).exchange || request.target.exchange,
-        // Bar size comes from the request: a cached weekly or monthly series
-        // can end in a trade-time row that hides its cadence.
-        intervalMs: cachedValue.resolution ? priceHistoryIntervalMs(cachedValue.resolution)
-          : request.cachePolicyKey === "priceHistoryDaily" ? DAY_MS : undefined,
-      });
+    // A recent re-check, even a failed, empty or rejected one, defers the next
+    // one; it does not make the copy current. A broader copy only tells what
+    // its own key answered, so this key is asked at least once.
+    const servedState = cached ? fetchState(cached, Math.max(this.calendarCheckedAt(request) ?? Number.NEGATIVE_INFINITY,
+      request.exactCacheVariantKeys.includes(cached.variantKey) ? cached.fetchedAt : Number.NEGATIVE_INFINITY)) : "current";
+    const cachedBeforeClose = servedState === "unsettled" || servedState === "recheck";
+    if (cachedBeforeClose) this.markCalendarChecked(request, now);
     const usableCached = hasUsablePriceHistory(cachedValue.points) && cached && !cached.expired && !cachedHistoryStale
       && !cachedBeforeClose;
     if (usableCached && !forceRefresh) {
       const exactHit = request.exactCacheVariantKeys.includes(cached.variantKey);
-      if (cached.stale) {
+      // A copy behind or before the latest session is re-checked on the
+      // paced schedule above, not on its short TTL: the source is likely to
+      // answer the same.
+      if (cached.stale && servedState === "current") {
         scheduleRouterRevalidation(this.historyRefreshInFlight, request.identity.revalidationKey, () => this.refreshHistory(request));
       }
       return exactHit || !request.requestedRange
@@ -617,10 +679,13 @@ export class ProviderRouterHistoryRoutes {
     });
     if (providerResult && hasUsablePriceHistory(providerResult.value.points)) return withReportedGaps(providerResult.value);
     if (providerResult) reportedGaps.push(providerResult.value);
-    const fallbackValue = cachedRecords
+    // A failed refetch falls back in the same order the cache hit used, so a
+    // failing request answers what the next request will.
+    const fallbackValue = ranked
+      .map((entry) => entry.record)
       .filter((record) => !supersededCacheSources.has(record.sourceKey))
       .map((record) => record.value)
-      .find((value) => hasUsablePriceHistory(value.points) && !request.isCachedValueStale(value));
+      .find((value) => !request.isCachedValueStale(value));
     if (fallbackValue) {
       return request.requestedRange
         ? clip(withReportedGaps(fallbackValue))
