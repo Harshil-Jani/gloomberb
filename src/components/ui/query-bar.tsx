@@ -68,6 +68,12 @@ export interface QueryBarToggleFilter extends QueryBarFilterBase {
   kind: "toggle";
   value: boolean;
   onChange: (value: boolean) => void;
+  /**
+   * The state the pane starts in; the other one narrows and gets a reset. True
+   * for a toggle that shows something by default (a fit line), so turning it
+   * on is not counted as a filter.
+   */
+  defaultValue?: boolean;
 }
 
 /** A second free-text field beside the search, e.g. a tickers filter. */
@@ -82,8 +88,14 @@ export interface QueryBarTextFilter extends QueryBarFilterBase {
   focusToken?: number;
   inputRef?: RefObject<InputRenderable | null>;
   debounceMs?: number;
-  /** Field width in cells. */
+  /** Input width in cells; the label is drawn beside it. */
   width?: number;
+  /**
+   * Enter in the field. `onChange` still follows typing, so a pane that should
+   * apply the value only when it is complete (a date) can keep a draft in
+   * `onChange` and apply here.
+   */
+  onSubmit?: (value: string) => void;
 }
 
 export type QueryBarFilter = QueryBarSelectFilter<any> | QueryBarMultiFilter | QueryBarToggleFilter | QueryBarTextFilter;
@@ -168,7 +180,7 @@ function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
 
 function isNarrowing(filter: QueryBarFilter): boolean {
   if (filter.kind === "text") return filter.value.trim().length > 0;
-  if (filter.kind === "toggle") return filter.value;
+  if (filter.kind === "toggle") return filter.value !== (filter.defaultValue ?? false);
   if (filter.kind === "multi") return filter.values.length > 0;
   return filter.defaultValue !== undefined && filter.value !== filter.defaultValue;
 }
@@ -192,7 +204,7 @@ export function QueryBar({ width, search, filters = [], view, meta }: QueryBarPr
   const resetAll = useCallback(() => {
     for (const filter of filters) {
       if (!isNarrowing(filter)) continue;
-      if (filter.kind === "toggle") filter.onChange(false);
+      if (filter.kind === "toggle") filter.onChange(filter.defaultValue ?? false);
       else if (filter.kind === "text") filter.onChange("");
       else if (filter.kind === "multi") filter.onChange([]);
       else if (filter.defaultValue !== undefined) filter.onChange(filter.defaultValue);
@@ -259,6 +271,7 @@ export function QueryBar({ width, search, filters = [], view, meta }: QueryBarPr
         onFocus={() => filter.onActiveChange(true)}
         onBlur={() => filter.onActiveChange(false)}
         onQueryChange={filter.onChange}
+        onSubmit={filter.onSubmit}
       />
     ));
   }
@@ -290,12 +303,12 @@ export function QueryBar({ width, search, filters = [], view, meta }: QueryBarPr
         kind: "toggle",
         label: filter.label,
         valueLabel: filter.label,
-        narrowing: filter.value,
+        narrowing: isNarrowing(filter),
         checked: filter.value,
         options: [],
         onSelect: () => {},
         onToggle: () => filter.onChange(!filter.value),
-        onReset: () => filter.onChange(false),
+        onReset: () => filter.onChange(filter.defaultValue ?? false),
       };
     }
     if (filter.kind === "multi") {
@@ -402,7 +415,7 @@ export function QueryBar({ width, search, filters = [], view, meta }: QueryBarPr
         if (filter.inline) {
           return (
             <Box key={filter.id} flexDirection="row" gap={1} flexShrink={filter.options.length > TERMINAL_SEGMENT_LIMIT ? 1 : 0} minWidth={0}>
-              <Text fg={colors.textMuted}>{filter.label}</Text>
+              <Box flexShrink={0}><Text fg={colors.textMuted}>{filter.label}</Text></Box>
               <TerminalChoiceStrip
                 options={filter.options.map((option) => ({ value: option.value, label: option.short ?? option.label, hint: option.hint, disabled: option.disabled }))}
                 value={filter.value}

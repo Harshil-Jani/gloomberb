@@ -188,7 +188,9 @@ describe("ThesisBoardPane", () => {
     expect(frame).toContain("Positions without a thesis");
     expect(frame).toContain("AAPL");
     expect(frame).toContain("[n]ew");
-    expect(frame).toContain("[w]eights");
+    // Scope and view sit in the query bar, not the footer.
+    expect(frame).toContain("Portfolio");
+    expect(frame).toContain("Weights");
   });
 
   test("enter opens the thesis: pillars, kill conditions, catalysts, and the open signal with its source", async () => {
@@ -210,14 +212,15 @@ describe("ThesisBoardPane", () => {
     expect(frame).toContain("Horizon 3y");
     expect(frame).toContain("Listening to MSFT");
     expect(frame).toContain("Signals (1 open)");
-    expect(frame).toContain("challenges · Gross margin holds");
+    expect(frame).toMatch(/challenges\s+Gross margin holds/);
     expect(frame).toContain("10-Q: Q3 gross margin guide 72-73%");
     expect(frame).toContain("Data center revenue grows over 50% YoY");
     expect(frame).toContain("≥ 70%  weakening");
     expect(frame).toContain("Hyperscaler capex cut over 20%");
     expect(frame).toContain("not fired");
     expect(frame).toContain("Q3 earnings");
-        expect(frame).toContain("[r]eview");
+    // r is the app-wide refresh, so the review has its own key.
+    expect(frame).toContain("[v] review");
   });
 
   test("w switches to conviction against weight", async () => {
@@ -233,7 +236,6 @@ describe("ThesisBoardPane", () => {
     await flush();
     const frame = setup!.captureCharFrame();
     if (process.env.PRINT_FRAMES) console.log(frame);
-    expect(frame).toContain("Gap");
-    expect(frame).toContain("[w] board");
+    expect(frame).toContain("GAP");
   });
 });
