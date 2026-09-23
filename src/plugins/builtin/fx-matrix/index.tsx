@@ -18,7 +18,11 @@ import { isPlainKey } from "../../../utils/keyboard";
 import { useAssetData } from "../../runtime";
 import { summarizeFxRates, fxStatusLabel } from "../../../utils/fx-status";
 import type { PluginModule } from "../plugin-module";
+import { useLiveQuoteEntries } from "../../../state/hooks/quote-streaming";
 import { useAutoRefresh, useUpdatedAgo } from "../shared/auto-refresh";
+import { useLiveStreamingSetting } from "../shared/live-streaming";
+import { isStreamCarryingQuote } from "../shared/use-quote-board";
+import { fxLegQuoteKey, fxLegTargets, fxLegs, liveFxLegEntry } from "./live-legs";
 import { MAJOR_CURRENCIES, formatRate, resolveCurrencies, type MajorCurrency } from "./pairs";
 import { createFxExportMetadata } from "./export";
 
@@ -27,6 +31,8 @@ const FX_MATRIX_PANE_ID = "fx-matrix";
 const NO_SAVED_CURRENCIES: string[] = [];
 const BASE_COLUMN_WIDTH = 5;
 const RATE_COLUMN_WIDTH = 10;
+/** Snapshot rates reload at this pace while the feed is not carrying every leg. */
+const FX_FALLBACK_REFRESH_MS = 60_000;
 
 function FxMatrixPane({ focused, width, height }: PaneProps) {
   const dataProvider = useAssetData();
@@ -34,10 +40,35 @@ function FxMatrixPane({ focused, width, height }: PaneProps) {
   const currencies = useMemo(() => resolveCurrencies(savedCurrencies), [savedCurrencies]);
   const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
 
-  const rates = useFxRatesMap(currencies);
+  const snapshotRates = useFxRatesMap(currencies);
+  // Each non-USD currency streams its USD pair; the 28 crosses derive from
+  // those legs. The snapshot rates paint first and cover any leg not streaming.
+  const liveStreaming = useLiveStreamingSetting();
+  const legs = useMemo(() => fxLegs(currencies), [currencies]);
+  const legTargets = useMemo(() => fxLegTargets(legs, selectedCurrency), [legs, selectedCurrency]);
+  const {
+    entries: legEntries,
+    freshnessNow,
+    subscriptionStartedAt,
+  } = useLiveQuoteEntries(legTargets, { freshnessScopeKey: "fx-matrix", liveStreaming });
+  const liveEntries = useMemo(() => {
+    const coordinator = getSharedMarketDataCoordinator();
+    return new Map(legs.flatMap((leg) => {
+      const entry = liveFxLegEntry(leg, legEntries.get(fxLegQuoteKey(leg)), coordinator?.getFxEntry(leg.currency));
+      return entry ? [[leg.currency, entry] as const] : [];
+    }));
+  }, [legEntries, legs, snapshotRates]);
+  const rates = useMemo(() => {
+    if (liveEntries.size === 0) return snapshotRates;
+    const merged = new Map(snapshotRates);
+    for (const [currency, entry] of liveEntries) merged.set(currency, entry.data!);
+    return merged;
+  }, [liveEntries, snapshotRates]);
   // Export the provenance of this render's rates, even if a provider response
   // arrives before React commits the next render and the user exports now.
   const rateEntries = new Map(currencies.map((currency) => {
+    const live = liveEntries.get(currency);
+    if (live) return [currency as string, live] as const;
     const entry = getSharedMarketDataCoordinator()?.getFxEntry(currency);
     return [currency as string, entry && resolveEntryData(entry) === (rates.get(currency) ?? null)
       ? { ...entry, error: entry.error ? { ...entry.error } : null }
@@ -45,6 +76,18 @@ function FxMatrixPane({ focused, width, height }: PaneProps) {
   }));
   const status = summarizeFxRates(currencies, rates, (currency) => rateEntries.get(currency));
   const statusText = fxStatusLabel(status);
+  const snapshotFetchedAt = summarizeFxRates(currencies, snapshotRates, (currency) => (
+    getSharedMarketDataCoordinator()?.getFxEntry(currency)
+  )).latestFetchedAt;
+  // Any newer pair quote may draw a rate, but only a leg the feed keeps
+  // current relaxes the snapshot reload: a quote another pane loaded, or one
+  // the stream stopped sending, would otherwise freeze the matrix. With
+  // streaming off, the legs' own quote poll is the feed.
+  const allLegsLive = legs.every((leg) => {
+    const entry = legEntries.get(fxLegQuoteKey(leg));
+    if (!liveStreaming) return liveEntries.has(leg.currency) && (entry?.fetchedAt ?? 0) >= subscriptionStartedAt;
+    return isStreamCarryingQuote(entry, subscriptionStartedAt, freshnessNow);
+  });
 
   const refresh = useCallback(() => {
     const coordinator = getSharedMarketDataCoordinator();
@@ -55,7 +98,7 @@ function FxMatrixPane({ focused, width, height }: PaneProps) {
     }
   }, [currencies]);
 
-  useAutoRefresh(status.latestFetchedAt || null, refresh);
+  useAutoRefresh(snapshotFetchedAt || null, refresh, { intervalMs: allLegsLive ? null : FX_FALLBACK_REFRESH_MS });
 
   const columns = useMemo<DataTableColumn[]>(() => [
     { id: "base", label: "", width: BASE_COLUMN_WIDTH, align: "left" },
