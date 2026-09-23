@@ -2,25 +2,26 @@ import { ActionRow } from "../../../components/ui/action-row";
 import { Box, ScrollBox, Text } from "../../../ui";
 import { useEffect, useMemo, useState } from "react";
 import { t } from "../../../i18n";
-import { TextAttributes } from "../../../ui";
 import type { AppState } from "../../../state/app/context";
 import { colors } from "../../../theme/colors";
 import type { BrokerConnectionStatus } from "../../../types/broker";
 import type { Portfolio } from "../../../types/ticker";
 import type { BrokerAccount } from "../../../types/trading";
-import { convertCurrency, formatCompact, padTo } from "../../../utils/format";
+import { formatCompact, padTo } from "../../../utils/format";
+import { isPlainKey, type KeyboardModifierEventLike } from "../../../utils/keyboard";
 import { formatMarketQuantity } from "../../../market-data/market/format";
 import { getBrokerInstance } from "../../../utils/broker-instances";
 import { usePluginBrokerActions } from "../../runtime";
 import {
-  buildDrawerMetricSegments,
   renderSummarySegments,
   resolvePortfolioAccountState,
+  type PortfolioSummarySegment,
   type ResolvedPortfolioAccountState,
 } from "./summary";
 
-export function shouldToggleCashMarginDrawer(key: string | undefined, showCashDrawer: boolean): boolean {
-  return key === "c" && showCashDrawer;
+/** Only a bare `c`: Cmd+Shift+C copies a pane screenshot and must not open the drawer on the way. */
+export function shouldToggleCashMarginDrawer(event: KeyboardModifierEventLike, showCashDrawer: boolean): boolean {
+  return showCashDrawer && isPlainKey(event, "c");
 }
 
 export interface PortfolioAccountStateResult {
@@ -80,53 +81,37 @@ export function usePortfolioAccountState(
   return useMemo(() => ({ accountState, accountsError }), [accountState, accountsError]);
 }
 
+/** Rows the open drawer needs: its title, the numbers the header row had no room for, then currency balances. */
+export function cashMarginDrawerHeight(accountState: ResolvedPortfolioAccountState, detailCount: number): number {
+  return 1 + (detailCount > 0 ? 1 : 0) + Math.min(4, Math.max(1, accountState.visibleCashBalances.length));
+}
+
+/**
+ * Opens from the `[c]ash` hint and takes no rows while closed. It continues
+ * the header row rather than repeating it, so no number is shown twice.
+ */
 export function PortfolioCashMarginDrawer({
   accountState,
-  expanded,
+  detail,
   onToggle,
   width,
   height,
-  baseCurrency,
-  exchangeRates,
 }: {
   accountState: ResolvedPortfolioAccountState;
-  expanded: boolean;
+  detail: PortfolioSummarySegment[];
   onToggle: () => void;
   width: number;
   height: number;
-  baseCurrency: string;
-  exchangeRates: Map<string, number>;
 }) {
-  const convertAccountValue = (value: number) => convertCurrency(
-    value,
-    accountState.account.currency ?? "",
-    baseCurrency,
-    exchangeRates,
-  );
-  const previewText = `${accountState.visibleCashBalances.length} ccy · Cash ${formatCompact(convertAccountValue(accountState.account.totalCashValue ?? Number.NaN))} · ${accountState.sourceLabel}`;
-  const drawerHeight = Math.max(1, height);
-
-  if (!expanded) {
-    return (
-      <ActionRow label={t("Cash & Margin")} expanded={false} width={width} height={drawerHeight} onPress={onToggle}>
-        <Box flexGrow={1} />
-        <Text fg={colors.textDim}>{padTo(previewText, Math.max(0, width - 17), "right")}</Text>
-      </ActionRow>
-    );
-  }
-
-  const metricSegments = buildDrawerMetricSegments(accountState.account, width, convertAccountValue);
-  const currencyRowsHeight = Math.max(1, drawerHeight - 2);
-
+  const currencyRowsHeight = Math.max(1, height - 1 - (detail.length > 0 ? 1 : 0));
   return (
-    <Box flexDirection="column" height={drawerHeight}>
-      <ActionRow label={t("Cash & Margin")} expanded width={width} onPress={onToggle}>
-        <Box flexGrow={1} />
-        <Text fg={colors.textDim}>{accountState.sourceLabel}</Text>
-      </ActionRow>
-      <Box height={1} overflow="hidden">
-        {renderSummarySegments(metricSegments, width)}
-      </Box>
+    <Box flexDirection="column" height={height}>
+      <ActionRow label={t("Cash & Margin")} expanded width={width} onPress={onToggle} />
+      {detail.length > 0 && (
+        <Box height={1} overflow="hidden">
+          {renderSummarySegments(detail, width)}
+        </Box>
+      )}
       <ScrollBox height={currencyRowsHeight} scrollY focusable={false}>
         {accountState.visibleCashBalances.length === 0 ? (
           <Text fg={colors.textDim}>{t("No non-zero cash balances.")}</Text>

@@ -25,17 +25,26 @@ import {
 } from "../../../../state/app/context";
 import { selectEffectiveExchangeRates } from "../../../../utils/exchange-rate-map";
 import { summarizeFxRates, fxStatusLabel } from "../../../../utils/fx-status";
+import { convertCurrency } from "../../../../utils/format";
+import { isPlainKey } from "../../../../utils/keyboard";
 import { getSharedMarketDataCoordinator } from "../../../../market-data/coordinator";
 import type { TickerRecord } from "../../../../types/ticker";
 import type { PaneProps } from "../../../../types/plugin";
 import type { InstrumentRef } from "../../../../market-data/request-types";
 import { calculatePortfolioSummaryTotals, resolveCollectionSortPreference, type ColumnContext } from "../metrics";
 import {
+  cashMarginDrawerHeight,
   PortfolioCashMarginDrawer,
   shouldToggleCashMarginDrawer,
   usePortfolioAccountState,
 } from "../header";
-import { buildPortfolioFooterSegments } from "../summary";
+import {
+  buildPortfolioFooterSegments,
+  buildPortfolioSummaryNotices,
+  buildPortfolioSummarySegments,
+  layoutPortfolioSummaryHeader,
+  renderSummarySegments,
+} from "../summary";
 import {
   getCollectionEntries,
   getPortfolioPaneSettings,
@@ -221,9 +230,27 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
   }, [noteCursorForPrefetch]);
 
   const showCashDrawer = !paneSettings.hideCash && !!(isPortfolioTab && currentPortfolio?.brokerInstanceId && accountState);
-  const requestedDrawerHeight = showCashDrawer
-    ? (cashDrawerExpanded ? Math.min(6, Math.max(3, 2 + accountState.visibleCashBalances.length)) : 1)
-    : 0;
+  const summaryAccountState = useMemo(
+    () => accountState ? { account: accountState.account, sourceLabel: accountState.sourceLabel } : null,
+    [accountState],
+  );
+  const accountCurrency = accountState?.account.currency ?? "";
+  const convertAccountValue = useCallback(
+    (value: number) => convertCurrency(value, accountCurrency, config.baseCurrency, effectiveExchangeRates),
+    [accountCurrency, config.baseCurrency, effectiveExchangeRates],
+  );
+  const summarySegments = useMemo(() => buildPortfolioSummarySegments({
+    totals: portfolioSummaryTotals,
+    accountState: summaryAccountState,
+    isPortfolioTab,
+    convertAccountValue,
+  }), [convertAccountValue, isPortfolioTab, portfolioSummaryTotals, summaryAccountState]);
+  // The header row sits in the pane's one-cell side padding, like the table.
+  const summaryWidth = Math.max(0, width - 2);
+  const summaryLayout = useMemo(() => layoutPortfolioSummaryHeader(summarySegments, summaryWidth, {
+    cashDrawer: showCashDrawer,
+    hideHeader: paneSettings.hideHeader,
+  }), [paneSettings.hideHeader, showCashDrawer, summarySegments, summaryWidth]);
   const showCollectionTabs = visibleCollections.length > 1;
   const handleCollectionSelect = useCallback((collectionId: string) => {
     cancelPendingCursorSymbol();
@@ -242,8 +269,9 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     }
     : null);
   const headerHeight = showCollectionTabs && !tabsInHeader ? 1 : 0;
-  const drawerHeight = showCashDrawer
-    ? Math.min(requestedDrawerHeight, Math.max(1, height - (headerHeight + 2)))
+  const summaryHeight = summaryLayout.row.length > 0 && height > headerHeight + 2 ? 1 : 0;
+  const drawerHeight = showCashDrawer && cashDrawerExpanded
+    ? Math.min(cashMarginDrawerHeight(accountState, summaryLayout.detail.length), Math.max(1, height - (headerHeight + summaryHeight + 2)))
     : 0;
 
   const handleVisibleRangeChange = useCallback(({ start, end }: TickerListVisibleRange) => {
@@ -306,14 +334,14 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
       return true;
     }
 
-    if (shouldToggleCashMarginDrawer(key, showCashDrawer)) {
+    if (shouldToggleCashMarginDrawer(event, showCashDrawer)) {
       event.preventDefault?.();
       event.stopPropagation?.();
       setCashDrawerExpanded(!cashDrawerExpanded);
       return true;
     }
 
-    if (key === "s" && isPortfolioTab) {
+    if (isPlainKey(event, "s") && isPortfolioTab) {
       event.preventDefault?.();
       event.stopPropagation?.();
       toggleViewMode();
@@ -383,36 +411,41 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
   });
 
   const summaryFooterInfo = useMemo(() => buildPortfolioFooterSegments({
-    accountState: accountState ? { account: accountState.account, sourceLabel: accountState.sourceLabel } : null,
+    accountState: summaryAccountState,
     accountStatusText: accountsError
       ? `Accounts unavailable: ${accountsError}`
       : isPortfolioTab && currentPortfolio?.brokerInstanceId && !accountState ? "Acct missing" : undefined,
-    activeCollectionId,
-    baseCurrency: config.baseCurrency,
-    exchangeRates: effectiveExchangeRates,
     financialsMap,
-    hideHeader: paneSettings.hideHeader,
     isPortfolioTab,
     refreshingSize,
     sortedTickers,
-    width,
+    totals: portfolioSummaryTotals,
   }), [
     accountState,
     accountsError,
-    activeCollectionId,
     currentPortfolio?.brokerInstanceId,
-    effectiveExchangeRates,
     financialsMap,
     isPortfolioTab,
-    paneSettings.hideHeader,
-    config.baseCurrency,
+    portfolioSummaryTotals,
     refreshingSize,
     sortedTickers,
-    width,
+    summaryAccountState,
   ]);
+  const fxWarning = !!(fxStatus.stale || fxStatus.unknownTime || fxStatus.unavailable);
+  const summaryNotices = isPortfolioTab
+    ? buildPortfolioSummaryNotices({
+      totals: portfolioSummaryTotals,
+      accountState: summaryAccountState,
+      baseCurrency: config.baseCurrency,
+      convertAccountValue,
+      fxStatus: fxWarning ? fxStatus : undefined,
+    })
+    : fxWarning ? [`FX ${fxStatusText}`] : [];
 
   usePaneFooter("portfolio-list", () => ({
-    info: fxStatusText ? [...summaryFooterInfo, { id: "fx", parts: [{ text: `FX ${fxStatusText}`, tone: fxStatus.stale || fxStatus.unknownTime || fxStatus.unavailable ? "warning" as const : "muted" as const }] }] : summaryFooterInfo,
+    info: fxStatusText && !fxWarning
+      ? [...summaryFooterInfo, { id: "fx", parts: [{ text: `FX ${fxStatusText}`, tone: "muted" as const }] }]
+      : summaryFooterInfo,
     hints: showCashDrawer
       ? [{
           id: "cash",
@@ -421,7 +454,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
           onPress: () => setCashDrawerExpanded(!cashDrawerExpanded),
         }]
       : [],
-  }), [cashDrawerExpanded, setCashDrawerExpanded, showCashDrawer, summaryFooterInfo, fxStatusText]);
+  }), [cashDrawerExpanded, fxStatusText, fxWarning, setCashDrawerExpanded, showCashDrawer, summaryFooterInfo]);
 
   const quickAddCollectionKind = useMemo<QuickAddCollectionKind | null>(() => {
     if (!activeCollectionId) return null;
@@ -440,10 +473,10 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     ? `${cursorSymbol} market cap: ${describeFundamentalMarketCap(selectedCap.provenance)}.` : undefined;
   usePaneNoticeFooter({
     registrationId: "portfolio-list-notices",
-    notices: capNotice ? [capNotice] : [],
+    notices: capNotice ? [...summaryNotices, capNotice] : summaryNotices,
     focused: focused && !quickAddFocused,
   });
-  const contentHeight = Math.max(1, height - headerHeight - drawerHeight - quickAddHeight);
+  const contentHeight = Math.max(1, height - headerHeight - summaryHeight - drawerHeight - quickAddHeight);
   const quickAddRow = activeCollectionId && activeCollectionEntry && quickAddCollectionKind ? (
     <QuickAddTickerInput
       collectionId={activeCollectionId}
@@ -471,6 +504,12 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
               />
             </Box>
           </Box>
+        </Box>
+      )}
+
+      {summaryHeight > 0 && (
+        <Box height={1} paddingX={1} overflow="hidden">
+          {renderSummarySegments(summaryLayout.row, summaryWidth)}
         </Box>
       )}
 
@@ -513,19 +552,18 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
 
       {quickAddRow}
 
-      {showCashDrawer && accountState && (
+      {drawerHeight > 0 && accountState && (
         <Box height={drawerHeight} paddingX={1}>
           <PortfolioCashMarginDrawer
             accountState={accountState}
-            expanded={cashDrawerExpanded}
-            onToggle={() => setCashDrawerExpanded(!cashDrawerExpanded)}
-            width={Math.max(0, width - 2)}
+            detail={summaryLayout.detail}
+            onToggle={() => setCashDrawerExpanded(false)}
+            width={summaryWidth}
             height={drawerHeight}
-            baseCurrency={config.baseCurrency}
-            exchangeRates={effectiveExchangeRates}
           />
         </Box>
       )}
+
     </Box>
   );
 }
