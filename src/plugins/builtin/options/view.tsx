@@ -57,11 +57,19 @@ import { optionMarketReference } from "./market-reference";
 import { useOptionsEnrichment } from "./enrichment";
 import type { OptionsEnrichmentSnapshot } from "./enrichment-model";
 import { optionMid } from "../shared/volatility";
+import type { TickerRecord } from "../../../types/ticker";
+import type { IvStats } from "../iv-history/client";
+import { formatIvRank, useIvRank } from "../iv-history/rank";
 
 type SummaryMetric = { label: string; value: string };
 
 function formatRatio(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value) ? "--" : value.toFixed(2);
+}
+
+/** The minimal record the chain needs for a symbol that is bound but not saved in any list. */
+function transientTicker(symbol: string, exchange: string, currency: string): TickerRecord {
+  return { metadata: { ticker: symbol, exchange, currency, name: symbol, portfolios: [], watchlists: [], positions: [], custom: {}, tags: [] } };
 }
 
 function SummaryRow({ metrics }: { metrics: SummaryMetric[] }) {
@@ -71,8 +79,9 @@ function SummaryRow({ metrics }: { metrics: SummaryMetric[] }) {
   </Box>;
 }
 
-function OptionsSummaryStrip({ summary, enrichment, width, rowCount, currency }: {
+function OptionsSummaryStrip({ summary, enrichment, width, rowCount, currency, ivRank }: {
   summary: OptionsSummary | null;
+  ivRank?: { stats: IvStats | null } | null;
   enrichment: OptionsEnrichmentSnapshot | null;
   width: number;
   rowCount: number;
@@ -82,6 +91,7 @@ function OptionsSummaryStrip({ summary, enrichment, width, rowCount, currency }:
     { label: "ATM IV", value: formatIv(summary?.atmImpliedVolatility ?? undefined) },
     { label: "HV30", value: formatIv(summary?.historicalVolatility30d ?? undefined) },
     { label: "IV/HV", value: formatRatio(summary?.impliedHistoricalRatio) },
+    ...(ivRank ? [{ label: "IVR", value: formatIvRank(ivRank.stats) }] : []),
   ];
   const move = (amount: number | null | undefined, percent: number | null | undefined) =>
     amount == null || percent == null ? "--" : `${amount.toFixed(2)} ${currency} (${percent.toFixed(2)}%)`;
@@ -110,8 +120,13 @@ function OptionsSummaryStrip({ summary, enrichment, width, rowCount, currency }:
   </Box>;
 }
 
-export function OptionsView({ width, height, focused, onCapture = () => {} }: OptionsViewProps) {
-  const { ticker, financials } = usePaneTicker();
+export function OptionsView({ width, height, focused, onCapture = () => {}, ivRank: showIvRank = false }: OptionsViewProps) {
+  const { ticker: savedTicker, symbol: boundSymbol, financials } = usePaneTicker();
+  // A shared layout binds a bare symbol; without a saved record the chain still has its underlying.
+  const fallbackExchange = financials?.quote?.listingExchangeName ?? financials?.quote?.exchangeName ?? "";
+  const fallbackCurrency = financials?.quote?.currency ?? "USD";
+  const ticker = useMemo(() => savedTicker ?? (boundSymbol ? transientTicker(boundSymbol, fallbackExchange, fallbackCurrency) : null),
+    [savedTicker, boundSymbol, fallbackExchange, fallbackCurrency]);
   const { createPaneFromTemplate } = usePluginAppActions();
   const liveStreaming = useLiveStreamingSetting();
   const [seededExpiration] = usePaneSettingValue<number | undefined>("expiration", undefined);
@@ -135,6 +150,7 @@ export function OptionsView({ width, height, focused, onCapture = () => {} }: Op
   const isOpt = target?.isOptionTicker ?? false;
   const parsed = target?.parsedOption ?? null;
   const effectiveTicker = target?.effectiveTicker ?? "";
+  const ivRank = useIvRank(showIvRank ? effectiveTicker : null);
   const effectiveExchange = target?.effectiveExchange ?? "";
   const selectionTargetKey = `${ticker?.metadata.ticker ?? ""}|${target?.cacheKey ?? ""}`;
   const underlyingQuoteTarget = isOpt
@@ -262,11 +278,13 @@ export function OptionsView({ width, height, focused, onCapture = () => {} }: Op
   }, [selectionTargetKey]);
 
   useEffect(() => {
-    if (!target || !initialChain || expirationTargetKey === selectionTargetKey || selectedExpiration == null) return;
+    // A transient record (bound symbol, no saved ticker yet) never claims the
+    // scope: the saved listing may still hydrate with a different instrument.
+    if (!savedTicker || !target || !initialChain || expirationTargetKey === selectionTargetKey || selectedExpiration == null) return;
     // Persist local choices in the same field as incoming handoffs, scoped to
     // this holding and instrument. A new target starts at its own held date.
     selectExpiration(selectedExpiration);
-  }, [expirationTargetKey, initialChain, selectExpiration, selectedExpiration, selectionTargetKey, target?.cacheKey]);
+  }, [expirationTargetKey, initialChain, savedTicker, selectExpiration, selectedExpiration, selectionTargetKey, target?.cacheKey]);
 
   useEffect(() => {
     userSelectedStrikeRef.current = false;
@@ -624,7 +642,8 @@ export function OptionsView({ width, height, focused, onCapture = () => {} }: Op
     <Box flexDirection="column" flexGrow={1} paddingX={1} onMouseDown={() => { if (!interactive) enterInteractive(); }}>
       {summaryRowCount > 0 && (
         <OptionsSummaryStrip summary={summary} enrichment={enrichment} width={width}
-          rowCount={summaryRowCount} currency={underlying?.quote?.currency ?? ticker.metadata.currency ?? ""} />
+          rowCount={summaryRowCount} currency={underlying?.quote?.currency ?? ticker.metadata.currency ?? ""}
+          ivRank={showIvRank ? { stats: ivRank } : null} />
       )}
 
       <Box flexDirection="row" height={1} gap={1}>
