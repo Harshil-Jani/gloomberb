@@ -19,6 +19,7 @@ import {
   type CliStatEntry,
 } from "../../utils/cli-output";
 import { exchangeShortName, marketStateLabel } from "../../market-data/market/status";
+import { resolvePriceBasis } from "../../market-data/market/price-basis";
 import type { AppConfig } from "../../types/config";
 import type { FinancialStatement, TickerFinancials } from "../../types/financials";
 import { computeTickerPriceReturns } from "../../market-data/ticker-price-returns";
@@ -32,9 +33,11 @@ import { initMarketData, withMarketData } from "../context";
 import { fail } from "../errors";
 import type { MarketContext } from "../types";
 import {
+  currencyMinorDigits,
   formatBidAsk,
   formatFractionPercentCell,
   formatNullableCompact,
+  formatPriceRange,
   formatPortfolioNames,
   formatSignedCurrency,
   formatSignedPercentRaw,
@@ -240,14 +243,28 @@ async function appendTickerPositions(lines: string[], tickerFile: TickerRecord |
   }
 }
 
+/** A source's enterprise value is in the units of the capitalization it reports beside it,
+ * which without a declared unit is the listing's quote currency (as the overview labels it). */
+function enterpriseValueCurrency(
+  quote: TickerFinancials["quote"],
+  fundamentals: TickerFinancials["fundamentals"],
+): string | undefined {
+  return fundamentals?.marketCapCurrency?.trim()
+    || selectMarketCapitalization(quote, fundamentals)?.currency
+    || quote?.currency?.trim()
+    || undefined;
+}
+
 function fundamentalsMetrics(
+  quote: TickerFinancials["quote"],
   fundamentals: TickerFinancials["fundamentals"],
   marketCapText: string,
   priceReturns: { return1Y?: number | null; return3Y?: number | null },
+  enterpriseValueText = formatReportedMoney(fundamentals?.enterpriseValue, enterpriseValueCurrency(quote, fundamentals)),
 ): Array<[string, string]> {
   return [
     ["Market Cap", marketCapText],
-    ["Enterprise Value", formatNullableCompact(fundamentals?.enterpriseValue)],
+    ["Enterprise Value", enterpriseValueText],
     ["P/E (TTM)", formatPriceEarnings(fundamentals?.trailingPE, 2)],
     ["Forward P/E", formatPriceEarnings(fundamentals?.forwardPE, 2)],
     ["PEG", fundamentals?.pegRatio != null ? formatNumber(fundamentals.pegRatio, 2) : "—"],
@@ -282,7 +299,7 @@ export function renderFundamentalsReport(
   const marketCapText = capitalization
     ? `${formatCompact(capitalization.value)} ${capitalization.currency}`
     : "—";
-  const metrics = fundamentalsMetrics(fundamentals, marketCapText, computeTickerPriceReturns(financials));
+  const metrics = fundamentalsMetrics(quote, fundamentals, marketCapText, computeTickerPriceReturns(financials));
   const symbol = quote?.symbol ?? financials.symbol;
   const name = quote?.name && quote.name !== symbol ? ` ${cliStyles.bold(quote.name)}` : "";
   const lines = [`${cliStyles.accent(symbol)}${name}`];
@@ -326,7 +343,11 @@ export async function buildTickerReport({
   const priceReturns = computeTickerPriceReturns(financials, tickerFile?.metadata.assetCategory);
   const profile = financials.profile;
   const name = quote?.name || tickerFile?.metadata.name || symbol;
-  const quoteOptions = quoteFormatOptions(quote, tickerFile?.metadata.assetCategory, financials.quoteMetadata?.instrumentType);
+  const baseQuoteOptions = quoteFormatOptions(quote, tickerFile?.metadata.assetCategory, financials.quoteMetadata?.instrumentType);
+  // Pad money prices to the currency's minor unit so a range reads £35.10 - £35.485, never past it (JPY has none).
+  const quoteOptions = resolvePriceBasis(baseQuoteOptions.priceBasis, baseQuoteOptions.assetCategory) === "per-unit"
+    ? { ...baseQuoteOptions, minimumFractionDigits: Math.min(2, currencyMinorDigits(quote?.currency)) }
+    : baseQuoteOptions;
   const lines: string[] = [];
 
   lines.push(`${cliStyles.accent(quote?.symbol ?? symbol)} ${cliStyles.bold(name)}`);
@@ -376,6 +397,15 @@ export async function buildTickerReport({
       ? `${formatCompact(convertedMarketCap)} ${config.baseCurrency}`
       : `${formatCompact(capitalization.value)} ${capitalization.currency}`
     : "—";
+  // Shown in the same currency as the market cap, so the two can be compared.
+  const enterpriseValue = fundamentals?.enterpriseValue;
+  const evCurrency = enterpriseValueCurrency(quote, fundamentals);
+  // A minor unit such as GBp stays as reported: the converter would read it as the major currency.
+  const convertedEnterpriseValue = enterpriseValue != null && Number.isFinite(enterpriseValue) && evCurrency && /^[A-Z]{3}$/.test(evCurrency)
+    ? await toBase(enterpriseValue, evCurrency) : Number.NaN;
+  const enterpriseValueText = Number.isFinite(convertedEnterpriseValue)
+    ? `${formatCompact(convertedEnterpriseValue)} ${config.baseCurrency}`
+    : formatReportedMoney(enterpriseValue, evCurrency);
 
   if (quote) {
     appendMetricSection(lines, "Quote", [
@@ -383,10 +413,10 @@ export async function buildTickerReport({
       ["Change", colorBySign(`${formatMarketChangeWithCurrency(quote.change, quote.currency, quoteOptions, quote.price)} (${formatSignedPercentRaw(quote.changePercent)})`, quote.change)],
       ["Open", quote.open != null ? formatMarketPriceWithCurrency(quote.open, quote.currency, quoteOptions) : "—"],
       ["Day Range", quote.low != null || quote.high != null
-        ? `${quote.low != null ? formatMarketPriceWithCurrency(quote.low, quote.currency, quoteOptions) : "—"} - ${quote.high != null ? formatMarketPriceWithCurrency(quote.high, quote.currency, quoteOptions) : "—"}`
+        ? formatPriceRange(quote.low, quote.high, quote.currency, quoteOptions)
         : "—"],
       ["52W Range", quote.low52w != null || quote.high52w != null
-        ? `${quote.low52w != null ? formatMarketPriceWithCurrency(quote.low52w, quote.currency, quoteOptions) : "—"} - ${quote.high52w != null ? formatMarketPriceWithCurrency(quote.high52w, quote.currency, quoteOptions) : "—"}`
+        ? formatPriceRange(quote.low52w, quote.high52w, quote.currency, quoteOptions)
         : "—"],
       ["Bid / Ask", formatBidAsk(quote.bid, quote.ask, quote.bidSize, quote.askSize, quote.currency, quoteOptions.assetCategory, quote.priceBasis)],
       ["Volume", quote.volume != null ? formatNumber(quote.volume, 0) : "—"],
@@ -409,7 +439,7 @@ export async function buildTickerReport({
     ]);
   }
 
-  appendMetricSection(lines, "Fundamentals", fundamentalsMetrics(fundamentals, marketCapText, priceReturns));
+  appendMetricSection(lines, "Fundamentals", fundamentalsMetrics(quote, fundamentals, marketCapText, priceReturns, enterpriseValueText));
 
   if (capitalization?.provenance.kind === "fundamentals") {
     lines.push(cliStyles.muted(`Market cap: ${describeFundamentalMarketCap(capitalization.provenance)}.`));

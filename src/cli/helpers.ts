@@ -5,7 +5,7 @@ import {
   formatNumber,
   formatPercentRaw,
 } from "../utils/format";
-import { formatMarketPriceWithCurrency } from "../market-data/market/format";
+import { formatMarketPriceWithCurrency, type MarketFormatOptions } from "../market-data/market/format";
 import { cliStyles, colorBySign } from "../utils/cli-output";
 
 export { slugifyName } from "../utils/slugify";
@@ -66,6 +66,39 @@ export function formatStatusCell(value: unknown): string {
   if (status === "warn" || status === "warning") return cliStyles.warning(status);
   if (status === "error" || status === "fail") return cliStyles.danger(status);
   return status;
+}
+
+/** Decimals the currency's minor unit has: two for GBP, none for JPY. */
+export function currencyMinorDigits(currency: string | undefined): number {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: currency || "USD" }).resolvedOptions().maximumFractionDigits ?? 2;
+  } catch {
+    return 2;
+  }
+}
+
+function fractionDigits(text: string): number {
+  return /\.(\d+)/.exec(text)?.[1]?.length ?? 0;
+}
+
+/** Low and high of a range. A sub-unit quote (pence shown in pounds) varies in decimals,
+ * so its pair shares one count: £35.1000 - £35.4871, not £35.10 - £35.4871. */
+export function formatPriceRange(
+  low: number | undefined,
+  high: number | undefined,
+  currency: string,
+  options: MarketFormatOptions,
+  separator = " - ",
+): string {
+  const format = (value: number | undefined, extra: MarketFormatOptions = {}) => (
+    value == null ? "—" : formatMarketPriceWithCurrency(value, currency, { ...options, ...extra })
+  );
+  const lowText = format(low);
+  const highText = format(high);
+  if (!options.quotedUnitDivisor || low == null || high == null) return `${lowText}${separator}${highText}`;
+  const digits = Math.max(fractionDigits(lowText), fractionDigits(highText));
+  if (fractionDigits(lowText) === digits && fractionDigits(highText) === digits) return `${lowText}${separator}${highText}`;
+  return `${format(low, { fixedFractionDigits: digits })}${separator}${format(high, { fixedFractionDigits: digits })}`;
 }
 
 export function formatTimestamp(timestamp: number | undefined): string {

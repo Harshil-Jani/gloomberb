@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createDefaultConfig } from "../../types/config";
 import type { TickerFinancials } from "../../types/financials";
-import { buildTickerReport } from "./ticker";
+import { buildTickerReport, renderFundamentalsReport } from "./ticker";
 
 const config = createDefaultConfig("/tmp/gloom-ticker-units-unused");
 const quote = { symbol: "UNITTEST", price: 100, currency: "USD", change: 0, changePercent: 0, lastUpdated: Date.parse("2026-09-11") };
@@ -40,4 +40,39 @@ test("statement units use compatible history, keep explicit overrides and exclud
   expect(await report(financials)).toContain("Diluted EPS 0.00 GBp");
   financials.annualStatements[0]!.eps = Number.NaN;
   expect(await report(financials)).not.toContain("NaN");
+});
+
+test("enterprise value is shown in the market cap's currency, converted or labelled", async () => {
+  const financials: TickerFinancials = { quote: { ...quote, currency: "CHF", marketCap: 200e9 }, annualStatements: [], quarterlyStatements: [], priceHistory: [],
+    fundamentals: { marketCap: 200e9, marketCapCurrency: "CHF", enterpriseValue: 255e9 },
+  };
+  const render = async (toBase: (value: number, currency: string) => Promise<number>) => (
+    await buildTickerReport({ symbol: "UNITTEST", tickerFile: null, financials, config, toBase })
+  ).replace(/\u001b\[[0-9;]*m/g, "").replace(/ {2,}/g, " ");
+  const converted = await render(async (value, currency) => currency === "CHF" ? value * 1.2 : value);
+  expect(converted).toContain("Market Cap 240B USD");
+  expect(converted).toContain("Enterprise Value 306B USD");
+  const unconverted = await render(async () => Number.NaN);
+  expect(unconverted).toContain("Market Cap 200B CHF");
+  expect(unconverted).toContain("Enterprise Value 255B CHF");
+  // Local Yahoo fundamentals declare no capitalization unit: the listing's quote currency applies.
+  const undeclared: TickerFinancials = { quote: { ...quote, marketCap: 3.8e12 }, annualStatements: [], quarterlyStatements: [], priceHistory: [],
+    fundamentals: { enterpriseValue: 3.85e12 },
+  };
+  const plain = await report(undeclared);
+  expect(plain).toContain("Market Cap 3.8T USD");
+  expect(plain).toContain("Enterprise Value 3.85T USD");
+  expect(renderFundamentalsReport({ ...undeclared, symbol: "UNITTEST" }, "valuation").replace(/\u001b\[[0-9;]*m/g, "").replace(/ {2,}/g, " "))
+    .toContain("Enterprise Value 3.85T USD");
+});
+
+test("a pence-quoted range shares one decimal count, other ranges are unchanged", async () => {
+  const pence = { ...quote, currency: "GBP", instrumentType: "EQUITY", providerPriceDivisor: 100, price: 35.32, low: 35.1, high: 35.4871, low52w: 25.5377, high52w: 37.585 };
+  const london = await report({ quote: pence, annualStatements: [], quarterlyStatements: [], priceHistory: [] });
+  expect(london).toContain("Day Range £35.1000 - £35.4871");
+  expect(london).toContain("52W Range £25.5377 - £37.5850");
+  const yen = await report({ quote: { ...quote, currency: "JPY", instrumentType: "EQUITY", price: 3000, low: 2950, high: 3012 }, annualStatements: [], quarterlyStatements: [], priceHistory: [] });
+  expect(yen).toContain("Day Range ¥2,950 - ¥3,012");
+  const dollars = await report({ quote: { ...quote, instrumentType: "EQUITY", low: 99.5, high: 101.25 }, annualStatements: [], quarterlyStatements: [], priceHistory: [] });
+  expect(dollars).toContain("Day Range $99.50 - $101.25");
 });
