@@ -2,7 +2,7 @@ import type { CachedAssetArgs, CachedAssetMethod, CachedAssetValue, DataProvider
 import type { OptionsChain, PricePoint, Quote, TickerFinancials } from "../../types/financials";
 import { fetchHistoryResult, type HistoryResultRequest } from "../../sources/history-result";
 import type { ChartRequest, InstrumentRef, OptionsRequest, SecFilingsRequest } from "../request-types";
-import { QueryStore } from "../query-store";
+import { QueryStore, type QueryStoreRetention } from "../query-store";
 import type { QueryEntry } from "../result-types";
 import type { CachedQueryHandle } from "../../data/cached-query";
 import {
@@ -91,6 +91,23 @@ const STREAM_QUOTE_BASELINE_TTL_MS = 60_000;
 const STREAM_RECEIPT_REFRESH_MS = 5_000;
 /** Keeps a long session of browsing from holding a baseline per visited symbol. */
 const STREAM_QUOTE_BASELINE_LIMIT = 256;
+/**
+ * Per-store ceiling for entries nothing on screen is watching. Quotes and FX
+ * rates stay uncapped: they are a few fields each, and a large portfolio
+ * legitimately holds thousands. The capped stores are the heavy ones, where a
+ * single entry is a full price history, statement set or filing document.
+ *
+ * A key a pane is watching is never evicted, so this only governs entries left
+ * behind by navigation. 64 keeps a deep back-and-forth instant while bounding
+ * what browsing can retain. For scale: the refresh plan in #452 asked for 17
+ * financials on a 1934-ticker install, and a session there measured 2.33 MB of
+ * resident memory per distinct ticker visited.
+ *
+ * ponytail: one number for every capped store. Filing text is the heaviest
+ * entry of the group by some margin, so give secContentStore its own smaller
+ * cap if this ceiling turns out to be too generous for it.
+ */
+const RETAINED_ENTRIES_PER_STORE = 64;
 
 // A store hands out a fresh idle entry for every key it has never seen, so
 // two idle reads of the same key must count as the same entry.
@@ -113,14 +130,30 @@ export class MarketDataCoordinator {
   private readonly cachedQueries = new Map<string, { query: CachedQueryHandle<unknown>; dispose: () => void }>();
   private readonly streamQuoteBaselines = new Map<string, { baseline: TickerFinancials | null; readAt: number }>();
 
+  private readonly retained: QueryStoreRetention = {
+    maxRetainedEntries: RETAINED_ENTRIES_PER_STORE,
+    isWatched: (key) => this.events.hasKeyListeners(key),
+  };
+
+  /**
+   * The merged financials view below is derived from a snapshot entry and keyed
+   * the same way, so it has to go when that entry does. Left behind it would
+   * hold its own normalized copy of the price history, which is the larger half
+   * of what the snapshot key costs.
+   */
+  private readonly retainedSnapshots: QueryStoreRetention = {
+    ...this.retained,
+    onEvict: (key) => { this.financialsSnapshotCache.delete(key); },
+  };
+
   private readonly quoteStore = new QueryStore<Quote>((key) => this.events.bump(key));
-  private readonly snapshotStore = new QueryStore<TickerFinancials>((key) => this.events.bump(key));
-  private readonly chartStore = new QueryStore<PricePoint[]>((key) => this.events.bump(key));
-  private readonly optionsStore = new QueryStore<OptionsChain>((key) => this.events.bump(key));
-  private readonly secFilingsStore = new QueryStore<SecFilingItem[]>((key) => this.events.bump(key));
-  private readonly secDocumentsStore = new QueryStore<SecFilingDocument[]>((key) => this.events.bump(key));
-  private readonly secContentStore = new QueryStore<string | null>((key) => this.events.bump(key));
-  private readonly articleSummaryStore = new QueryStore<string | null>((key) => this.events.bump(key));
+  private readonly snapshotStore = new QueryStore<TickerFinancials>((key) => this.events.bump(key), this.retainedSnapshots);
+  private readonly chartStore = new QueryStore<PricePoint[]>((key) => this.events.bump(key), this.retained);
+  private readonly optionsStore = new QueryStore<OptionsChain>((key) => this.events.bump(key), this.retained);
+  private readonly secFilingsStore = new QueryStore<SecFilingItem[]>((key) => this.events.bump(key), this.retained);
+  private readonly secDocumentsStore = new QueryStore<SecFilingDocument[]>((key) => this.events.bump(key), this.retained);
+  private readonly secContentStore = new QueryStore<string | null>((key) => this.events.bump(key), this.retained);
+  private readonly articleSummaryStore = new QueryStore<string | null>((key) => this.events.bump(key), this.retained);
   private readonly liveFxRates = new Map<string, { rate: number; observedAt: number; receivedAt: number }>();
   /**
    * The last rate a request loaded per currency; a streamed rate must stay
@@ -136,7 +169,7 @@ export class MarketDataCoordinator {
   private readonly fxLegsByCurrency = new Map<string, FxLeg>();
   private readonly fxStore = new QueryStore<number>(
     (key) => this.events.bump(key),
-    (key, entry) => this.projectLiveFxRate(key, entry),
+    { project: (key, entry) => this.projectLiveFxRate(key, entry) },
   );
   private readonly financialCacheStores: FinancialCacheStores = {
     quoteStore: this.quoteStore,

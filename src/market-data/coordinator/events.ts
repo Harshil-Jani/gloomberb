@@ -49,6 +49,11 @@ export class MarketDataCoordinatorEvents {
     return this.version;
   }
 
+  /** True while a mounted pane is subscribed to this key. */
+  hasKeyListeners(key: string): boolean {
+    return (this.keyListeners.get(key)?.size ?? 0) > 0;
+  }
+
   getKeysVersion(keys: readonly string[]): number {
     let version = 0;
     for (const key of new Set(keys)) {
