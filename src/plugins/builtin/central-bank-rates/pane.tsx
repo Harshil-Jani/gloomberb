@@ -29,7 +29,8 @@ function PolicyDetail({ row, width, height, focused }: { row: CentralBankRow; wi
     // A target range ranks and charts its midpoint, which the band's range would not say.
     { id: "range", label: "1Y range", value: `${policyRate(p.min)} to ${policyRate(p.max)}`, detail: row.range ? "midpoint" : undefined },
     { id: "asOf", label: "As of", value: row.asOf ?? "--", tone: row.status === "stale" ? "warning" : undefined,
-      detail: [row.publicationFrequency, row.lagDays == null ? null : `${row.lagDays}d lag`, row.status === "stale" ? "stale" : null]
+      detail: [row.publicationFrequency, row.lagDays == null ? null : `${row.lagDays}d lag`,
+        row.confirmedAt ? `confirmed ${row.confirmedAt.slice(0, 10)}` : null, row.status === "stale" ? "stale" : null]
         .filter(Boolean).join(" · ") || undefined },
     { id: "meeting", label: "Next meeting", value: row.nextMeeting?.date ?? "--" },
     { id: "source", label: "Source", value: row.source?.toUpperCase() ?? "--", detail: row.sourceSeriesIds.join(", ") || undefined },
@@ -64,7 +65,6 @@ export function CentralBankRatesPane({ width, height, focused }: PaneProps) {
     info: data ? [
       ...(updatedAgo ? [{ id: "updated", parts: [{ text: updatedAgo, tone: "muted" as const }] }] : []),
       ...(resource.data?.stale ? [{ id: "stale", parts: [{ text: "stale", tone: "warning" as const }] }] : []),
-      ...(data.status !== "available" ? [{ id: "partial", parts: [{ text: data.status, tone: "warning" as const }] }] : []),
     ] : [],
   });
   return <Box width={width} height={height} flexDirection="column">
