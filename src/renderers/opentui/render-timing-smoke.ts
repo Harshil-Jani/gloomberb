@@ -7,6 +7,9 @@ import { testRender } from "@opentui/react/test-utils";
  * adds a performance.measure entry that Bun never frees (#452).
  */
 export async function assertRendersLeaveNoTimingEntries(): Promise<void> {
+  // Only the dev reconciler records user timing, and testRender needs the dev
+  // build's act; a `--production` binary has neither.
+  if (process.env.NODE_ENV === "production") return;
   const setup = await testRender(createElement("text", null, "smoke"), { width: 10, height: 1 });
   await setup.renderOnce();
   const entries = performance.getEntriesByType("measure").length;
