@@ -13,21 +13,11 @@ import {
 import { needsVisibleQuoteWatchdogRefresh, selectQuoteWarmupTickers, selectStreamTickers } from "./pane/data";
 import { buildPortfolioPaneSettingsDef, getPortfolioPaneSettings } from "./settings";
 import { getLanguage, setLanguage } from "../../../i18n";
+import { createTestTicker } from "../../../test-support/ticker";
+import { createTestFinancials } from "../../../test-support/data-provider";
 
 function ticker(symbol: string): TickerRecord {
-  return {
-    metadata: {
-      ticker: symbol,
-      exchange: "NASDAQ",
-      currency: "USD",
-      name: symbol,
-      portfolios: [],
-      watchlists: [],
-      positions: [],
-      custom: {},
-      tags: [],
-    },
-  };
+  return createTestTicker(symbol);
 }
 
 describe("buildPortfolioSummarySegments", () => {
@@ -150,12 +140,7 @@ describe("selectStreamTickers", () => {
 
 describe("selectQuoteWarmupTickers", () => {
   function financials(quoteValue: Quote | undefined): TickerFinancials {
-    return {
-      annualStatements: [],
-      quarterlyStatements: [],
-      priceHistory: [],
-      quote: quoteValue,
-    };
+    return createTestFinancials({ quote: quoteValue });
   }
 
   test("includes hidden quote-missing rows when sorting by quote-dependent columns", () => {
@@ -212,12 +197,7 @@ describe("visible quote refresh predicates", () => {
   }
 
   function financials(quoteValue: Quote | undefined): TickerFinancials {
-    return {
-      annualStatements: [],
-      quarterlyStatements: [],
-      priceHistory: [],
-      quote: quoteValue,
-    };
+    return createTestFinancials({ quote: quoteValue });
   }
 
   test("refreshes visible quotes when the local stream timestamp is too old", () => {
