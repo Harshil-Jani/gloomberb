@@ -295,8 +295,40 @@ export function calendarHistoryFetchState(
   return now - lastCheck >= pace ? "recheck" : "behind";
 }
 
+function isPlaceholderBar(point: PricePoint): boolean {
+  return point.volume === 0 && Number.isFinite(point.close)
+    && point.open === point.close && point.high === point.close && point.low === point.close;
+}
+
+const trimmedHistories = new WeakMap<PricePoint[], PricePoint[]>();
+// An offer priced the day before trading, or a value carried forward to the
+// opening auction, sits days at most before the first print.
+const PLACEHOLDER_LEAD_MAX_MS = 7 * DAY_MS;
+
+/**
+ * Bars at the very start of a traded series with no volume and one price
+ * (open = high = low = close) are placeholders, not trades: an offer price or
+ * a carried-forward value before the first print. They are dropped only when
+ * the next priced bar reports volume within days. Series that never report
+ * volume (FX, most indices) and long-lived indices whose early decades carry
+ * none keep every bar. Expects date order.
+ */
+export function dropLeadingPlaceholderBars(points: PricePoint[]): PricePoint[] {
+  if (points.length === 0 || !isPlaceholderBar(points[0]!)) return points;
+  const cached = trimmedHistories.get(points);
+  if (cached) return cached;
+  let start = 1;
+  while (start < points.length && isPlaceholderBar(points[start]!)) start++;
+  const firstPrint = points.slice(start).find((point) => Number.isFinite(point.close));
+  const result = firstPrint && (firstPrint.volume ?? 0) > 0
+    && getPricePointTimestamp(firstPrint) - getPricePointTimestamp(points[0]!) <= PLACEHOLDER_LEAD_MAX_MS
+    ? points.slice(start) : points;
+  trimmedHistories.set(points, result);
+  return result;
+}
+
 export function normalizeTickerFinancialsPriceHistory(financials: TickerFinancials): TickerFinancials {
-  const priceHistory = normalizePriceHistory(financials.priceHistory ?? []);
+  const priceHistory = dropLeadingPlaceholderBars(normalizePriceHistory(financials.priceHistory ?? []));
   return priceHistory === financials.priceHistory
     ? financials
     : { ...financials, priceHistory };
