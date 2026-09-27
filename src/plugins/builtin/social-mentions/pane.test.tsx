@@ -21,6 +21,8 @@ function payload(): SocialMentionsPayload {
     stance: [{ day: "2026-09-26", score: .42, posts: 17 }],
     topPosts: [{ id: "1971000000000000001", day: "2026-09-26", author: "AIStockSavvy", text: "JUST IN: $SOUN launches OASYS Edge for on-device voice AI",
       postedAt: "2026-09-26T15:00:00.000Z", views: 4_901, likes: 88, reposts: 12, replies: 4, url: "https://x.com/AIStockSavvy/status/1971000000000000001", stance: .7 }],
+    wikipedia: { article: "SoundHound_AI", baseline: 1_200,
+      days: days.slice(-120).map((row, index) => ({ day: row.day, views: row.day === "2026-09-26" ? 3_600 : 1_000 + (index * 53) % 400 })) },
     pending: [], warnings: [],
   };
 }
@@ -59,6 +61,8 @@ test("the pane leads with the last closed day against its median, then the daily
   expect(frame).toContain("2026-09-27");
   expect(frame).toContain("@AIStockSavvy");
   expect(frame).toContain("+0.42");
+  expect(frame).toContain("Wiki views");
+  expect(frame).toContain("3,600");
 });
 
 test("opening a closed day loads its top posts", async () => {

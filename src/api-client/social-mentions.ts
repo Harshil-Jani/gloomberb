@@ -39,6 +39,13 @@ export interface SocialMentionsPayload {
   /** View-weighted stance of each day's top posts. */
   stance: Array<{ day: string; score: number; posts: number }>;
   topPosts: SocialMentionPost[];
+  /** Daily user views of the company's English Wikipedia article; absent on older servers. */
+  wikipedia?: {
+    article: string | null;
+    days: Array<{ day: string; views: number }>;
+    /** Median views over the 30 days ending at the last stored day. */
+    baseline: number | null;
+  };
   /** Parts still filling on the server; ask again shortly. */
   pending: Array<"history" | "posts">;
   warnings: string[];

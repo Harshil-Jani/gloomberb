@@ -19,6 +19,7 @@ function fixture(): SocialMentionsPayload {
     ], historyFrom: "2025-09-27", completeThrough: "2026-09-26", baseline: 100, refreshedAt: "2026-09-27T12:00:00.000Z" },
     stance: [{ day: "2026-09-25", score: .6, posts: 18 }, { day: "2026-09-26", score: -.3, posts: 2 }],
     topPosts: [post("2", "2026-09-25", 900), post("1", "2026-09-25", 5_000), post("3", "2026-09-26", null, null)],
+    wikipedia: { article: "Nvidia", baseline: 5_000, days: [{ day: "2026-09-25", views: 9_000 }, { day: "2026-09-26", views: 6_000 }] },
     pending: [], warnings: [],
   };
 }
@@ -26,7 +27,8 @@ function fixture(): SocialMentionsPayload {
 test("rows join the median, stance and the most viewed post of each day", () => {
   const data = validateSocialMentions(fixture(), "NVDA", "1y");
   const rows = socialDayRows(data);
-  expect(rows[1]).toMatchObject({ day: "2026-09-25", ratio: 4, stance: .6 });
+  expect(rows[1]).toMatchObject({ day: "2026-09-25", ratio: 4, stance: .6, wikiViews: 9_000 });
+  expect(rows[0]!.wikiViews).toBeNull();
   expect(rows[1]!.topPost!.id).toBe("1");
   expect(topPostCell(rows[1]!.topPost)).toBe("@trader $NVDA 1 line");
   expect(sortedSocialRows(rows, { column: "mentions", direction: "desc" }).map((row) => row.day)[0]).toBe("2026-09-25");
@@ -35,6 +37,7 @@ test("rows join the median, stance and the most viewed post of each day", () => 
   expect(summary.latest!.day).toBe("2026-09-26");
   expect(summary.peak!.mentions).toBe(400);
   expect(summary.stance).toBe(.51);
+  expect(summary.wiki).toEqual({ day: "2026-09-26", views: 6_000, ratio: 1.2 });
   expect([socialRatio(4), socialRatio(12.4), socialStance(.5), socialStance(null), stanceWord(-.2)]).toEqual(["4.0x", "12x", "+0.50", "--", "bearish"]);
 });
 
@@ -46,6 +49,10 @@ test("the Cloud boundary rejects unordered days, bad stances and non-X links", (
   const link = fixture(); link.topPosts[0]!.url = "https://evil.example/x";
   expect(() => validateSocialMentions(link, "NVDA", "1y")).toThrow();
   expect(() => validateSocialMentions(fixture(), "NVDA", "5y")).toThrow();
+  const wiki = fixture(); wiki.wikipedia!.days[1]!.views = -1;
+  expect(() => validateSocialMentions(wiki, "NVDA", "1y")).toThrow();
+  const older = fixture(); delete older.wikipedia;
+  expect(socialDayRows(validateSocialMentions(older, "NVDA", "1y"))[1]!.wikiViews).toBeNull();
 });
 
 test("a server without the endpoint reads as unavailable while sign-in errors pass through", async () => {

@@ -16,6 +16,7 @@ import { cachedSocialMentions, loadSocialMentionPosts, loadSocialMentions } from
 import { SOCIAL_COLUMNS, socialChartPoints, socialCount, socialDayRows, socialRatio, socialStance, socialSummary, sortedSocialRows, stanceWord, topPostCell, type SocialColumn, type SocialDayRow, type SocialSort } from "./model";
 
 const PANELS = [{ id: "main" }];
+const WITH_WIKI_PANELS = [{ id: "main", height: 2 }, { id: "wiki", height: 1 }];
 const PENDING_RETRY_MS = 5_000;
 const clearDenied = (error: unknown) => error instanceof ApiRequestError && [401, 403].includes(error.status ?? 0);
 const stanceColor = (value: number | null) => value == null ? colors.textMuted : value >= .15 ? colors.positive : value <= -.15 ? colors.negative : colors.text;
@@ -23,11 +24,12 @@ const RANGES: SocialMentionsRange[] = ["1y", "5y", "max"];
 
 function renderCell(row: SocialDayRow, column: SocialColumn, _index: number, state: { selected: boolean }): DataTableCell {
   const text = column.id === "day" ? row.day : column.id === "mentions" ? socialCount(row.mentions)
-    : column.id === "ratio" ? socialRatio(row.ratio) : column.id === "stance" ? socialStance(row.stance) : topPostCell(row.topPost);
+    : column.id === "ratio" ? socialRatio(row.ratio) : column.id === "wikiViews" ? socialCount(row.wikiViews)
+      : column.id === "stance" ? socialStance(row.stance) : topPostCell(row.topPost);
   if (state.selected) return { text, color: colors.selectedText };
   return { text, color: column.id === "stance" ? stanceColor(row.stance)
     : column.id === "ratio" && (row.ratio ?? 0) >= 2.5 ? colors.warning
-      : column.id === "topPost" || !row.closed ? colors.textMuted : colors.text };
+      : column.id === "topPost" || column.id === "wikiViews" || !row.closed ? colors.textMuted : colors.text };
 }
 
 function PostBlock({ post, width }: { post: SocialMentionPost; width: number }) {
@@ -91,9 +93,12 @@ export function SocialMentionsPane({ width, height, focused }: Pick<PaneProps, "
   const openRow = rows.find((row) => rowKey(row) === openId);
   const selected = openRow ?? rows[selectedIndex];
   const updatedAgo = useUpdatedAgo(resource.updatedAt);
-  const series = useMemo(() => [staticSeries(socialChartPoints(allRows), {
-    id: "x-posts", label: "Posts on X", color: colors.warning, style: "columns", calendarSpaced: true,
-  })], [allRows]);
+  const hasWiki = allRows.some((row) => row.wikiViews !== null);
+  const series = useMemo(() => [
+    staticSeries(socialChartPoints(allRows), { id: "x-posts", label: "Posts on X", color: colors.warning, style: "columns", calendarSpaced: true }),
+    ...(hasWiki ? [{ ...staticSeries(socialChartPoints(allRows, (row) => row.wikiViews), {
+      id: "wiki-views", label: "Wikipedia views", color: colors.borderFocused, calendarSpaced: true }), panelId: "wiki" }] : []),
+  ], [allRows, hasWiki]);
   const chartHeight = height >= 16 ? Math.max(5, Math.min(12, Math.floor(height * .38))) : 0;
   // The server is still filling history or posts; ask again until it is done.
   const pending = !!data?.pending.length;
@@ -134,9 +139,11 @@ export function SocialMentionsPane({ width, height, focused }: Pick<PaneProps, "
             { id: "median", label: "30D median", value: socialCount(data.x.baseline) },
             { id: "stance", label: "Stance 7D", value: socialStance(summary?.stance ?? null), detail: stanceWord(summary?.stance ?? null) },
             { id: "peak", label: `Peak ${range === "max" ? "all" : range.toUpperCase()}`, value: socialCount(summary?.peak?.mentions), detail: summary?.peak?.day },
+            ...(summary?.wiki ? [{ id: "wiki", label: "Wiki views", value: socialCount(summary.wiki.views),
+              detail: `${socialRatio(summary.wiki.ratio)} median · ${summary.wiki.day.slice(5)}` }] : []),
           ]} />
           {chartHeight && allRows.length ? <Box paddingX={1} flexShrink={0}>
-            <CompositeChart series={series} panels={PANELS} width={Math.max(1, width - 2)} height={chartHeight} focused={focused && !openRow} showLegend={false} showTimeAxis navigable={false}
+            <CompositeChart series={series} panels={hasWiki ? WITH_WIKI_PANELS : PANELS} width={Math.max(1, width - 2)} height={chartHeight} focused={focused && !openRow} showLegend={hasWiki} showTimeAxis navigable={false}
               formatAxisValue={(value) => socialCount(value)} remoteKind="social-mentions-history" />
           </Box> : null}
         </Box>}

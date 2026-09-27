@@ -23,6 +23,12 @@ function validPost(post: SocialMentionPost): boolean {
     && typeof post.url === "string" && post.url.startsWith("https://x.com/") && (post.stance === null || stance(post.stance));
 }
 
+function validWikipedia(wiki: NonNullable<SocialMentionsPayload["wikipedia"]>): boolean {
+  return !!wiki && (wiki.article === null || typeof wiki.article === "string") && Array.isArray(wiki.days)
+    && wiki.days.every((row, i) => day(row.day) && Number.isInteger(row.views) && row.views >= 0 && (i === 0 || row.day > wiki.days[i - 1]!.day))
+    && (wiki.baseline === null || typeof wiki.baseline === "number" && wiki.baseline >= 0);
+}
+
 /** Days ascending and unique, counts whole, stances in range, posts linking to X only. */
 export function validateSocialMentions(payload: SocialMentionsPayload, symbol: string, range: SocialMentionsRange): SocialMentionsPayload {
   const days = payload?.x?.days;
@@ -32,6 +38,7 @@ export function validateSocialMentions(payload: SocialMentionsPayload, symbol: s
     || !(payload.x.baseline === null || typeof payload.x.baseline === "number" && payload.x.baseline >= 0)
     || !Array.isArray(payload.stance) || payload.stance.some((row) => !day(row.day) || !stance(row.score) || !Number.isInteger(row.posts))
     || !Array.isArray(payload.topPosts) || !payload.topPosts.every(validPost)
+    || payload.wikipedia !== undefined && !validWikipedia(payload.wikipedia)
     || !Array.isArray(payload.pending) || !Array.isArray(payload.warnings) || payload.warnings.some((warning) => typeof warning !== "string"))
     throw new Error("Gloom Cloud returned invalid social mention history");
   return payload;
