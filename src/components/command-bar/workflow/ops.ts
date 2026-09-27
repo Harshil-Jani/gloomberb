@@ -19,6 +19,7 @@ import {
 } from "../../../plugins/builtin/correlation/relationship/model";
 import { buildQuoteMonitorPaneTitle } from "../../../plugins/builtin/ticker-detail/settings";
 import { getPaneTemplateDisplayLabel } from "../pane-templates/items";
+import { automationActive, describeUsageFunction, recordFunctionOpen } from "../../../telemetry/usage-counts";
 import {
   resolveTickerInputOrThrow,
   resolveTickerListInput,
@@ -236,6 +237,9 @@ export async function createPaneTemplateOrThrow(
   if (!template) {
     throw new Error(`Unknown pane template "${templateId}".`);
   }
+  // Read before the first await: automation that started this open may have
+  // finished by the time the pane is placed.
+  const openedByUser = !automationActive();
 
   const state = deps.getState();
   const pluginId = deps.pluginRegistry.getPaneTemplatePluginId(templateId);
@@ -282,6 +286,7 @@ export async function createPaneTemplateOrThrow(
     // React can batch the layout update and focus. Bringing a floating pane to
     // the front must use its retargeted settings, not the preceding render.
     deps.pluginRegistry.focusPaneFn(existing.instanceId, nextLayout);
+    if (openedByUser) countTemplateOpen(template, pluginId, deps);
     return;
   }
 
@@ -298,6 +303,12 @@ export async function createPaneTemplateOrThrow(
   }
 
   deps.placePaneInstance(instance, paneDef, spec);
+  if (openedByUser) countTemplateOpen(template, pluginId, deps);
+}
+
+/** Every pane template the user opens, from the command bar, a menu or another pane, passes here. */
+function countTemplateOpen(template: PaneTemplateDef, pluginId: string | undefined, deps: CreatePaneTemplateDeps): void {
+  recordFunctionOpen(describeUsageFunction(deps.pluginRegistry, pluginId, template.shortcut?.prefix));
 }
 
 export async function applyPaneSettingFieldValue(

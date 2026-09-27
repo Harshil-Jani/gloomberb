@@ -62,6 +62,8 @@ import { useAppLanguage } from "./i18n/react";
 import { AppLanguageConfigObserver } from "./app/language-observer";
 import { isPaneShareHandoff } from "./shares/location";
 import { apiClient } from "./api-client";
+import { reportTelemetryConfig } from "./telemetry/live-config";
+import { recordFunctionOpen } from "./telemetry/usage-counts";
 
 const EMPTY_EXTERNAL_PLUGINS: LoadedExternalPlugin[] = [];
 
@@ -83,6 +85,8 @@ interface AppInnerProps {
   signInGateActive?: boolean;
   /** Fires once the startup state is in place and the first real layout can paint. */
   onInitialized?: () => void;
+  /** Settles once every plugin has registered, setup included. */
+  pluginsReady?: Promise<unknown>;
 }
 
 function ThemedAppRoot({ children }: { children: ReactNode }) {
@@ -119,12 +123,17 @@ function AppInner({
   onOnboardingComplete,
   signInGateActive = false,
   onInitialized,
+  pluginsReady,
 }: AppInnerProps) {
   const dispatch = useAppDispatch();
   const stateRef = useAppStateRef();
   const getRemoteState = useCallback(() => stateRef.current, [stateRef]);
   useLinkedLayoutSync(pluginRegistry);
   const config = useAppSelector((state) => state.config);
+  // Telemetry switches apply as soon as they change, not at the next launch.
+  useEffect(() => {
+    reportTelemetryConfig(config.telemetry);
+  }, [config.telemetry]);
   const tickers = useAppSelector((state) => state.tickers);
   const paneState = useAppSelector((state) => state.paneState);
   const focusedPaneId = useAppSelector((state) => state.focusedPaneId);
@@ -298,6 +307,7 @@ function AppInner({
     isDetachedWindow,
     marketData,
     pluginRegistry,
+    pluginsReady,
     primeCachedFinancials,
     refreshQuote,
     refreshQuotesBatch,
@@ -431,7 +441,10 @@ function AppInner({
         desktopWindowBridge={desktopWindowBridge}
       >
         <ThemedAppRoot>
-          <Header onOpenHelp={() => pluginRegistry.showPane("help")} />
+          <Header onOpenHelp={() => {
+            recordFunctionOpen({ shortcut: "HELP", externalPluginId: null });
+            pluginRegistry.showPane("help");
+          }} />
           <TransientLayoutProvider>
             <Shell
               pluginRegistry={pluginRegistry}
@@ -608,6 +621,7 @@ export function App({
           onboardingActive={showOnboarding}
           signInGateActive={signInGateActive}
           onInitialized={onInitialized}
+          pluginsReady={services.ready}
           onOnboardingComplete={(updatedConfig) => {
             setConfig(updatedConfig);
             setShowOnboarding(false);

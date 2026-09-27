@@ -16,6 +16,7 @@ import type { PinTickerOptions } from "../../types/plugin";
 import { tickerInstrumentLabel } from "../../tickers/instrument-label";
 import { instrumentFromTicker } from "../../market-data/request-types";
 import type { AppAction, AppState } from "../../state/app/context";
+import { recordFunctionOpen } from "../../telemetry/usage-counts";
 
 interface CommandBarPaneActionsOptions {
   dispatch: Dispatch<AppAction>;
@@ -80,6 +81,8 @@ export function useCommandBarPaneActions({
     }
 
     if (focusedPane?.paneId === TICKER_RESEARCH_PANE_ID) {
+      // Opening a research pane is counted in pinTicker; retargeting one here is DES too.
+      recordFunctionOpen({ shortcut: "DES", externalPluginId: null });
       retargetTickerResearchPane(focusedPane.instanceId, symbol, options);
       return;
     }
