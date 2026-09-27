@@ -53,7 +53,6 @@ import {
   formatPlan,
   formatTrialEnd,
   formatTrialOffer,
-  getPortfolioPositionTickers,
   portfolioOptionIds,
   profileToDraft,
   type AccountDraft,
@@ -62,13 +61,13 @@ import {
 import { PasswordChangeDialog } from "./password-dialog";
 import { useAccountManagementFooter } from "./footer";
 import { useAccountManagementKeyboard } from "./keyboard";
-import { buildTrackedCurrencies } from "../analytics/sector-model";
 import {
   buildBenchmarkReturnSeries,
   buildPortfolioChartTargets,
   buildPortfolioReturnSeries,
 } from "../analytics/pane-model";
-import { computeDatedBeta } from "../analytics/metrics";
+import { computeDatedBeta, hasPortfolioPosition } from "../analytics/metrics";
+import { buildTrackedCurrencies } from "../portfolio-list/pane/data";
 import { accountDailyReturns } from "../analytics/account-returns";
 import { useBrokerPortfolioPerformance } from "../analytics/broker-performance";
 import { useCloudSyncStatus } from "../../../sync/react";
@@ -76,11 +75,7 @@ import { cloudSyncController } from "../../../sync/controller";
 import { setSyncedProfileAnalytics } from "../../../sync/profile-analytics";
 import { t, tf } from "../../../i18n";
 import { useAppLanguage } from "../../../i18n/react";
-import {
-  consumeRequestedAccountManagementTab,
-  subscribeRequestedAccountManagementTab,
-  type AccountManagementTab,
-} from "./navigation";
+import { subscribeRequestedAccountManagementTab, type AccountManagementTab } from "./navigation";
 import { openCloudUpgrade } from "../shared/cloud-upgrade";
 import { resolvePlanAccess } from "../../../api-client/plan-access";
 import { usePluginPaneState } from "../../runtime";
@@ -218,13 +213,7 @@ export function AccountManagementPane({ focused, width, height }: PaneProps) {
   const [message, setMessage] = useState<{ tone: "info" | "success" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState<AccountBusy>(null);
 
-  // A tab requested before the pane mounted wins over the restored one, but only once.
-  useEffect(() => {
-    const requested = consumeRequestedAccountManagementTab();
-    if (!requested) return;
-    setActiveTab(requested);
-    setActiveField(ACCOUNT_TAB_FIELD_ORDER[requested][0] ?? "username");
-  }, []);
+  // A requested tab switches the open pane; one requested before it mounted wins over the restored tab once.
   useEffect(() => subscribeRequestedAccountManagementTab((tab) => {
     setActiveTab(tab);
     setActiveField(ACCOUNT_TAB_FIELD_ORDER[tab][0] ?? "username");
@@ -280,7 +269,7 @@ export function AccountManagementPane({ focused, width, height }: PaneProps) {
   // FX, and chart requests below stay off on every other tab.
   const portfolioTickers = useMemo(
     () => activeTab === "profile" && draft.sharedPortfolioId
-      ? getPortfolioPositionTickers(tickers, draft.sharedPortfolioId)
+      ? [...tickers.values()].filter((ticker) => hasPortfolioPosition(ticker, draft.sharedPortfolioId))
       : [],
     [activeTab, draft.sharedPortfolioId, tickers],
   );
@@ -307,7 +296,7 @@ export function AccountManagementPane({ focused, width, height }: PaneProps) {
     `${draft.sharedPortfolioId ?? ""}\u001f${[...liveFinancials.keys()].join(",")}`,
   );
   const trackedCurrencies = useMemo(
-    () => buildTrackedCurrencies(portfolioTickers, financials, baseCurrency),
+    () => buildTrackedCurrencies(portfolioTickers, financials, null, baseCurrency),
     [baseCurrency, financials, portfolioTickers],
   );
   const exchangeRates = useFxRatesMap(trackedCurrencies);
