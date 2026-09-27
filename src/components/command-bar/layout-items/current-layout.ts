@@ -1,6 +1,6 @@
 import {
-  gridlockAllPanes,
   removeFloatingPanes,
+  tidyWindows,
 } from "../../../plugins/pane-manager";
 import {
   DEFAULT_LAYOUT,
@@ -28,7 +28,6 @@ export function buildCurrentLayoutItems({
   confirmDangerousActions,
   currentLayout,
   dispatch,
-  notifyGridlockRevert,
   openBuiltInWorkflow,
   openInlineConfirm,
   persistLayoutChange,
@@ -124,13 +123,14 @@ export function buildCurrentLayoutItems({
       category: "Current Layout",
       kind: "action",
       action: () => {
-        const { width, height } = pluginRegistry.getTermSizeFn();
-        persistLayoutChange(gridlockAllPanes(
-          currentLayout,
-          { x: 0, y: 0, width, height },
-          pluginRegistry.panes,
-        ));
-        notifyGridlockRevert();
+        tidyWindows({
+          layout: currentLayout,
+          size: pluginRegistry.getTermSizeFn(),
+          paneTypes: pluginRegistry.panes,
+          apply: persistLayoutChange,
+          notify: pluginRegistry.notify,
+          onRevert: () => dispatch({ type: "UNDO_LAYOUT" }),
+        });
         closeAll({ revertThemePreview: false });
       },
     },
@@ -168,6 +168,7 @@ export function buildCurrentLayoutItems({
       id: "layout-rename",
       label: "Rename Layout",
       detail: "Change the current saved layout name",
+      searchText: "preset",
       category: "Current Layout",
       kind: "action",
       action: () => openBuiltInWorkflow("rename-layout"),
@@ -189,6 +190,7 @@ export function buildCurrentLayoutItems({
       id: "layout-new",
       label: "New Layout",
       detail: "Create a fresh saved layout",
+      searchText: "add workspace",
       category: "Current Layout",
       kind: "action",
       action: () => openBuiltInWorkflow("new-layout"),
