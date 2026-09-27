@@ -2,6 +2,7 @@ import { debtMaturitiesModule } from "./builtin/debt-maturities";
 import { revenueBreakdownModule } from "./builtin/revenue-breakdown";
 import { cryptoBoardModule } from "./builtin/crypto-board";
 import { shortVolumeModule } from "./builtin/short-volume";
+import { socialMentionsModule } from "./builtin/social-mentions";
 import { timeSalesModule } from "./builtin/time-sales";
 import { estimateRevisionsModule } from "./builtin/estimate-revisions";
 import type { GloomPlugin } from "../types/plugin";
@@ -96,6 +97,7 @@ const browserTickerResearchPlugin = composeBuiltinPlugin({
     estimateRevisionsModule,
     researchModule,
     shortVolumeModule,
+    socialMentionsModule,
     debtMaturitiesModule,
     revenueBreakdownModule,
     browserDividendYieldModule,

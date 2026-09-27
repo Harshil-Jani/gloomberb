@@ -5,6 +5,7 @@ import type { CentralBankRatesPayload } from "./central-bank-rates";
 import type { EstimateRevisionsPayload } from "./estimate-revisions";
 import type { MoneyMarketsPayload } from "./money-markets";
 import type { ShortVolumePayload, ShortVolumeScope } from "./short-volume";
+import type { SocialMentionDayPosts, SocialMentionsPayload, SocialMentionsRange } from "./social-mentions";
 import type { FuturesCurvePayload } from "./futures-curve";
 import type { CotBoardPayload, CotContractPayload, CotFamily, CotClass } from "./cot";
 import type { TapeSnapshot } from "./tape";
@@ -366,6 +367,16 @@ export class CloudDataApi {
   async getCloudShortVolume(symbol: string, scope: ShortVolumeScope = "nms"): Promise<ShortVolumePayload> {
     const params = new URLSearchParams({ symbol, scope });
     return this.request<ShortVolumePayload>(`/cloud/short-volume?${params}`, { signal: AbortSignal.timeout(20_000) });
+  }
+
+  async getCloudSocialMentions(symbol: string, range: SocialMentionsRange = "1y"): Promise<SocialMentionsPayload> {
+    const params = new URLSearchParams({ symbol, range });
+    return this.request<SocialMentionsPayload>(`/cloud/social-mentions?${params}`, { signal: AbortSignal.timeout(30_000) });
+  }
+
+  async getCloudSocialMentionPosts(symbol: string, day: string): Promise<SocialMentionDayPosts> {
+    const params = new URLSearchParams({ symbol, day });
+    return this.request<SocialMentionDayPosts>(`/cloud/social-mentions/posts?${params}`, { signal: AbortSignal.timeout(30_000) });
   }
 
   async getCloudFuturesCurve(root: string): Promise<FuturesCurvePayload> {
