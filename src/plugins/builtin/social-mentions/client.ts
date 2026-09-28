@@ -29,6 +29,12 @@ function validWikipedia(wiki: NonNullable<SocialMentionsPayload["wikipedia"]>): 
     && (wiki.baseline === null || typeof wiki.baseline === "number" && wiki.baseline >= 0);
 }
 
+function validReddit(reddit: NonNullable<SocialMentionsPayload["reddit"]>): boolean {
+  return !!reddit && Array.isArray(reddit.days)
+    && reddit.days.every((row, i) => day(row.day) && Number.isInteger(row.mentions) && row.mentions >= 0 && (i === 0 || row.day > reddit.days[i - 1]!.day))
+    && (reddit.baseline === null || typeof reddit.baseline === "number" && reddit.baseline >= 0);
+}
+
 /** Days ascending and unique, counts whole, stances in range, posts linking to X only. */
 export function validateSocialMentions(payload: SocialMentionsPayload, symbol: string, range: SocialMentionsRange): SocialMentionsPayload {
   const days = payload?.x?.days;
@@ -39,6 +45,7 @@ export function validateSocialMentions(payload: SocialMentionsPayload, symbol: s
     || !Array.isArray(payload.stance) || payload.stance.some((row) => !day(row.day) || !stance(row.score) || !Number.isInteger(row.posts))
     || !Array.isArray(payload.topPosts) || !payload.topPosts.every(validPost)
     || payload.wikipedia !== undefined && !validWikipedia(payload.wikipedia)
+    || payload.reddit !== undefined && !validReddit(payload.reddit)
     || !Array.isArray(payload.pending) || !Array.isArray(payload.warnings) || payload.warnings.some((warning) => typeof warning !== "string"))
     throw new Error("Gloom Cloud returned invalid social mention history");
   return payload;

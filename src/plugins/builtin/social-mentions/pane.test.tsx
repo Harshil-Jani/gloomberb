@@ -23,6 +23,7 @@ function payload(): SocialMentionsPayload {
       postedAt: "2026-09-26T15:00:00.000Z", views: 4_901, likes: 88, reposts: 12, replies: 4, url: "https://x.com/AIStockSavvy/status/1971000000000000001", stance: .7 }],
     wikipedia: { article: "SoundHound_AI", baseline: 1_200,
       days: days.slice(-120).map((row, index) => ({ day: row.day, views: row.day === "2026-09-26" ? 3_600 : 1_000 + (index * 53) % 400 })) },
+    reddit: { baseline: 12, days: days.slice(-40, -1).map((row, index) => ({ day: row.day, mentions: row.day === "2026-09-26" ? 48 : 8 + index % 9 })) },
     pending: [], warnings: [],
   };
 }
@@ -62,6 +63,8 @@ test("the pane leads with the last closed day against its median, then the daily
   expect(frame).toContain("@AIStockSavvy");
   expect(frame).toContain("+0.42");
   expect(frame).toContain("Wiki views");
+  expect(frame).toContain("REDDIT");
+  expect(frame).toContain("4.0x median · 09-26");
   expect(frame).toContain("3,600");
 });
 

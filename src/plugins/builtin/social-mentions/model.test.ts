@@ -20,6 +20,7 @@ function fixture(): SocialMentionsPayload {
     stance: [{ day: "2026-09-25", score: .6, posts: 18 }, { day: "2026-09-26", score: -.3, posts: 2 }],
     topPosts: [post("2", "2026-09-25", 900), post("1", "2026-09-25", 5_000), post("3", "2026-09-26", null, null)],
     wikipedia: { article: "Nvidia", baseline: 5_000, days: [{ day: "2026-09-25", views: 9_000 }, { day: "2026-09-26", views: 6_000 }] },
+    reddit: { baseline: 10, days: [{ day: "2026-09-25", mentions: 30 }, { day: "2026-09-26", mentions: 5 }] },
     pending: [], warnings: [],
   };
 }
@@ -38,6 +39,8 @@ test("rows join the median, stance and the most viewed post of each day", () => 
   expect(summary.peak!.mentions).toBe(400);
   expect(summary.stance).toBe(.51);
   expect(summary.wiki).toEqual({ day: "2026-09-26", views: 6_000, ratio: 1.2 });
+  expect(summary.reddit).toEqual({ day: "2026-09-26", mentions: 5, ratio: .5 });
+  expect(rows.map((row) => row.redditMentions)).toEqual([null, 30, 5, null]);
   expect([socialRatio(4), socialRatio(12.4), socialStance(.5), socialStance(null), stanceWord(-.2)]).toEqual(["4.0x", "12x", "+0.50", "--", "bearish"]);
 });
 

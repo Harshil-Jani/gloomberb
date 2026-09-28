@@ -46,6 +46,11 @@ export interface SocialMentionsPayload {
     /** Median views over the 30 days ending at the last stored day. */
     baseline: number | null;
   };
+  /** Posts and comments naming the ticker in finance subreddits, per finished UTC day; absent on older servers. */
+  reddit?: {
+    days: Array<{ day: string; mentions: number }>;
+    baseline: number | null;
+  };
   /** Parts still filling on the server; ask again shortly. */
   pending: Array<"history" | "posts">;
   warnings: string[];

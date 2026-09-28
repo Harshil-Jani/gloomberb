@@ -25,11 +25,12 @@ const RANGES: SocialMentionsRange[] = ["1y", "5y", "max"];
 function renderCell(row: SocialDayRow, column: SocialColumn, _index: number, state: { selected: boolean }): DataTableCell {
   const text = column.id === "day" ? row.day : column.id === "mentions" ? socialCount(row.mentions)
     : column.id === "ratio" ? socialRatio(row.ratio) : column.id === "wikiViews" ? socialCount(row.wikiViews)
+      : column.id === "redditMentions" ? socialCount(row.redditMentions)
       : column.id === "stance" ? socialStance(row.stance) : topPostCell(row.topPost);
   if (state.selected) return { text, color: colors.selectedText };
   return { text, color: column.id === "stance" ? stanceColor(row.stance)
     : column.id === "ratio" && (row.ratio ?? 0) >= 2.5 ? colors.warning
-      : column.id === "topPost" || column.id === "wikiViews" || !row.closed ? colors.textMuted : colors.text };
+      : column.id === "topPost" || column.id === "wikiViews" || column.id === "redditMentions" || !row.closed ? colors.textMuted : colors.text };
 }
 
 function PostBlock({ post, width }: { post: SocialMentionPost; width: number }) {
@@ -141,6 +142,8 @@ export function SocialMentionsPane({ width, height, focused }: Pick<PaneProps, "
             { id: "peak", label: `Peak ${range === "max" ? "all" : range.toUpperCase()}`, value: socialCount(summary?.peak?.mentions), detail: summary?.peak?.day },
             ...(summary?.wiki ? [{ id: "wiki", label: "Wiki views", value: socialCount(summary.wiki.views),
               detail: `${socialRatio(summary.wiki.ratio)} median · ${summary.wiki.day.slice(5)}` }] : []),
+            ...(summary?.reddit ? [{ id: "reddit", label: "Reddit", value: socialCount(summary.reddit.mentions),
+              detail: `${socialRatio(summary.reddit.ratio)} median · ${summary.reddit.day.slice(5)}` }] : []),
           ]} />
           {chartHeight && allRows.length ? <Box paddingX={1} flexShrink={0}>
             <CompositeChart series={series} panels={hasWiki ? WITH_WIKI_PANELS : PANELS} width={Math.max(1, width - 2)} height={chartHeight} focused={focused && !openRow} showLegend={hasWiki} showTimeAxis navigable={false}
