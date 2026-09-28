@@ -48,6 +48,7 @@ import {
 } from "./layout-helpers";
 import { createRemoteResources } from "./resources";
 import { asRecord } from "../utils/guards";
+import { runAutomated } from "../telemetry/usage-counts";
 
 interface AppRemoteControllerOptions {
   dispatch: Dispatch<AppAction>;
@@ -292,7 +293,12 @@ export function createAppRemoteController({
     return getAfterMutationSummary({ invokedNode: node, result });
   };
 
-  const call = async (operation: string, rawInput: unknown, dryRun?: boolean): Promise<unknown> => {
+  // What remote control opens is automation, not the user opening a function.
+  const call = (operation: string, rawInput: unknown, dryRun?: boolean): Promise<unknown> => (
+    runAutomated(() => callOperation(operation, rawInput, dryRun))
+  );
+
+  const callOperation = async (operation: string, rawInput: unknown, dryRun?: boolean): Promise<unknown> => {
     const input = asRecord(rawInput);
     const dryRunResult = () => ({ operation, input, dryRun: true });
     if (dryRun) return dryRunResult();

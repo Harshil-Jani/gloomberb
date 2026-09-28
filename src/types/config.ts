@@ -2,7 +2,7 @@ import type { Portfolio, Watchlist } from "./ticker";
 import type { BrokerContractRef, TickerListingRef } from "./instrument";
 import type { LanguagePreference } from "../i18n/languages";
 
-export const CURRENT_CONFIG_VERSION = 22;
+export const CURRENT_CONFIG_VERSION = 23;
 
 type ChartRendererPreference = "auto" | "kitty" | "braille";
 
@@ -185,6 +185,11 @@ export interface TelemetryConfig {
    * failures) to Gloom's API. `false` turns them off; absent means on.
    */
   crashReports?: boolean;
+  /**
+   * Anonymous counts of which functions are opened and which are on screen
+   * at launch, to Gloom's API. `false` turns them off; absent means on.
+   */
+  usage?: boolean;
 }
 
 export interface AppConfig {

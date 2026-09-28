@@ -46,6 +46,8 @@ import {
   desktopPluginManager,
 } from "./external-plugins";
 import { handleDesktopPluginStateRequest } from "./desktop/plugin-state";
+import { pluginAutoUpdateEnabled } from "../../../plugins/auto-update";
+import { startNodePluginAutoUpdates } from "../../../plugins/auto-update-node";
 import { scheduleDesktopRelaunch } from "./desktop/relaunch";
 import {
   applyWindowMoveEvent,
@@ -406,6 +408,9 @@ function closeAllDetachedWindows(): void {
   detachedWindowManager.closeAll();
 }
 
+/** How long a quit waits for the view to flush and exit on its own. */
+const QUIT_FALLBACK_MS = 2_500;
+
 function quitDesktopApp(): void {
   closeAllDetachedWindows();
   teardownServices();
@@ -475,8 +480,29 @@ async function initialize(
     void ensureDesktopRemoteControlServer().catch((error) => {
       console.error("[remote] desktop control endpoint failed", summarizeError(error));
     });
+    ensurePluginAutoUpdates();
   }
   return init;
+}
+
+let pluginAutoUpdatesStarted = false;
+
+/**
+ * Official plugins update here, in the process that owns the plugins folder
+ * for every window. The main window then brings what moved into its session
+ * the way its Plugins pane does after an update.
+ */
+function ensurePluginAutoUpdates(): void {
+  if (pluginAutoUpdatesStarted) return;
+  pluginAutoUpdatesStarted = true;
+  startNodePluginAutoUpdates({
+    manager: desktopPluginManager,
+    isEnabled: () => pluginAutoUpdateEnabled(currentConfig),
+    onUpdated: (directories) => {
+      const rpc = getWindowRpc(MAIN_WINDOW_RPC_KEY);
+      if (rpc && isWindowRpcReady(MAIN_WINDOW_RPC_KEY)) rpc.send["plugins.updated"]({ directories });
+    },
+  });
 }
 
 async function handleBackendRequest(
@@ -666,7 +692,14 @@ ApplicationMenu.on("application-menu-clicked", (event: unknown) => {
     return;
   }
   if (command.type === "quit") {
-    quitDesktopApp();
+    if (!isWindowRpcReady(MAIN_WINDOW_RPC_KEY)) {
+      quitDesktopApp();
+      return;
+    }
+    // The view sends its usage counts and then asks to exit; quit anyway if
+    // it does not.
+    getWindowRpc(MAIN_WINDOW_RPC_KEY)?.send["application-menu.select"]({ command });
+    setTimeout(quitDesktopApp, QUIT_FALLBACK_MS);
     return;
   }
   if (!isWindowRpcReady(MAIN_WINDOW_RPC_KEY)) return;

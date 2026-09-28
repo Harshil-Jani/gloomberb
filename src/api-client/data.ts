@@ -1,5 +1,6 @@
 import type { DebtMaturitiesPayload } from "./debt-maturities";
 import type { RevenueBreakdownPayload, RevenueBreakdownView } from "./revenue-breakdown";
+import type { MnaDealPayload, MnaDealsParams, MnaDealsPayload } from "./mna";
 import type { CryptoMarketsPayload } from "./crypto-markets";
 import type { CentralBankRatesPayload } from "./central-bank-rates";
 import type { EstimateRevisionsPayload } from "./estimate-revisions";
@@ -11,6 +12,7 @@ import type { CotBoardPayload, CotContractPayload, CotFamily, CotClass } from ".
 import type { TapeSnapshot } from "./tape";
 import type { ExchangeRateSnapshot } from "../types/exchange-rate";
 import type { RatePathPayload } from "./rates";
+import type { EarningsCalendarPayload, EarningsCalendarQuery, EarningsHistoryPayload } from "./earnings";
 import type { InstrumentSearchResult } from "../types/instrument";
 import {
   normalizeSavedSearchResponse,
@@ -18,6 +20,7 @@ import {
   normalizeTweetSearchResponse,
 } from "./normalizers";
 import {
+  cloudCdsHistoryPath,
   cloudCdsPath,
   cloudCongressHousePath,
   cloudEarningsCallsPath,
@@ -49,6 +52,7 @@ import {
   cloudSearchPath,
   cloudTickerTweetsPath,
   cloudTweetSearchPath,
+  type CloudCdsHistoryParams,
   type CloudCdsParams,
   type CloudCongressHouseParams,
   type CloudEarningsCallsParams,
@@ -64,6 +68,7 @@ import {
 import type {
   CloudAnalystResearchPayload,
   CloudShortInterestPayload,
+  CloudCdsHistoryResponse,
   CloudCdsResponse,
   CloudCongressHousePayload,
   CloudEarningsCallListPayload,
@@ -157,6 +162,18 @@ export class CloudDataApi {
 
   async getCloudEstimateRevisions(symbol: string, exchange: string): Promise<EstimateRevisionsPayload> {
     return this.request<EstimateRevisionsPayload>(`/cloud/research/estimates/${encodeURIComponent(symbol)}?exchange=${encodeURIComponent(exchange)}`, { signal: AbortSignal.timeout(45_000) });
+  }
+
+  async getCloudEarningsCalendar(query: EarningsCalendarQuery): Promise<EarningsCalendarPayload> {
+    const params = new URLSearchParams({ from: query.from, to: query.to });
+    if (query.perDay != null) params.set("perDay", String(query.perDay));
+    if (query.symbols?.length) params.set("symbols", query.symbols.join(","));
+    return this.request<EarningsCalendarPayload>(`/cloud/earnings/calendar?${params}`, { signal: AbortSignal.timeout(30_000) });
+  }
+
+  async getCloudEarningsHistory(symbol: string): Promise<EarningsHistoryPayload> {
+    const params = new URLSearchParams({ symbol, limit: "13" });
+    return this.request<EarningsHistoryPayload>(`/cloud/earnings/history?${params}`, { signal: AbortSignal.timeout(30_000) });
   }
 
   async getCloudQuote(
@@ -364,6 +381,20 @@ export class CloudDataApi {
     return this.request<RevenueBreakdownPayload>(`/cloud/revenue-breakdown?${params}`, { signal: AbortSignal.timeout(30_000) });
   }
 
+  async getCloudMnaDeals(params: MnaDealsParams = {}, options?: { signal?: AbortSignal }): Promise<MnaDealsPayload> {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+    }
+    const text = query.toString();
+    const suffix = text ? `?${text}` : "";
+    return this.request<MnaDealsPayload>(`/cloud/mna/deals${suffix}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+  }
+
+  async getCloudMnaDeal(id: string, options?: { signal?: AbortSignal }): Promise<MnaDealPayload> {
+    return this.request<MnaDealPayload>(`/cloud/mna/deals/${encodeURIComponent(id)}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+  }
+
   async getCloudShortVolume(symbol: string, scope: ShortVolumeScope = "nms"): Promise<ShortVolumePayload> {
     const params = new URLSearchParams({ symbol, scope });
     return this.request<ShortVolumePayload>(`/cloud/short-volume?${params}`, { signal: AbortSignal.timeout(20_000) });
@@ -389,6 +420,10 @@ export class CloudDataApi {
 
   async getCloudCds(params: CloudCdsParams = {}): Promise<CloudCdsResponse> {
     return this.request<CloudCdsResponse>(cloudCdsPath(params));
+  }
+
+  async getCloudCdsHistory(params: CloudCdsHistoryParams): Promise<CloudCdsHistoryResponse> {
+    return this.request<CloudCdsHistoryResponse>(cloudCdsHistoryPath(params), { signal: AbortSignal.timeout(30_000) });
   }
 
   async getCloudCongressHouse(

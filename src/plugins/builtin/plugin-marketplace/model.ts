@@ -182,7 +182,10 @@ export function mergeCatalog(options: {
       // A bundled plugin is present whether or not the local catalog reports it,
       // which matters when the feed is newer than the running build.
       installed: plugin.bundled || !!local,
-      bundled: plugin.bundled,
+      // And a plugin this build ships is bundled whatever the feed says: one
+      // that is built in again can still be listed under its old repository,
+      // and Update or Remove would then act on a leftover checkout.
+      bundled: plugin.bundled || local?.source === "builtin",
     };
     entries.push({
       id: plugin.id,
@@ -268,8 +271,14 @@ export function mergeCatalog(options: {
   return entries;
 }
 
+/** What deciding "is there an update" reads from a row. */
+export type UpdateFacts = Pick<
+  MarketplaceEntry,
+  "installed" | "bundled" | "linked" | "installedVersion" | "installedCommit" | "availableVersion" | "availableCommit" | "remoteCommit"
+>;
+
 /** The commit an update would land on: the reviewed one, or the remote's head. */
-function targetCommit(entry: MarketplaceEntry): string | undefined {
+function targetCommit(entry: UpdateFacts): string | undefined {
   // A registry-listed plugin moves between reviewed commits, never to whatever
   // its default branch holds today, so its own remote does not get a say.
   if (entry.availableVersion || entry.availableCommit) return entry.availableCommit;
@@ -286,7 +295,7 @@ function targetCommit(entry: MarketplaceEntry): string | undefined {
  * dev checkout is never "behind": the developer's working copy is the source
  * of truth there.
  */
-export function hasUpdate(entry: MarketplaceEntry): boolean {
+export function hasUpdate(entry: UpdateFacts): boolean {
   if (!entry.installed || entry.bundled || entry.linked) return false;
   const byVersion = compareSemver(entry.installedVersion, entry.availableVersion);
   if (byVersion !== null) return byVersion < 0;

@@ -45,12 +45,39 @@ export { ThesisConflictError, ThesisGoalpostError } from "./theses";
 export { TeamRevisionConflictError } from "./views";
 export { TEAM_ACCENT_COLORS } from "./types";
 export type * from "./types";
-export type { CrashReportError, CrashReportKind, CrashReportSurface, CrashReportsPayload } from "./telemetry";
+export type {
+  CrashReportError,
+  CrashReportKind,
+  CrashReportSurface,
+  CrashReportsPayload,
+  FunctionUsageCount,
+  UsageCountsPayload,
+  UsageCountsSurface,
+} from "./telemetry";
 
 /** Server-side caps for `/assist/command`; enforced here so a 422 is never sent. */
 const ASSIST_QUERY_MAX_LENGTH = 200;
 const ASSIST_COMMAND_LIMIT = 150;
+const ASSIST_ARG_OPTION_LIMIT = 40;
+const ASSIST_ARG_OPTION_VALUE_MAX_LENGTH = 40;
+const ASSIST_ARG_OPTION_LABEL_MAX_LENGTH = 60;
 const ASSIST_REQUEST_TIMEOUT_MS = 6_000;
+
+/**
+ * Fits a command's argument values inside the server caps. The value is what
+ * the bar runs, so one that is too long is dropped rather than cut; the label
+ * only describes it and is truncated. A list still over the cap is left out
+ * whole: the assistant would read a partial list as every value there is.
+ */
+function capAssistArgOptions(command: AssistCommandDescriptor): AssistCommandDescriptor {
+  if (!command.arg?.options) return command;
+  const { options, ...arg } = command.arg;
+  const capped = options
+    .filter(({ value }) => value.length > 0 && value.length <= ASSIST_ARG_OPTION_VALUE_MAX_LENGTH)
+    .map(({ value, label }) => ({ value, label: label.slice(0, ASSIST_ARG_OPTION_LABEL_MAX_LENGTH) }));
+  const fits = capped.length > 0 && capped.length <= ASSIST_ARG_OPTION_LIMIT;
+  return { ...command, arg: fits ? { ...arg, options: capped } : arg };
+}
 
 interface PendingSessionRequest {
   promise: Promise<AuthUser | null>;
@@ -333,6 +360,7 @@ class GloomApiClient {
     event: import("./research-activity").ResearchActivity; eventId: string;
     surface: "web" | "desktop" | "tui" | "cli"; anonymousId?: string;
     attribution?: Record<string, string>; feature?: import("./research-activity").ResearchFeature;
+    tab?: string;
   }): Promise<void> {
     await this.request("/activity/research", { method: "POST", body: JSON.stringify(payload) });
   }
@@ -530,7 +558,7 @@ class GloomApiClient {
         method: "POST",
         body: JSON.stringify({
           query: query.trim().slice(0, ASSIST_QUERY_MAX_LENGTH),
-          commands: commands.slice(0, ASSIST_COMMAND_LIMIT),
+          commands: commands.slice(0, ASSIST_COMMAND_LIMIT).map(capAssistArgOptions),
         }),
         signal: controller.signal,
       });
@@ -589,6 +617,7 @@ class GloomApiClient {
   submitFeedback = this.feedback.submitFeedback.bind(this.feedback);
   listFeedback = this.feedback.listFeedback.bind(this.feedback);
   reportCrashErrors = this.telemetry.reportCrashErrors.bind(this.telemetry);
+  reportUsageCounts = this.telemetry.reportUsageCounts.bind(this.telemetry);
   deleteCloudNote = this.notes.deleteNote.bind(this.notes);
   listTheses = this.theses.listTheses.bind(this.theses);
   getThesis = this.theses.getThesis.bind(this.theses);
@@ -639,6 +668,8 @@ class GloomApiClient {
   getCloudExchangeRate = this.data.getCloudExchangeRate.bind(this.data);
   getCloudEconomicCalendar = this.data.getCloudEconomicCalendar.bind(this.data);
   getCloudEquityDiagnostic = this.data.getCloudEquityDiagnostic.bind(this.data);
+  getCloudEarningsCalendar = this.data.getCloudEarningsCalendar.bind(this.data);
+  getCloudEarningsHistory = this.data.getCloudEarningsHistory.bind(this.data);
   getCloudFredSeries = this.data.getCloudFredSeries.bind(this.data);
   getCloudCryptoMarkets = this.data.getCloudCryptoMarkets.bind(this.data);
   getCloudCentralBankRates = this.data.getCloudCentralBankRates.bind(this.data);
@@ -650,6 +681,8 @@ class GloomApiClient {
   impliedVolatility = this.data.impliedVolatility.bind(this.data);
   getCloudDebtMaturities = this.data.getCloudDebtMaturities.bind(this.data);
   getCloudRevenueBreakdown = this.data.getCloudRevenueBreakdown.bind(this.data);
+  getCloudMnaDeals = this.data.getCloudMnaDeals.bind(this.data);
+  getCloudMnaDeal = this.data.getCloudMnaDeal.bind(this.data);
   getCloudShortVolume = this.data.getCloudShortVolume.bind(this.data);
   getCloudSocialMentions = this.data.getCloudSocialMentions.bind(this.data);
   getCloudSocialMentionPosts = this.data.getCloudSocialMentionPosts.bind(this.data);
@@ -661,6 +694,7 @@ class GloomApiClient {
   getCloudTape = this.data.getCloudTape.bind(this.data);
   getCloudYieldCurve = this.data.getCloudYieldCurve.bind(this.data);
   getCloudCds = this.data.getCloudCds.bind(this.data);
+  getCloudCdsHistory = this.data.getCloudCdsHistory.bind(this.data);
   getCloudCongressHouse = this.data.getCloudCongressHouse.bind(this.data);
   getCloudJobs = this.data.getCloudJobs.bind(this.data);
   getCloudJobsPostings = this.data.getCloudJobsPostings.bind(this.data);

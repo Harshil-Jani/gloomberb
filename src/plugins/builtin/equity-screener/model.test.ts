@@ -4,6 +4,7 @@ import type { ScreenSnapshot } from "../../../api-client/equity-screener";
 import { fetchScreen } from "./client";
 import {
   appendScreenPage,
+  columnWidth,
   criterionText,
   DEFAULT_SCREEN,
   formatScreenValue,
@@ -95,6 +96,10 @@ test("values keep sign, scale and missing distinct from zero", () => {
   expect(formatScreenValue("revenueGrowthPercent", 0)).toBe("0.0");
   expect(formatScreenValue("insiderSales90d", 20)).toBe("20");
   expect(formatScreenValue("trailingPE", null)).toBe("--");
+  // Thousands separators; a six-figure price still fits its column.
+  expect(formatScreenValue("price", 757_398)).toBe("757,398.00");
+  expect(formatScreenValue("price", 757_398).length).toBeLessThanOrEqual(columnWidth("price"));
+  expect(formatScreenValue("trailingPE", -1_234.56)).toBe("-1,234.6");
 });
 
 test("undated provider values show their collection date, never an invented source date", () => {
@@ -113,4 +118,17 @@ test("result columns lead with the focus metric and the screen's criteria; money
   });
   expect(resultFields(definition, "trailingPE").slice(0, 3)).toEqual(["trailingPE", "operatingMarginPercent", "marketCap"]);
   expect(resultFields({ ...definition, currency: null }, "trailingPE")).not.toContain("price");
+});
+
+test("social attention fields format as daily counts and ratios, and an older server's rows still load", () => {
+  expect([formatScreenValue("xPostsPerDay", 77), formatScreenValue("wikiViewsPerDay", 5_916), formatScreenValue("xPostsVsMedian", 2.46)])
+    .toEqual(["77", formatScreenValue("volume", 5_916), "2.5x"]);
+  const older = payload();
+  for (const row of older.rows) for (const field of ["xPostsPerDay", "xPostsVsMedian", "wikiViewsPerDay", "wikiViewsVsMedian"] as const)
+    delete (row.metrics as Partial<typeof row.metrics>)[field];
+  const loaded = validateScreenPayload(older);
+  expect(loaded.rows[0]!.metrics.xPostsVsMedian).toMatchObject({ value: null, state: "unavailable" });
+  const broken = payload();
+  delete (broken.rows[0]!.metrics as Partial<typeof broken.rows[0]["metrics"]>).price;
+  expect(() => validateScreenPayload(broken)).toThrow("price");
 });
