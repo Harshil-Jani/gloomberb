@@ -684,6 +684,8 @@ class GloomApiClient {
   getCloudMnaDeals = this.data.getCloudMnaDeals.bind(this.data);
   getCloudMnaDeal = this.data.getCloudMnaDeal.bind(this.data);
   getCloudShortVolume = this.data.getCloudShortVolume.bind(this.data);
+  getCloudSocialMentions = this.data.getCloudSocialMentions.bind(this.data);
+  getCloudSocialMentionPosts = this.data.getCloudSocialMentionPosts.bind(this.data);
   getCloudFuturesCurve = this.data.getCloudFuturesCurve.bind(this.data);
   getCloudRatePath = this.data.getCloudRatePath.bind(this.data);
   getCloudShiller = this.data.getCloudShiller.bind(this.data);
