@@ -24,6 +24,7 @@ import {
   resolveAppHeaderHeightCells,
   resolvePaneManagementShortcut,
 } from "./index";
+import { inputCaptureAllowsPaneManagementShortcut } from "./shortcuts";
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined;
 
@@ -321,6 +322,15 @@ describe("Shell", () => {
     expect(resolvePaneManagementShortcut({ ...base, name: "n", key: "n" })).toBeNull();
     expect(resolvePaneManagementShortcut({ ...base, name: "d", key: "d", alt: true })).toBeNull();
     expect(resolvePaneManagementShortcut({ ...base, name: "d", key: "d", meta: false, super: false })).toBeNull();
+  });
+
+  test("allows the screenshot chord while a pane composer captures input", () => {
+    const mac = { ctrl: false, meta: true, super: true, targetEditable: true };
+    const windows = { ctrl: true, meta: false, super: false, targetEditable: true };
+    expect(inputCaptureAllowsPaneManagementShortcut("copy-screenshot", mac)).toBe(true);
+    expect(inputCaptureAllowsPaneManagementShortcut("copy-screenshot", windows)).toBe(true);
+    expect(inputCaptureAllowsPaneManagementShortcut("copy-screenshot", { ...windows, ctrl: false })).toBe(false);
+    expect(inputCaptureAllowsPaneManagementShortcut("share", mac)).toBe(false);
   });
 
   test("opens the layout browser from the primary Shift-L shortcut", async () => {
