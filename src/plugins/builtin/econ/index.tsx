@@ -23,7 +23,7 @@ import {
   FILTER_CYCLE,
   attachEconCalendarPersistence,
   actualColor,
-  dateKey,
+  calendarDisplayRows,
   dayLabel,
   formatCountdown,
   formatStaleness,
@@ -90,40 +90,16 @@ function EconCalendarPane({ focused, width, height }: PaneProps) {
 
   const filtered = useMemo(() => events
     .filter((ev) => matchesImpact(ev, impactFilter) && matchesCountry(ev, countryFilter))
-    .sort((a, b) => b.date.getTime() - a.date.getTime()),
+    .sort((a, b) => a.date.getTime() - b.date.getTime()),
   [countryFilter, events, impactFilter]);
-  const selectedIdx = Math.max(0, filtered.findIndex((ev) => ev.id === selectedKey));
   const detailEvent = useMemo(
     () => (openKey ? events.find((ev) => ev.id === openKey) ?? null : null),
     [events, openKey],
   );
 
-  // Build display rows with separator headers and NOW marker
+  // Day headers and the NOW marker between the past and the upcoming events.
   const today = new Date(now);
-  const rows: DisplayRow[] = [];
-  let lastDateKey = "";
-  let nowInserted = false;
-  const hasPastEvents = filtered.some((ev) => ev.date.getTime() <= now);
-  const hasFutureEvents = filtered.some((ev) => ev.date.getTime() > now);
-
-  for (let i = 0; i < filtered.length; i++) {
-    const ev = filtered[i]!;
-    const dk = dateKey(ev.date);
-
-    // Insert date separator if new day
-    if (dk !== lastDateKey) {
-      lastDateKey = dk;
-      rows.push({ kind: "separator", key: `separator-${dk}`, label: dayLabel(ev.date, today) });
-    }
-
-    // Reverse chronological order puts upcoming events above the present marker.
-    if (hasPastEvents && hasFutureEvents && !nowInserted && ev.date.getTime() <= now) {
-      nowInserted = true;
-      rows.push({ kind: "now", key: "now" });
-    }
-
-    rows.push({ kind: "event", key: `event-${ev.id}-${i}`, event: ev, eventIdx: i });
-  }
+  const rows = calendarDisplayRows(filtered, now);
 
   // Map from eventIdx to flat row index (for scroll tracking)
   const eventIdxToRowIdx = new Map<number, number>();
@@ -143,6 +119,11 @@ function EconCalendarPane({ focused, width, height }: PaneProps) {
       nowRowIdx = r;
     }
   }
+  // Without a remembered row the pane sits at the present: the next release,
+  // or the latest one once the week's releases are all out.
+  const rememberedIdx = filtered.findIndex((ev) => ev.id === selectedKey);
+  const selectedIdx = rememberedIdx >= 0 ? rememberedIdx
+    : nextUpcomingEventIdx >= 0 ? nextUpcomingEventIdx : Math.max(0, filtered.length - 1);
 
   // On initial load, scroll to NOW and select the first upcoming event
   const initialScrollDone = useRef(false);
@@ -177,7 +158,7 @@ function EconCalendarPane({ focused, width, height }: PaneProps) {
     setSelectedKey(null);
   }, [setCountryFilter, setSelectedKey]);
 
-  // A forced reload starts over from the top row once it answers.
+  // A forced reload goes back to the present once it answers.
   const forcedResult = calendar.data?.forced ? calendar.data : null;
   useEffect(() => {
     if (forcedResult) setSelectedKey(null);
