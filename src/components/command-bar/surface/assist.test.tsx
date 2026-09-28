@@ -97,9 +97,9 @@ function configureEarningsRegistry(
 /** Wide enough to cover the ask debounce plus the round trip. */
 const ASSIST_WAIT_ATTEMPTS = 40;
 
-async function waitForRequest(requests: string[]): Promise<void> {
+async function waitForRequest(requests: string[], count = 1): Promise<void> {
   for (let attempt = 0; attempt < ASSIST_WAIT_ATTEMPTS; attempt++) {
-    if (requests.length > 0) return;
+    if (requests.length >= count) return;
     await settleFrame(testSetup!);
   }
   throw new Error("Timed out waiting for the assist request.");
@@ -296,6 +296,52 @@ describe("CommandBar AI assist", () => {
     expect(requests).toHaveLength(1);
     releaseResponse();
     await waitForFrameToContain("#general · Open the general channel", ASSIST_WAIT_ATTEMPTS);
+  });
+
+  test("asks once for a question retyped with other spacing, again when recased", async () => {
+    signInVerified();
+    let releaseResponse = () => {};
+    const held = new Promise<void>((resolve) => { releaseResponse = resolve; });
+    const requests = mockAssistTransport(async () => {
+      await held;
+      return jsonResponse({
+        candidates: [{ input: "CHAT #general", title: "Open the general channel", prefix: "CHAT", confidence: 0.9 }],
+      });
+    });
+    const editQuery = async (keys: string[]) => {
+      await act(async () => {
+        for (const key of keys) testSetup!.mockInput.pressKey(key);
+        await testSetup!.renderOnce();
+      });
+    };
+
+    testSetup = await testRender(
+      <CommandBarHarness query="new chat pane" />,
+      { width: 120, height: 20 },
+    );
+
+    await testSetup.renderOnce();
+    await waitForRequest(requests);
+
+    // A second space while the ask is out: the answer lands on the text now in
+    // the bar instead of leaving it thinking.
+    await editQuery(["ARROW_LEFT", "ARROW_LEFT", "ARROW_LEFT", "ARROW_LEFT", " "]);
+    releaseResponse();
+    let frame = await waitForFrameToContain("#general · Open the general channel", ASSIST_WAIT_ATTEMPTS);
+    expect(frame).toContain("new chat  pane");
+
+    // Taking the space back out keeps the answer on screen.
+    await editQuery(["BACKSPACE"]);
+    frame = await waitForFrameToContain("new chat pane");
+    expect(frame).toContain("#general · Open the general channel");
+
+    expect(requests).toHaveLength(1);
+
+    // Recased, it is a new question: casing can name a ticker ("ON").
+    await editQuery(["DELETE", "P"]);
+    await waitForFrameToContain("new chat Pane");
+    await waitForRequest(requests, 2);
+    expect(requests).toHaveLength(2);
   });
 
   test("drops the section when a background ask fails", async () => {

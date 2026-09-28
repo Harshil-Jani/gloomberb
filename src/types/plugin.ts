@@ -232,6 +232,12 @@ export interface PaneTemplateContext {
   activeCollectionId: string | null;
 }
 
+/** One value a shortcut argument accepts: `value` is typed after the prefix, `label` says what it is. */
+export interface ShortcutArgOption {
+  value: string;
+  label: string;
+}
+
 interface PaneTemplateShortcut {
   prefix: string;
   /** Other mnemonics for the same view (FFIP for WIRP). They open it when typed but are not listed as separate rows. */
@@ -245,6 +251,12 @@ interface PaneTemplateShortcut {
    * board). Without it an optional argument still falls back to the form.
    */
   openWithoutArg?: boolean;
+  /**
+   * Named values the argument accepts, for an argument mostly drawn from a
+   * small set (a statistic, a futures root). The command-bar assistant picks
+   * from it instead of guessing the text; the command may accept others too.
+   */
+  argOptions?: () => readonly ShortcutArgOption[];
 }
 
 export interface PaneTemplateCreateOptions {
