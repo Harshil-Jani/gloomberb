@@ -187,7 +187,7 @@ Correlation uses matching observation times when inputs have different frequenci
 | `QR <ticker>` | Quote recap: NBBO history with sizes, venues and spread (the same pane on its NBBO tab) |
 | `EM <ticker>` / `EEO <ticker>` | EPS estimate revisions, current analyst breadth and surprises; `--period YYYY-MM-DD --frequency quarterly` pins a fiscal period |
 | `GUID <ticker>` | Company EPS guidance cited from filings and transcripts, against consensus (the same pane on its Guidance tab) |
-| `FUT` | Futures quote aliases across index, rates, energy, metals, grains, and FX |
+| `FUT` | Futures quote aliases across index, rates, energy, metals, grains and softs, livestock, and FX |
 | `RRG` / `GRR` | Weekly relative rotation of sectors or a watchlist against a benchmark, with dated trails |
 | `BT <ticker>` / `BTST <ticker>` | Backtest a long-only indicator rule on daily history against buy-and-hold |
 | `EQS` | Equity screener over the stored Cloud universe: valuation, growth, margins, short interest, insider and 13F criteria, saved screens and export |
@@ -242,6 +242,8 @@ Congress Trades includes returns since the transaction and filing close; Members
 `gloomberb fn YAS --settlement 2026-09-22 --maturity 2031-09-15 --coupon 5 --yield 4.25 --json` returns valuation, cash flows and yield shocks. Use `--price 103.333937` instead of `--yield` to solve yield, `--frequency 1|2|4`, `--day-count act-act-icma|30-360-us`, and `--end-of-month` as needed. `gloomberb shot YAS --tab valuation|cashflows|sensitivity` accepts the same inputs. Treasury data is optional; all local calculations still work when it is unavailable.
 
 `FUT` keeps each rolling quote alias as its symbol and displays the provider's contract name when available. Search also matches that name. A month in this label describes the captured quote; the app does not derive an expiry date or establish the roll-adjustment basis of the alias's historical series.
+
+FUT's 1W, 1M and YTD columns are returns on the contract the row names (LEZ26 for "Live Cattle Dec 26"): the live price against that contract's own close a week, a calendar month, or at the end of last year before. The alias's continuous series jumps at every roll (LE=F fell 6.3% on a July roll day), so it is never the baseline. A contract listed after the baseline date shows no return for it; Treasury futures list three quarters ahead, so their YTD is blank in the second half of the year. Dutch TTF gas names no month, so its front contract is the month, among the next three, whose last close is nearest the quoted price. Narrow boards drop volume, previous close and time before the returns.
 
 `BTMM` opens Rates, Bills and Liquidity views. Select a row and press Enter or click it for its dated history, one-year range and source; Back returns to the board. The Bills curve compares common-date discount yields with one week, one month and one year earlier. Liquidity plots the net-liquidity proxy above the component board. `h` and `l` switch views; `o` opens the selected FRED series and `r` refreshes. Reports support `gloomberb fn BTMM --tab rates|bills|liquidity` and `--json`.
 

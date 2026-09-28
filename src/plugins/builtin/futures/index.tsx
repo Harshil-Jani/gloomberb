@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Button,
   DataTableView,
+  PaneStatusBody,
   QueryBar,
   usePaneFooter,
   usePaneMenuItems,
@@ -11,6 +13,7 @@ import {
   type PaneFooterSegment,
 } from "../../../components";
 import { handleRefreshKey } from "../../../components/data-table/table-pane";
+import { usePaneVisible } from "../../../state/app/activity";
 import { usePaneInstance } from "../../../state/app/context";
 import { TICKER_RESEARCH_PANE_ID } from "../../../types/config";
 import type { PaneProps } from "../../../types/plugin";
@@ -38,6 +41,7 @@ import {
   buildFuturesRows,
   DEFAULT_FUTURES_SORT,
   effectiveCollapsedSectors,
+  FUTURES_RETURN_COLUMNS,
   futuresRowId,
   type FuturesColumnId,
   type FuturesSortPreference,
@@ -51,6 +55,7 @@ import {
   usesSessionText,
   type FuturesColumn,
 } from "./table";
+import { useFrontContractReturns } from "./use-front-returns";
 
 export const FUTURES_PANE_ID = "futures";
 
@@ -59,7 +64,9 @@ const FUTURES_SYMBOLS = FUTURES_CONTRACTS.map((contract) => contract.symbol);
 const alwaysNavigable = () => true;
 const NO_BOARD_QUOTES: BoardQuoteMap = new Map();
 /** Columns whose order moves with every tick; the others keep a fixed order. */
-const LIVE_SORT_COLUMNS = new Set<string>(["status", "price", "change", "changePercent", "volume", "time"]);
+const LIVE_SORT_COLUMNS = new Set<string>([
+  "status", "price", "change", "changePercent", "return1w", "return1m", "returnYtd", "volume", "time",
+]);
 
 function FuturesPane({ focused, width, height }: PaneProps) {
   const { pinTicker } = usePluginTickerActions();
@@ -94,15 +101,6 @@ function FuturesPane({ focused, width, height }: PaneProps) {
     visibleSymbols,
     selectedSymbol: selectedId,
   });
-  const visibleCollapsed = effectiveCollapsedSectors(collapsedSectors, searchQuery);
-  const rows = useMemo(
-    () => buildFuturesRows(contractsBySector, sortPreference, quotes, {
-      query: searchQuery,
-      collapsed: collapsedSectors,
-    }),
-    [collapsedSectors, contractsBySector, quotes, searchQuery, sortPreference],
-  );
-
   const visibleColumnIds = useMemo(
     () => resolveFuturesColumnIds(paneInstance?.settings?.columnIds as string[] | undefined),
     [paneInstance?.settings?.columnIds],
@@ -111,12 +109,25 @@ function FuturesPane({ focused, width, height }: PaneProps) {
     () => createFuturesColumns(width, visibleColumnIds),
     [visibleColumnIds, width],
   );
+  const paneVisible = usePaneVisible();
+  const showsReturns = columns.some((column) => FUTURES_RETURN_COLUMNS[column.id]);
+  const returns = useFrontContractReturns(FUTURES_CONTRACTS, quotes, dataProvider, showsReturns && paneVisible);
+
+  const visibleCollapsed = effectiveCollapsedSectors(collapsedSectors, searchQuery);
+  const rows = useMemo(
+    () => buildFuturesRows(contractsBySector, sortPreference, quotes, {
+      query: searchQuery,
+      collapsed: collapsedSectors,
+      returns,
+    }),
+    [collapsedSectors, contractsBySector, quotes, returns, searchQuery, sortPreference],
+  );
 
   const sessionText = usesSessionText(width);
   const renderCell = useCallback((
     row: FuturesTableRow,
     column: FuturesColumn,
-  ) => renderFuturesCell(row, column, quotes, { sessionText }), [quotes, sessionText]);
+  ) => renderFuturesCell(row, column, quotes, { sessionText, returns }), [quotes, returns, sessionText]);
 
   const toggleSector = useCallback((sector: FuturesSector) => {
     setCollapsedSectors((current) => {
@@ -187,7 +198,11 @@ function FuturesPane({ focused, width, height }: PaneProps) {
 
   const status = quoteBoardStatus(quotes);
   const errorMessage = boardErrorMessage(quotes);
+  // Every load came back empty: a board of dashes reads as broken, so the
+  // body says so once and offers a retry. One quote is enough to keep rows.
+  const noQuotes = !!dataProvider && quotes.size > 0 && status.unavailable === quotes.size;
   usePaneFooter(FUTURES_PANE_ID, () => {
+    if (noQuotes) return { info: [], hints: [] };
     const info: PaneFooterSegment[] = quoteBoardFooterInfo(status);
     if (errorMessage) info.push({ id: "reason", parts: [{ text: errorMessage, tone: "warning" }] });
     return {
@@ -197,11 +212,24 @@ function FuturesPane({ focused, width, height }: PaneProps) {
   }, [
     errorMessage,
     focusSearch,
+    noQuotes,
     status.latestTs,
     status.loading,
     status.stale,
     status.unavailable,
   ]);
+
+  if (noQuotes) {
+    return (
+      <PaneStatusBody
+        width={width}
+        height={height}
+        error={errorMessage ?? "No quotes returned."}
+        subject="Futures quotes"
+        actions={<Button label="Retry" variant="secondary" compact onPress={refresh} />}
+      />
+    );
+  }
 
   return (
     <DataTableView<FuturesTableRow, FuturesColumn>
@@ -297,7 +325,7 @@ export const futuresModule: PluginModule = {
       paneId: FUTURES_PANE_ID,
       label: "Futures Board",
       description:
-        "Front-month futures across equity index, rates, energy, metals, agriculture, and FX with last price, session change, search, and collapsible sectors.",
+        "Front-month futures across equity index, rates, energy, metals, agriculture, livestock, and FX with last price, session change, search, and collapsible sectors.",
       keywords: [
         "futures",
         "commodities",
@@ -308,6 +336,11 @@ export const futuresModule: PluginModule = {
         "copper",
         "corn",
         "wheat",
+        "cattle",
+        "hogs",
+        "lumber",
+        "aluminum",
+        "ttf",
         "treasuries",
         "contracts",
         "cme",
