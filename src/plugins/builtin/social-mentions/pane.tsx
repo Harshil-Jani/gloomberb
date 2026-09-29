@@ -75,7 +75,7 @@ export function SocialMentionsPane({ width, height, focused }: Pick<PaneProps, "
   const [rangeValue] = usePaneSettingValue("socialRange", "1y");
   const range: SocialMentionsRange = RANGES.includes(rangeValue as SocialMentionsRange) ? rangeValue as SocialMentionsRange : "1y";
   const listing = listingIdentity(ticker?.metadata.ticker);
-  const symbol = listing?.symbol && /^[A-Z]{1,6}$/.test(listing.symbol) ? listing.symbol : null;
+  const symbol = listing?.symbol && /^[A-Z][A-Z0-9]{0,5}$/.test(listing.symbol) ? listing.symbol : null;
   const session = useResearchCloudSession();
   const loader = useCallback((force: boolean) => loadSocialMentions(symbol!, range, force), [symbol, range, session.requestKey]);
   const resource = useAsyncResource(symbol ? loader : null, {
@@ -121,7 +121,7 @@ export function SocialMentionsPane({ width, height, focused }: Pick<PaneProps, "
   });
   if (!data && isCloudSessionRequired(resource.error)) return <SignInWall action="view social mentions" needsVerification={session.needsVerification} />;
   if (!listing?.symbol) return <EmptyState title="No ticker selected." message="Select a ticker to view social mentions." />;
-  if (!symbol) return <EmptyState title="Social mentions cover US tickers." message="A cashtag cannot name this listing." />;
+  if (!symbol) return <EmptyState title="This ticker cannot be searched as a cashtag." message="Use a symbol of up to six letters and digits, starting with a letter." />;
   const latest = summary?.latest ?? null;
   return <Box flexDirection="column" width={width} height={height}>
     <PaneStatusBody loading={resource.loading && !data} error={!data ? resource.error : null} subject="social mentions"
