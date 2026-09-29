@@ -18,6 +18,7 @@ import { openUrl } from "../../ui/external-link";
 import { useRouteListState } from "../routing/list-state";
 import { useCommandBarRootRuntime } from "../routes/root/runtime";
 import { parseRootShortcutIntent } from "../routes/root/shortcuts";
+import { useRootPluginInstallItem } from "../routes/root/plugin-install";
 import { useCommandBarThemePreview } from "../theme-preview";
 import { CommandBarPanel } from "../panel";
 import { useCommandBarNavigationState } from "../routing/navigation-state";
@@ -191,6 +192,22 @@ export function CommandBar({
     activeTicker: activeTickerSymbol,
   }), [activeTickerSymbol, availableCommands, getAvailablePaneShortcutTemplates, getAvailablePluginCommands, rootQuery]);
 
+  // Runs the typed text again once a plugin installed from the bar is in, the
+  // way a key bound to it would.
+  const rerunQuery = useCallback((query: string) => {
+    dispatch({ type: "SET_COMMAND_BAR", open: true, query, launch: { kind: "run-query", query } });
+  }, [dispatch]);
+  const closeBar = useCallback(() => closeAll({ revertThemePreview: false }), [closeAll]);
+  const pluginInstallItem = useRootPluginInstallItem({
+    enabled: !currentRoute && rootShortcutIntent.kind === "none",
+    query: rootQuery,
+    commands: allAvailableCommands,
+    pluginRegistry,
+    openInlineConfirm,
+    rerunQuery,
+    closeBar,
+  });
+
   const planAccess = usePlanAccess();
   const buildAssistInventory = useCallback(() => buildAssistCommandInventory({
     commands: availableCommands,
@@ -344,6 +361,7 @@ export function CommandBar({
     paneShortcutItems,
     pluginCommandItems,
     pluginCommandResultItems,
+    pluginInstallItem,
     providerResultItems,
     providerCategoryPriorities,
     providerSearching,
