@@ -11,23 +11,23 @@ import type { InstalledPlugin } from "../../plugins/builtin/plugin-marketplace/m
 import {
   listExternalPlugins,
   removeExternalPlugin,
-  seedExternalPlugins,
+  setExternalPlugins,
   upsertExternalPlugin,
 } from "../../plugins/external-runtime";
 import { getPluginHealth } from "../../plugins/health";
 import type { LoadedExternalPlugin } from "../../plugins/loader";
-import { materializeMarketplaceLayout } from "../../layout-marketplace/payload";
+import { materializeMarketplaceLayout } from "../../shares/portable-layout";
 import {
   isPaneInLayout,
   removePane,
-} from "../../plugins/pane-manager";
+} from "../../layout/pane-manager";
 import type { PluginRegistry } from "../../plugins/registry";
 import { reportCrash } from "../../telemetry/crash-reports";
 import { recordFunctionOpen, usageFunctionForPane } from "../../telemetry/usage-counts";
 import {
   resolveTickerNavigationReplacementPane,
   shouldFocusTickerNavigationTarget,
-} from "../../plugins/ticker-navigation";
+} from "../../layout/ticker-navigation";
 import type {
   AppAction,
   AppState,
@@ -314,7 +314,7 @@ export function bindAppPanePluginRegistry({
     focusedPaneId: state.focusedPaneId,
   }));
 
-  seedExternalPlugins(externalPlugins);
+  setExternalPlugins(externalPlugins);
 
   setMarketplaceHost({
     listInstalled: () => {

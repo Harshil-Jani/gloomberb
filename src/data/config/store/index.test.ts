@@ -10,8 +10,8 @@ import {
   findPaneInstance,
   type AppConfig,
 } from "../../../types/config";
-import { getDockedPaneIds } from "../../../plugins/pane-manager";
-import { EXTRACTED_PLUGINS, seedExtractedPlugins } from "../../../plugins/seed";
+import { getDockedPaneIds } from "../../../layout/pane-manager";
+import { EXTRACTED_PLUGINS, seedExtractedPlugins } from "../../../plugins/extracted-plugins";
 
 const tempDirs: string[] = [];
 const originalGloomberbHome = process.env.GLOOMBERB_HOME;

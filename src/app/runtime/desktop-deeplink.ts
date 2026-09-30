@@ -1,6 +1,6 @@
 import { useEffect, type Dispatch } from "react";
 import { apiClient } from "../../api-client";
-import { getDockedPaneIds } from "../../plugins/pane-manager";
+import { getDockedPaneIds } from "../../layout/pane-manager";
 import type { PluginRegistry } from "../../plugins/registry";
 import type { AppAction, AppState } from "../../state/app/context";
 import {
@@ -15,7 +15,7 @@ import { openTeamPane } from "../../plugins/builtin/cloud/team/pane-request";
 import { chatController } from "../../plugins/builtin/chat/controller";
 import { getShare } from "../../shares/api";
 import { openPaneShare } from "../../shares/pane";
-import { materializeMarketplaceLayout } from "../../layout-marketplace/payload";
+import { materializeMarketplaceLayout } from "../../shares/portable-layout";
 
 type CloudDeepLinkRoute = {
   kind: "cloud-alerts" | "cloud-emails" | "cloud-roundup" | "cloud-success" | "cloud-teams";
