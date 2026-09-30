@@ -4,6 +4,7 @@ import { execFile as execFileCallback, execFileSync, spawn } from "child_process
 import { promisify } from "util";
 import { findAbsorbedPlugin, type AbsorbedPlugin } from "./absorbed";
 import type { PluginPin } from "./builtin/plugin-marketplace/store";
+import { bunCommand } from "./dependencies";
 import { linkHostPackages } from "./host-link";
 import {
   findAbsorbedCheckout,
@@ -241,7 +242,10 @@ async function installDependencies(targetDir: string, quiet: boolean): Promise<v
   // symlinked in instead, and pulling a second full copy here would both
   // waste a lot of disk and risk a duplicate React.
   const output = quiet ? "pipe" : "inherit";
-  const result = await run("bun", ["install", "--production"], targetDir, { stdout: output, stderr: output }).catch(() => null);
+  const bun = bunCommand();
+  const result = bun
+    ? await run(bun.command, ["install", "--production"], targetDir, { stdout: output, stderr: output }, bun.env).catch(() => null)
+    : null;
   if (result?.code !== 0 && !quiet) console.error(cliStyles.warning("Warning: failed to install plugin dependencies."));
 
   // After `bun install`, which prunes links it does not know about.
