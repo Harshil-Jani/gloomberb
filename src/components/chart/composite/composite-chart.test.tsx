@@ -25,6 +25,7 @@ import {
   type KeyEventLike,
 } from "../../../react/input";
 import { CompositeChart } from "./composite-chart";
+import type { CompositeChartLevel, CompositeChartLevels, CompositeLevelEdit } from "./levels";
 import { createDefaultConfig } from "../../../types/config";
 import { AppContext, createInitialState, PaneInstanceProvider } from "../../../state/app/context";
 import { createStaticAppStore } from "../../../test-support/app-store";
@@ -1288,6 +1289,99 @@ describe("CompositeChart", () => {
     });
     await act(async () => tui.setup().renderOnce());
     expect(tui.frame()).toContain("Δ");
+  });
+
+  test("adds, drags and deletes a price level with the level tool", async () => {
+    const edits: CompositeLevelEdit[] = [];
+    function LevelChart() {
+      const [items, setItems] = useState<CompositeChartLevel[]>([]);
+      const levels = useMemo<CompositeChartLevels>(() => ({
+        seriesId: "price",
+        items,
+        onEdit: (edit) => {
+          edits.push(edit);
+          setItems((current) => edit.kind === "add"
+            ? [...current, { id: edit.id, value: edit.value, color: "#f5a524", editable: true, actionable: true }]
+            : edit.kind === "move"
+              ? current.map((level) => level.id === edit.id ? { ...level, value: edit.value } : level)
+              : current.filter((level) => level.id !== edit.id));
+        },
+      }), [items]);
+      return (
+        <CompositeChart
+          width={60}
+          height={12}
+          focused
+          interactive
+          series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+          panels={[{ id: "main" }]}
+          levels={levels}
+        />
+      );
+    }
+    await tui.render(
+      <InputHostProvider host={chartInputHost}>
+        <CaptureChartSurfaceProvider>
+          <LevelChart />
+        </CaptureChartSurfaceProvider>
+      </InputHostProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => tui.setup().renderOnce());
+    await act(async () => chartShortcut?.(keyEvent("H", true)));
+    await act(async () => tui.setup().renderOnce());
+
+    // A click on empty plot adds a level at that height.
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(10, 2));
+      capturedSurfaceProps!.onMouseUp(pointerEvent(10, 2));
+    });
+    expect(edits).toHaveLength(1);
+    const added = edits[0] as Extract<CompositeLevelEdit, { kind: "add" }>;
+    expect(added.kind).toBe("add");
+
+    // Grabbing it drags it, and the move is saved once, on release.
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(30, 2));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(30, 7));
+    });
+    expect(edits).toHaveLength(1);
+    await act(async () => capturedSurfaceProps!.onMouseUp(pointerEvent(30, 7)));
+    const moved = edits[1] as Extract<CompositeLevelEdit, { kind: "move" }>;
+    expect(moved).toMatchObject({ kind: "move", id: added.id });
+    expect(moved.value).toBeLessThan(added.value);
+
+    await act(async () => chartShortcut?.(keyEvent("backspace")));
+    expect(edits[2]).toEqual({ kind: "remove", id: added.id });
+
+    // Enter adds one at the cursor's price; Enter again picks it rather than stacking a twin.
+    await act(async () => chartShortcut?.(keyEvent("return")));
+    expect(edits[3]).toMatchObject({ kind: "add", value: 105 });
+    await act(async () => tui.setup().renderOnce());
+    await act(async () => chartShortcut?.(keyEvent("return")));
+    expect(edits).toHaveLength(4);
+  });
+
+  test("a price level on the last price's row leaves the last price on the axis", async () => {
+    const price: ResolvedSeries = {
+      ...series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108]),
+      timeBasis: { kind: "market", timeZone: "America/New_York", exchange: "NASDAQ" },
+    };
+    await tui.render(
+      <CompositeChart
+        width={60}
+        height={12}
+        series={[price]}
+        panels={[{ id: "main" }]}
+        levels={{ seriesId: "price", items: [{ id: "a", value: 108.2, color: "#f5a524", editable: true, actionable: false }] }}
+      />,
+      { width: 62, height: 14 },
+    );
+    await act(async () => tui.setup().renderOnce());
+    const row = tui.frame().split("\n").find((line) => line.includes("✥")) ?? "";
+    expect(row).toContain("───");
+    expect(row).toContain("$108 ");
+    expect(row).not.toContain("$108.2");
   });
 
   test("arms and disarms a chart tool from the toolbar", async () => {
