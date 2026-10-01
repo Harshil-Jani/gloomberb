@@ -256,6 +256,13 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     bloomberg: ["HVT"],
     docs: "HVT",
   },
+  SEAS: {
+    summary: "Does this name have a calendar? Monthly returns for each year, every month's average, median and share of up years, and each year's path laid over one January-to-December axis.",
+    usage: ["SEAS AAPL"],
+    keys: [],
+    data: DAILY_CLOSES,
+    bloomberg: ["SEAS"],
+  },
   VCA: {
     summary: "IV rank, term slope, skew and IV against realized vol for up to 60 US tickers, flagged rich or cheap against each name's own year. Alone it screens index and sector ETFs.",
     usage: ["VCA", "VCA NVDA, AAPL, TSLA"],

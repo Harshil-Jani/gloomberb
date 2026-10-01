@@ -54,6 +54,12 @@ Contradictory OHLC bars are unavailable rather than silently repaired. Charts le
 
 Chart controls: select ranges and intervals above the plot; click a legend entry to hide or restore a series; use **+ add series** to add one. In a narrow legend, scroll over the row or use `[` / `]` to reveal each series; Space toggles the selected series. The existing footer offers **Series**, **Indicators**, **Formulas**, and **Share**, also available with `s`, `i`, `f`, and `y`. `t` opens the interval picker. Sharing publishes a chart snapshot; pane sharing is available from the pane menu.
 
+## Seasonality
+
+`SEAS <ticker>` requests monthly bars over the whole history and keeps the last close of each UTC calendar month. Monthly bars because daily history is only served to five years before a provider's own limits are known, and a longer daily request can come back as weekly bars stamped on Mondays, which would file a week's close under the month it started in. When weekly bars are all there is, each close is filed under the Friday that ends its week, so a month runs from last Friday to last Friday rather than from its exact last session. A month's return runs from the previous month's close to its own, so a month appears only when the month before it is in the history; a year's total runs from the prior year-end close. Returns use local prices without cash distributions or currency conversion. The lookback (5, 10 or 20 calendar years, the current one included) is cut from the loaded history, so changing it does not refetch.
+
+The latest month is a return to date until December closes the year: the Returns table shows it untinted and marks its year with `*`, and it stays out of the month's average, median and up share. Those statistics cover completed months in the lookback only; a month with few years of history has few observations, and the headless `count` says how many. The Overlay tab draws each year's return since its prior year-end at each month-end on one January-to-December axis. The average path is the mean of the completed years at each month-end every one of them reached; the running year is drawn but left out of it.
+
 ## Price history corrections
 
 These rules apply to every symbol. The app keeps no per-company history fixes.
