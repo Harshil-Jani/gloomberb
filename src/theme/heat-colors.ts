@@ -1,12 +1,12 @@
-import { colors } from "../../../theme/colors";
-import { blendHex, contrastRatio } from "../../../theme/color-utils";
+import { colors } from "./colors";
+import { blendHex, contrastRatio } from "./color-utils";
 
 const HEATMAP_BASE_BLEND = 0.35;
 const HEATMAP_TEXT_MIN_CONTRAST = 4.5;
 const HEATMAP_MUTED_MIN_CONTRAST = 3.6;
 const HEATMAP_TINT_STEPS = [0.56, 0.5, 0.44, 0.38, 0.32, 0.28, 0.24, 0.2, 0.16, 0.12] as const;
 
-export interface CorrelationHeatmapCellColors {
+export interface HeatCellColors {
   background: string;
   foreground: string;
 }
@@ -39,13 +39,13 @@ function heatmapBaseBackground(): string {
 // Diverging: red below zero, green above, and no tint at zero. A yellow
 // midpoint made every moderate positive the same olive, so 0.45 and 0.64
 // could not be told apart.
-function heatmapSemanticColor(correlation: number): string {
-  return correlation < 0 ? colors.negative : colors.positive;
+function heatmapSemanticColor(value: number): string {
+  return value < 0 ? colors.negative : colors.positive;
 }
 
 /** How far a cell leans toward its hue: none at zero, strongest at +/-1. */
-function heatmapTargetStrength(correlation: number): number {
-  return 0.06 + Math.abs(correlation) * 0.56;
+function heatmapTargetStrength(value: number): number {
+  return 0.06 + Math.abs(value) * 0.56;
 }
 
 function heatmapTintSteps(targetStrength: number): number[] {
@@ -57,15 +57,18 @@ function readableForeground(background: string): string {
   return highestContrast(textCandidates(), background);
 }
 
-export function resolveCorrelationHeatmapCellColors(
-  correlation: number | null,
-  options: { diagonal?: boolean } = {},
-): CorrelationHeatmapCellColors {
+/**
+ * A diverging heat cell for a value scaled to -1..1 (a correlation as is, a
+ * return divided by the move that should read as full strength).
+ */
+export function resolveHeatCellColors(
+  value: number | null,
+  options: { quiet?: boolean } = {},
+): HeatCellColors {
   const baseBackground = heatmapBaseBackground();
 
-  // A series against itself is always 1.00 and says nothing: keep it quiet so
-  // the eye goes to the pairs.
-  if (correlation === null || options.diagonal) {
+  // A quiet cell says nothing (a series against itself), so the eye goes elsewhere.
+  if (value === null || options.quiet) {
     const muted = colors.textMuted;
     return {
       background: baseBackground,
@@ -75,10 +78,10 @@ export function resolveCorrelationHeatmapCellColors(
     };
   }
 
-  const clamped = Math.max(-1, Math.min(1, correlation));
+  const clamped = Math.max(-1, Math.min(1, value));
   const semanticColor = heatmapSemanticColor(clamped);
   const targetStrength = heatmapTargetStrength(clamped);
-  let fallback: CorrelationHeatmapCellColors | null = null;
+  let fallback: HeatCellColors | null = null;
 
   for (const tintStrength of heatmapTintSteps(targetStrength)) {
     const background = blendHex(baseBackground, semanticColor, tintStrength);

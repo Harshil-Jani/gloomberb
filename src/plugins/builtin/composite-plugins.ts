@@ -57,6 +57,7 @@ import { optionsScenarioModule } from "./options-scenario";
 import { optionsCalculatorModule } from "./options-calculator";
 import { volSurfaceModule } from "./vol-surface";
 import { realizedVolModule } from "./realized-vol";
+import { seasonalityModule } from "./seasonality";
 import { ivHistoryModule } from "./iv-history";
 import { backtestModule } from "./backtest";
 import { researchModule } from "./research";
@@ -96,6 +97,7 @@ export const tickerResearchPlugin = composeBuiltinPlugin({
     optionsScenarioModule,
     volSurfaceModule,
     realizedVolModule,
+    seasonalityModule,
     ivHistoryModule,
     backtestModule,
     estimateRevisionsModule,

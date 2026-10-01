@@ -74,6 +74,7 @@ Press `Ctrl+P` to open the command bar, or press `` ` `` to search for a ticker.
 | `OVDV AAPL` | Implied-volatility surface and options term structure |
 | `OPX SPY` / `GEX SPY` | Open interest by strike and expiry, max pain and dealer gamma ([method](docs/options-positioning.md)) |
 | `HVG AAPL` / `HVT AAPL` | Realized volatility and volatility cones |
+| `SEAS AAPL` | Seasonality: monthly returns by year and year overlays |
 | `COT [code or root]` | CFTC positioning and cross-market extremes |
 | `TOP` | Market stories |
 | `WIRP` / `FFIP` | US rate path and conditional FOMC probabilities |
