@@ -847,7 +847,7 @@ ctx.selectTicker("AAPL", "my-pane:1"); // Select in a specific pane
 ctx.switchPanel("left");               // Focus the leftmost pane
 ctx.switchTab("chart");                // Switch Ticker Research tab by id
 ctx.switchTab("chart", "ticker-research:1"); // Switch tab in a specific pane
-ctx.openCommandBar();                  // Open the command bar
+ctx.openCommandBar();                  // Open the command bar (nothing while a dialog is open)
 ctx.openCommandBar("export");          // Open with a pre-filled query
 ctx.openPaneSettings();                // Open settings for the focused pane
 ctx.openPaneSettings("my-pane:1");     // Open settings for a specific pane
@@ -1117,7 +1117,7 @@ ctx.registerPaneTemplate({
     argKind: "ticker",
   },
 
-  // Optional: wizard steps shown before creating the pane
+  // Optional: fields asked in a form before creating the pane
   wizard: [
     { key: "interval", label: "Interval", type: "select", options: [
       { label: "1D", value: "1d" },
@@ -1177,7 +1177,7 @@ Choose the existing control that owns the interaction you need:
 | A form's field labels and keyboard ring | `FieldLabel`, `TextField` (`active`, `labelWidth`), `useFieldRing` |
 | Clickable/expandable summaries | `ActionRow` |
 | Selectable lists | `ListView` |
-| Dialog content | `DialogFrame`, `ChoiceDialog`, `ConfirmDialog` (`confirmDialog` asks and resolves a boolean), `TextPromptDialog`, `PriceSelectorDialog` |
+| Dialog content | `DialogFrame`, `ChoiceDialog`, `ConfirmDialog` (`confirmDialog` asks and resolves a boolean; `status` and `busy` show work the confirm started), `TextPromptDialog`, `PriceSelectorDialog` |
 | Section and document headings | `Section`, `SectionHeading` (`wrap` for long headings) |
 | Labeled values and badges | `KeyValueRow`, `Badge` |
 | Paragraphs, bullets and separators | `Prose`, `BulletList`, `FigureList` (value-first figure lines), `READING_WIDTH`, `Divider` |
@@ -1524,7 +1524,7 @@ setup(ctx) {
 }
 ```
 
-Commands can also define a multi-step wizard flow:
+Commands can also ask for values first. The wizard's steps open as one form in a centered dialog, every field at once:
 
 ```typescript
 ctx.registerCommand({
@@ -1539,16 +1539,15 @@ ctx.registerCommand({
       { label: "Below", value: "below" },
     ]},
   ],
-  wizardLayout: "form",  // "steps" (default) or "form" (all fields at once)
   async execute(values) {
     // values.price, values.direction
   },
 });
 ```
 
-Wizard step types: `text`, `password`, `number`, `select`, `info`. Steps can use `dependsOn` to conditionally appear based on a previous step's value.
+Wizard step types: `text`, `password`, `number`, `select`, `textarea`, `info`. A step is required unless it sets `required: false`, and `info` steps show their `body` above the fields. Steps can use `dependsOn` to conditionally appear based on a previous step's value. A pane template's `wizard` opens the same form, from the command bar or from `ctx.createPaneFromTemplate`, and creates the pane when it is sent. A form asked for while another is open, for example from a command's `execute`, opens once that one closes. `wizardLayout` is ignored.
 
-Commands can require confirmation before executing:
+Commands can require confirmation before executing. The confirm opens as a centered dialog:
 
 ```typescript
 ctx.registerCommand({
