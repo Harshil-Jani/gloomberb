@@ -283,6 +283,13 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     data: DAILY_CLOSES,
     bloomberg: ["SEAS"],
   },
+  RDCF: {
+    summary: "What growth is the price assuming? The yearly free cash flow growth over ten years that makes a DCF equal today's enterprise value, next to the growth the company delivered.",
+    usage: ["RDCF AAPL"],
+    keys: [],
+    data: ON_RELEASE,
+    bloomberg: [],
+  },
   VCA: {
     summary: "IV rank, term slope, skew and IV against realized vol for up to 60 US tickers, flagged rich or cheap against each name's own year. Alone it screens index and sector ETFs.",
     usage: ["VCA", "VCA NVDA, AAPL, TSLA"],
