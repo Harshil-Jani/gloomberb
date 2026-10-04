@@ -335,7 +335,7 @@ An undated float cannot establish a historical settlement's denominator. Missing
 
 `SIW` lists every US-listed stock and fund in your portfolios and watchlists; `SIW GME, AMC, CVNA` lists those names instead (up to 60). Each row reads one name's latest FINRA settlement:
 
-- **% Float** is that settlement's shares short over the current float. The float is undated, so the percentage is the latest settlement's only; the `SI` pane keeps older settlements without one.
+- **% Float** is that settlement's shares short over the current float. The float is undated, so the percentage is the latest settlement's only; the `SI` pane keeps older settlements without one. A float smaller than the shares short is not used (some multi-class tickers report one class's float): the percentage stays blank and days to cover decides alone.
 - **Days** is FINRA's days to cover: shares short over average daily volume.
 - **SI Chg%** is the change in shares short from the settlement before. A split between the two settlements is not adjusted.
 - **1M%** is the latest daily close against the last close on or before the same day a month earlier (the month's last day when it is shorter), from daily closes, price only. A gap of more than four days before that day, or bars that are not daily, leave it blank.

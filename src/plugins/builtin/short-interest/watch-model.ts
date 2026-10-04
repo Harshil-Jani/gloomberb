@@ -99,8 +99,10 @@ export function buildShortWatchRow(inputs: ShortWatchInputs): ShortWatchRow {
   const records = [...(inputs.records ?? [])].sort((left, right) => left.settlementDate.getTime() - right.settlementDate.getTime());
   const latest = records.at(-1);
   const prior = records.at(-2);
+  // A float smaller than the shares short is another class's float (BRK.B reports Berkshire's Class A), not a short over 100%.
   const percentFloat = latest
-    ? latest.shortPercentFloat ?? (finite(inputs.floatShares) && inputs.floatShares > 0 ? latest.sharesShort / inputs.floatShares * 100 : null)
+    ? latest.shortPercentFloat ?? (finite(inputs.floatShares) && inputs.floatShares >= latest.sharesShort && inputs.floatShares > 0
+      ? latest.sharesShort / inputs.floatShares * 100 : null)
     : null;
   const move = inputs.history ? oneMonthReturn(inputs.history) : null;
   const row = {
@@ -118,7 +120,6 @@ export function buildShortWatchRow(inputs: ShortWatchInputs): ShortWatchRow {
 }
 
 const SETUP_RANK: Record<ShortWatchSetup, number> = { "crowded-rising": 2, crowded: 1 };
-
 
 /**
  * Crowded names that are rising first, then crowded names, then the rest; each

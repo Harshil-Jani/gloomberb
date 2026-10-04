@@ -47,6 +47,13 @@ describe("short watch rows", () => {
     expect(row("HIGH", 12, 100, 1).changePercent).toBeCloseTo(100, 9);
   });
 
+  test("a float smaller than the shares short is not used, so days to cover decides alone", () => {
+    // BRK.B: 12.53M short against 1.23M, which is Berkshire's Class A float.
+    expect(row("BRK.B", 12.53, 1.234, 3.3)).toMatchObject({ percentFloat: null, setup: null });
+    expect(row("BRK.B", 12.53, 1.234, 6)).toMatchObject({ percentFloat: null, setup: "crowded-rising" });
+    expect(row("FULL", 100, 100, 1).percentFloat).toBe(100);
+  });
+
   test("ranks crowded names that are rising first, then crowded, then the rest, unreported last", () => {
     const rows = [
       buildShortWatchRow({ symbol: "NONE", records: [], floatShares: 100, history: rising }),
