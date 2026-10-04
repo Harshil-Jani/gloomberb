@@ -17,6 +17,12 @@ const chain = (symbol: string, says: SupplyRow[]): SupplyChainPayload => ({ symb
 const report = (symbol: string, date: string): EarningsCalendarReport => ({ symbol, name: symbol, date, timing: "amc", averageMove: 0.025, averageReports: 8 } as EarningsCalendarReport);
 
 describe("earnings ripple", () => {
+  test("shows a customer's average move only once ERN would, with enough reports behind it", () => {
+    const rows = projectRipple(new Map([["CRUS", chain("CRUS", [customer("AAPL", "NASDAQ", 91), customer("ARM", "NASDAQ", 12)])]]),
+      [report("AAPL", "2026-10-29"), { ...report("ARM", "2026-10-30"), averageReports: 2 }]);
+    expect(rows.map((row) => [row.customer, row.averageMove])).toEqual([["AAPL", 0.025], ["ARM", null]]);
+  });
+
   test("keeps listed US revenue customers that report, one per customer, with the holding's own report date", () => {
     const rows = projectRipple(new Map([
       ["CRUS", chain("CRUS", [

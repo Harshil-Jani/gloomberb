@@ -44,18 +44,19 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
   const session = useResearchCloudSession();
   const access = usePlanAccess();
   const accessKey = `${session.requestKey}:${access.hasProAccess ? "full" : "preview"}`;
-  // Named tickers, or every US listing in the user's portfolios and watchlists.
-  const holdings = useMemo(() => {
+  // Named tickers, or every US listing in the user's portfolios and watchlists, positions first.
+  const scope = useMemo(() => {
     const named = symbolsText.split(/[\s,]+/).map((symbol) => symbol.trim().toUpperCase()).filter(Boolean);
-    if (named.length) return named;
-    return [...new Set(Object.values(tickers)
+    const all = named.length ? [...new Set(named)] : [...new Set(Object.values(tickers)
       .filter((ticker) => ticker.metadata.portfolios.length + ticker.metadata.watchlists.length > 0 && isUsListingExchange(ticker.metadata.exchange))
-      .map((ticker) => ticker.metadata.symbol.toUpperCase()))].sort();
+      .sort((a, b) => Number(b.metadata.portfolios.length > 0) - Number(a.metadata.portfolios.length > 0) || a.metadata.symbol.localeCompare(b.metadata.symbol))
+      .map((ticker) => ticker.metadata.symbol.toUpperCase()))];
+    return { holdings: all.slice(0, RIPPLE_HOLDINGS_LIMIT), total: all.length, named: named.length > 0 };
   }, [symbolsText, tickers]);
-  const tooMany = holdings.length > RIPPLE_HOLDINGS_LIMIT;
+  const holdings = scope.holdings;
   const holdingsKey = holdings.join(",");
   const loader = useCallback((force: boolean) => loadRipple(holdings, cachedRippleSources(accessKey, force)), [holdingsKey, accessKey]);
-  const ripple = useAsyncResource(holdings.length && !tooMany ? loader : null);
+  const ripple = useAsyncResource(holdings.length ? loader : null);
   useAutoRefresh(ripple.updatedAt, ripple.load);
   usePaneRefreshKey(() => { void ripple.reload(); }, { focused });
 
@@ -63,7 +64,7 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
   const selected = rows.find((row) => row.id === selectedId) ?? rows[0] ?? null;
   const failures = ripple.data?.failures ?? [];
   usePaneNoticeFooter({ registrationId: "earnings-ripple-notices", focused, notices: [
-    ...(tooMany ? [`Name at most ${RIPPLE_HOLDINGS_LIMIT} holdings in pane settings.`] : []),
+    ...(scope.total > holdings.length ? [`Checking ${holdings.length} of ${scope.total} holdings${scope.named ? "" : ", positions first. Name tickers in pane settings to pick others"}`] : []),
     ...(failures.length ? [`No disclosures for ${failures.map((failure) => failure.symbol).join(", ")}`] : []),
   ] });
   const openSupply = useCallback((row: RippleRow) => createPaneFromTemplate("supply-chain-pane", { symbol: row.holding }), [createPaneFromTemplate]);

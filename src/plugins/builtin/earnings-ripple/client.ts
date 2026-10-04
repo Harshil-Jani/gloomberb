@@ -34,16 +34,18 @@ const CONCURRENCY = 6;
 export async function loadRipple(holdings: readonly string[], sources: RippleSources & { staleFlags?: boolean[] }, now = new Date()): Promise<RippleSnapshot> {
   const from = now.toISOString().slice(0, 10);
   const to = new Date(now.getTime() + RIPPLE_DAYS * 86_400_000).toISOString().slice(0, 10);
-  const calendar = sources.calendar({ from, to });
   const chains = new Map<string, SupplyChainPayload>();
   const failures: RippleSnapshot["failures"] = [];
   const queue = [...new Set(holdings.map((symbol) => symbol.toUpperCase()))];
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
-    for (let symbol = queue.shift(); symbol; symbol = queue.shift()) {
-      try { chains.set(symbol, await sources.supplyChain(symbol)); }
-      catch (error) { failures.push({ symbol, error: errorMessage(error) }); }
-    }
-  }));
-  const payload = await calendar;
+  // Awaited together so a calendar that fails while disclosures load is never an unhandled rejection.
+  const [payload] = await Promise.all([
+    sources.calendar({ from, to }),
+    Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+      for (let symbol = queue.shift(); symbol; symbol = queue.shift()) {
+        try { chains.set(symbol, await sources.supplyChain(symbol)); }
+        catch (error) { failures.push({ symbol, error: errorMessage(error) }); }
+      }
+    })),
+  ]);
   return { rows: projectRipple(chains, payload.reports), failures, stale: !!sources.staleFlags?.some(Boolean), from, to };
 }

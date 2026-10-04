@@ -1,6 +1,7 @@
 import type { EarningsCalendarReport, EarningsTiming } from "../../../api-client/earnings";
 import type { SupplyChainPayload, SupplyRow } from "../../../api-client/supply-chain";
 import { isUsListingExchange } from "../../../utils/exchanges";
+import { MIN_AVERAGE_REPORTS } from "../earnings/board-model";
 
 /** Days ahead the calendar is read. */
 export const RIPPLE_DAYS = 30;
@@ -12,7 +13,7 @@ export interface RippleRow {
   customerName: string;
   date: string;
   timing: EarningsTiming | null;
-  /** Mean absolute move over the customer's last reports. */
+  /** Mean absolute move over the customer's last reports, once it has as many as ERN requires. */
   averageMove: number | null;
   /** The holding whose filing names the customer. */
   holding: string;
@@ -58,7 +59,7 @@ export function projectRipple(chains: ReadonlyMap<string, SupplyChainPayload>, r
       const report = next.get(customer);
       if (!report || customer === holding.toUpperCase()) continue;
       rows.push({ id: `${holding}:${customer}`, customer, customerName: report.name ?? row.counterparty.name, date: report.date,
-        timing: report.timing, averageMove: report.averageMove, holding, pctOfRevenue: row.pctOfRevenue!, pctScope: row.pctScope,
+        timing: report.timing, averageMove: report.averageReports >= MIN_AVERAGE_REPORTS ? report.averageMove : null, holding, pctOfRevenue: row.pctOfRevenue!, pctScope: row.pctScope,
         period: row.period, holdingDate: next.get(holding.toUpperCase())?.date ?? null });
     }
   }
