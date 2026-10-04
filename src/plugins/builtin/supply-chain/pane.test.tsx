@@ -4,6 +4,7 @@ import { setCloudApiFetchTransport } from "../../../api-client";
 import { PaneFooterBar, PaneFooterKeys, PaneFooterProvider } from "../../../components/layout/pane/footer";
 import { createOpenTuiTestHarness } from "../../../renderers/opentui/test-utils";
 import { appReducer, createInitialState } from "../../../state/app/context";
+import { PaneKeyboardScrollController } from "../../../state/pane-scroll-registry";
 import { createTestPaneConfig, createTestTicker, TestPaneProvider } from "../../../test-support/pane";
 import { MemoryPluginPersistence } from "../../../test-support/plugin-persistence";
 import { createTestPluginRuntime } from "../../../test-support/plugin-runtime";
@@ -32,6 +33,7 @@ async function mount(width: number, height: number, tab = "table", view = "says"
       <PaneFooterBar footer={footer} width={width} focused />
       <PaneFooterKeys paneId={id} footer={footer} focused />
     </Box>}</PaneFooterProvider>
+    <PaneKeyboardScrollController paneId={id} focused />
   </TestPaneProvider>;
   }
   await act(async () => { await tui.render(<Harness />, { width, height }); });
@@ -61,6 +63,13 @@ test("preview keeps evidence-bearing rows, shows the standard upgrade, and narro
   expect(frame).toContain("COUNTERPARTY");
   expect(frame).toContain("Upgrade to see every relationship");
   expect(frame).not.toContain("Suppliers");
+  await tui.destroy();
+  data.says[0] = supplyRow("Known company", { nativeAmount: 315_813, nativeCurrency: "JPY", nativeScale: 1_000_000 });
+  await mount(88, 20);
+  const native = await tui.waitForFrameToContain("315,813 JPY million");
+  expect(native).toContain("FY2026");
+  expect(native).toContain("Upgrade to Pro");
+  expect(native).toContain("Filing");
 });
 
 test("Unconfirmed opt-in separates reported leads from confirmed rows and excludes them from flow", async () => {
@@ -98,17 +107,51 @@ test("reverse table labels the percentage denominator and diagram pages a crowde
 });
 
 
+
+test("narrow evidence wraps original quotes and glosses and scrolls to their ends", async () => {
+  const row = supplyRow("Korean disclosure", { quoteLanguage: "ko", pctOfRevenue: null, pctBasis: null,
+    quote: "2025년 당사의 주요 매출처는 Alphabet, Apple, Deutsche Telekom, Hong Kong Techtronics, Supreme Electronics 등(알파벳순) 입니다. 당사의 주요 5대 매출처에 대한 매출비중은 전체 매출액 대비 약 15% 수준입니다.",
+    quoteGloss: "Samsung's principal customers include Alphabet, Apple, Deutsche Telekom, Hong Kong Techtronics and Supreme Electronics. Together they represented approximately 15% of total revenue." });
+  setCloudApiFetchTransport(async () => Response.json(supplyPayload({ says: [row] })));
+  await mount(80, 20);
+  await tui.waitForFrameToContain("FY2026");
+  await tui.emitKeypress({ name: "e" });
+  await tui.waitForFrameToContain("Original quote");
+  await tui.emitKeypress({ name: "end" });
+  const frame = await tui.waitForFrameToContain(`Open ${row.form}`);
+  expect(frame).toContain("15% 수준입니다.");
+  expect(frame).toContain("15% of total revenue.");
+  expect(frame).toContain("English gloss · machine translation");
+});
+
+
 test("evidence preserves the reporting company and scope, then Enter drills into the selected counterparty", async () => {
-  const row = supplyRow("counterparty", { counterparty: { ...entity("counterparty"), ticker: "2330", exchange: "TWSE" }, pctScope: "Business segments: Compute and networking" });
+  const row = supplyRow("counterparty", { counterparty: { ...entity("counterparty"), ticker: "2330", exchange: "TWSE" }, pctScope: "Business segments: Compute and networking",
+    nativeAmount: 315_813, nativeCurrency: "JPY", nativeScale: 1_000_000, quoteLanguage: "ja", quote: "販売高には、当該顧客と同一の企業集団に属する顧客に対する販売高を含めております。",
+    quoteGloss: "Sales include customers in the same corporate group.", entityScope: "group" });
   setCloudApiFetchTransport(async () => Response.json(supplyPayload({ says: [row] })));
   const opened: Array<[string, string | undefined]> = [];
-  await mount(120, 24, "table", "says", (template, symbol) => opened.push([template, symbol]));
+  for (const width of [88, 160]) {
+    await mount(width, 24);
+    const table = await tui.waitForFrameToContain("315,813 JPY million");
+    expect(table).toContain("FY2026");
+    expect(table).toContain("22%");
+    if (width === 160) expect(table).toContain("ORIGINS");
+    await tui.destroy();
+  }
+  await mount(120, 30, "table", "says", (template, symbol) => opened.push([template, symbol]));
   await tui.waitForFrameToContain("counterparty");
   await tui.emitKeypress({ name: "e" });
   const evidence = await tui.waitForFrameToContain("Percentage scope");
   expect(evidence).toContain("Business segments: Compute and networking");
   expect(evidence).toContain("Reporting company");
+  expect(evidence).toContain("Metric scope");
+  expect(evidence).toContain("Corporate group");
   expect(evidence).toContain(row.quote);
+  expect(evidence).toContain("315,813 JPY million");
+  expect(evidence).toContain("Original quote · Japanese");
+  expect(evidence).toContain("English gloss · machine translation");
+  expect(evidence).toContain(row.quoteGloss!);
   await tui.emitKeypress({ name: "escape" });
   await tui.waitForFrameToContain("COUNTERPARTY");
   await tui.emitKeypress({ name: "return" });
