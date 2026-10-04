@@ -563,7 +563,7 @@ export async function buildDesktopShotPayload(
       ?? data.quote?.exchangeName
       ?? "";
     if (resolved.pane.id === "realized-vol" || resolved.pane.id === "iv-history" || resolved.pane.id === "iv-screen"
-      || resolved.pane.id === "backtest" || resolved.pane.id === OPTIONS_PANE_ID) {
+      || resolved.pane.id === "short-watch" || resolved.pane.id === "backtest" || resolved.pane.id === OPTIONS_PANE_ID) {
       // Generic 5Y snapshots can contain weekly bars. The snapshot provider
       // treats captured history as authoritative, even for a later 1d request.
       // Preserve the pane's daily buffer and warmup before the renderer clips it.

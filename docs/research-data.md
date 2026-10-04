@@ -340,6 +340,17 @@ Short interest is outstanding short positions at each settlement date, not daily
 
 An undated float cannot establish a historical settlement's denominator. Missing float percentages stay unavailable, including the prior settlement. Average daily volume is not reconstructed from the supplied ratio; FINRA's independently supplied volume remains available. Known zero values remain zero. The date column stays visible during horizontal scrolling, and exports retain every configured financial column.
 
+### Short squeeze watch (SIW)
+
+`SIW` lists every US-listed stock and fund in your portfolios and watchlists; `SIW GME, AMC, CVNA` lists those names instead (up to 60). Each row reads one name's latest FINRA settlement:
+
+- **% Float** is that settlement's shares short over the current float. The float is undated, so the percentage is the latest settlement's only; the `SI` pane keeps older settlements without one. A float smaller than the shares short is not used (some multi-class tickers report one class's float): the percentage stays blank and days to cover decides alone.
+- **Days** is FINRA's days to cover: shares short over average daily volume.
+- **SI Chg%** is the change in shares short from the settlement before. A split between the two settlements is not adjusted.
+- **1M%** is the latest daily close against the last close on or before the same day a month earlier (the month's last day when it is shorter), from daily closes, price only. A gap of more than four days before that day, or bars that are not daily, leave it blank.
+
+A name is **Crowded** when at least 10% of its float is short, or when it would take five or more days of average volume to cover and at least 5% of the float is short; days to cover alone flags thinly traded large caps whose shorts are a sliver of the float. With no float, days to cover decides alone. **Crowded, rising** adds a positive 1M%. The default order puts crowded names that are rising first, then other crowded names, then the rest, each from the highest percent of float down, and names with no settlement last. It is a fixed screen, not a squeeze forecast. The settlement and close dates sit in the query bar when every row shares them, and in columns when they differ. Enter opens the name's `SI` history.
+
 ## Credit spreads
 
 CRD shows daily closing option-adjusted spreads for the ICE BofA US Corporate (US IG), US High Yield (US HY), and AAA, AA, A, and BBB US Corporate indices from FRED. Source percentages are converted to basis points; 1D is the change from the previous available observation. These are spreads, not bond yields.
