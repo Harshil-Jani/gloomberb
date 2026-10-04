@@ -47,10 +47,10 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
   // Named tickers, or every US listing in the user's portfolios and watchlists, positions first.
   const scope = useMemo(() => {
     const named = symbolsText.split(/[\s,]+/).map((symbol) => symbol.trim().toUpperCase()).filter(Boolean);
-    const all = named.length ? [...new Set(named)] : [...new Set(Object.values(tickers)
+    const all = named.length ? [...new Set(named)] : [...new Set([...tickers.values()]
       .filter((ticker) => ticker.metadata.portfolios.length + ticker.metadata.watchlists.length > 0 && isUsListingExchange(ticker.metadata.exchange))
-      .sort((a, b) => Number(b.metadata.portfolios.length > 0) - Number(a.metadata.portfolios.length > 0) || a.metadata.symbol.localeCompare(b.metadata.symbol))
-      .map((ticker) => ticker.metadata.symbol.toUpperCase()))];
+      .sort((a, b) => Number(b.metadata.portfolios.length > 0) - Number(a.metadata.portfolios.length > 0) || a.metadata.ticker.localeCompare(b.metadata.ticker))
+      .map((ticker) => ticker.metadata.ticker.toUpperCase()))];
     return { holdings: all.slice(0, RIPPLE_HOLDINGS_LIMIT), total: all.length, named: named.length > 0 };
   }, [symbolsText, tickers]);
   const holdings = scope.holdings;
