@@ -1,61 +1,61 @@
 import { describe, expect, test } from "bun:test";
 import type { PricePoint } from "../../../types/financials";
-import { equityFiveDayReturn, gpuEquityRows, gpuHistorySeries, gpuSource } from "./model";
+import { equityFiveDayReturn, gpuBoardSections, gpuChangeWindows, gpuEquityRows, gpuHistorySeries, gpuHistoryChart, gpuHistoryViewport, gpuEventDate, gpuEventSections, gpuPricePeriods, gpuPriceLadder, gpuSource, gpuSparklineSeries } from "./model";
 import { gpuEvent, gpuRow } from "./test-fixture";
 
 describe("GPU observation charts", () => {
-  test("steps use collected timestamps and markers use matching observed list changes, never effective-date backfill", () => {
+  test("step lines and markers use only the selected SKU's real observation dates, preserving archive provenance", () => {
     const row = gpuRow();
     const points = [
       gpuRow({ observedAt: "2026-10-03T19:00:00.000Z", pricePerGpuHr: 6.98 }),
-      gpuRow({ observedAt: "2026-10-01T19:00:00.000Z", effectiveAt: "2020-01-01T00:00:00.000Z", pricePerGpuHr: 7 }),
-      gpuRow({ observedAt: "2026-10-02T19:00:00.000Z", pricePerGpuHr: 6.98 }),
-      gpuRow({ skuKey: "h100-pcie-80", formFactor: "PCIe", observedAt: "2025-01-01T00:00:00.000Z", pricePerGpuHr: 2 }),
+      gpuRow({ observedAt: "2026-10-01T19:00:00.000Z", effectiveAt: "2020-01-01T00:00:00.000Z", provenance: "archive", pricePerGpuHr: 7 }),
+      gpuRow({ observedAt: "2026-10-02T19:00:00.000Z", provenance: "official-history", pricePerGpuHr: 6.98 }),
+      gpuRow({ skuKey: "h100-pcie-80", observedAt: "2025-01-01T00:00:00.000Z", pricePerGpuHr: 2 }),
       gpuRow({ source: "aws-list", observedAt: "2026-10-02T19:00:00.000Z", pricePerGpuHr: 10 }),
     ];
-    const events = [
-      gpuEvent(),
-      gpuEvent({ kind: "membership" }),
-      gpuEvent({ basis: "spot" }),
-      gpuEvent({ skuKey: "h100-pcie-80", formFactor: "PCIe" }),
-      gpuEvent({ observedAt: "2026-09-30T19:00:00.000Z" }),
-      gpuEvent({ observedAt: "2026-10-04T19:00:00.000Z" }),
-    ];
-    const [line, markers] = gpuHistorySeries(row, points, events, "#ffffff", "#00ff00");
+    const [line, observed, archived] = gpuHistorySeries(row, points, "#ffffff", "#00ff00");
     expect(line).toMatchObject({ style: "step", interpolation: "step-after", unit: "$/GPU-hr" });
     expect(line!.timeBasis).toBeUndefined();
     expect(line!.points.map((point) => [point.date.toISOString(), point.value])).toEqual([
       ["2026-10-01T19:00:00.000Z", 7], ["2026-10-02T19:00:00.000Z", 6.98], ["2026-10-03T19:00:00.000Z", 6.98],
     ]);
-    expect(markers!.style).toBe("points");
-    expect(markers!.points.map((point) => [point.date.toISOString(), point.value])).toEqual([["2026-10-02T19:00:00.000Z", 6.98]]);
+    expect(observed!.points.map((point) => point.date.toISOString())).toEqual(["2026-10-02T19:00:00.000Z", "2026-10-03T19:00:00.000Z"]);
+    expect(archived).toMatchObject({ label: "Archived", style: "points", color: "#00ff00" });
+    expect(archived!.points.map((point) => point.date.toISOString())).toEqual(["2026-10-01T19:00:00.000Z"]);
     expect(points[0]!.observedAt).toBe("2026-10-03T19:00:00.000Z");
   });
 
-  test("one or two observations cannot become an invented history, even with another SKU's points", () => {
-    const row = gpuRow({ gpuModel: "A100", skuKey: "a100-40", memoryGb: 40 });
-    const first = gpuRow({ ...row, observedAt: "2026-10-01T00:00:00.000Z" });
-    const second = gpuRow({ ...row, observedAt: "2026-10-03T00:00:00.000Z" });
-    for (const own of [[], [first], [first, second]]) {
-      const other = [1, 2, 3].map((day) => gpuRow({ skuKey: "a100-80", gpuModel: "A100", memoryGb: 80, observedAt: `2026-10-0${day}T00:00:00.000Z` }));
-      expect(gpuHistorySeries(row, [...own, ...other], [gpuEvent()], "#fff", "#0f0")).toEqual([]);
-    }
+  test("one or two observations remain collecting even when another SKU has a long history", () => {
+    const row = gpuRow();
+    const own = [1, 2].map((day) => gpuRow({ observedAt: `2026-10-0${day}T00:00:00.000Z` }));
+    const other = [1, 2, 3].map((day) => gpuRow({ skuKey: "other", observedAt: `2026-10-0${day}T00:00:00.000Z` }));
+    for (const length of [0, 1, 2]) expect(gpuHistorySeries(row, [...own.slice(0, length), ...other], "#fff", "#0f0")).toEqual([]);
   });
 
-  test("published change markers use effective dates only within collected history; observed changes keep their observation date", () => {
+  test("the viewport starts at the first plotted point, including older peers, with bounded trailing padding", () => {
     const row = gpuRow();
-    const points = [1, 2, 3].map((day) => gpuRow({ observedAt: `2026-10-0${day}T19:00:00.000Z` }));
-    const events = [
-      gpuEvent({ origin: "published", effectiveAt: "2026-10-02T12:00:00.000Z", observedAt: "2026-10-04T19:00:00.000Z", newPrice: 6.5 }),
-      gpuEvent({ origin: "published", effectiveAt: "2026-09-01T00:00:00.000Z", observedAt: "2026-10-02T19:00:00.000Z", newPrice: 5 }),
-      gpuEvent({ origin: "published", effectiveAt: "2026-10-04T00:00:00.000Z", observedAt: "2026-10-02T19:00:00.000Z", newPrice: 4 }),
-      gpuEvent({ origin: "observed", effectiveAt: "2020-01-01T00:00:00.000Z", observedAt: "2026-10-02T19:00:00.000Z", newPrice: 6.98 }),
+    const peer = gpuRow({ source: "aggregate-hyperscaler", provider: "Hyperscaler list median", providerClass: "aggregate" });
+    const own = [0, 1, 2].map((hour) => gpuRow({ observedAt: `2026-10-03T${19 + hour}:00:00.000Z` }));
+    const chart = gpuHistoryChart([row], own, { selected: "#fff", marker: "#0f0" });
+    expect(gpuHistoryViewport(chart)).toEqual({ start: new Date(own[0]!.observedAt), end: new Date("2026-10-03T21:06:00.000Z") });
+    const peers = [1, 2, 3].map((day) => gpuRow({ ...peer, observedAt: `2024-10-0${day}T00:00:00.000Z` }));
+    const comparison = gpuHistoryChart([row, peer], [...own, ...peers], { selected: "#fff", marker: "#0f0" });
+    expect(comparison.filter((series) => series.style === "points").flatMap((series) => series.points)).toHaveLength(3);
+    expect(gpuHistoryViewport(comparison)).toEqual({ start: new Date(peers[0]!.observedAt), end: new Date("2026-10-04T21:00:00.000Z") });
+    expect(gpuHistoryViewport([])).toBeUndefined();
+  });
+
+  test("equal prices do not merge archive records into live observations or extend beyond the final observation", () => {
+    const points = [
+      gpuRow({ observedAt: "2024-01-01T00:00:00.000Z", provenance: "archive" }),
+      gpuRow({ observedAt: "2024-02-01T00:00:00.000Z", provenance: "archive" }),
+      gpuRow({ observedAt: "2026-10-03T00:00:00.000Z" }),
+      gpuRow({ observedAt: "2026-10-04T00:00:00.000Z" }),
     ];
-    const [line, markers] = gpuHistorySeries(row, points, events, "#fff", "#0f0");
-    expect(line!.points.map((point) => point.date.toISOString())).toEqual(points.map((point) => point.observedAt));
-    expect(markers!.points.map((point) => [point.date.toISOString(), point.value])).toEqual([
-      ["2026-10-02T12:00:00.000Z", 6.5], ["2026-10-02T19:00:00.000Z", 6.98],
-    ]);
+    const periods = gpuPricePeriods(points);
+    expect(periods).toHaveLength(2);
+    expect(periods[0]).toMatchObject({ from: points[2]!.observedAt, to: points[3]!.observedAt, provenance: "live", change: 0 });
+    expect(periods[1]).toMatchObject({ from: points[0]!.observedAt, to: points[2]!.observedAt, provenance: "archive" });
   });
 });
 
@@ -124,4 +124,61 @@ test("equities use the representative neocloud SXM series while cloud and AMD re
   const selectedAmd = gpuEquityRows(rows, "MI355X");
   expect(selectedAmd.find((row) => row.symbol === "AMD")?.reference?.id).toBe(amdNew.id);
   expect(selectedAmd.find((row) => row.symbol === "NVDA")?.reference?.id).toBe(flagship.id);
+});
+
+describe("GPU board layout", () => {
+  test("sections run by model then basis, medians lead each section, and the licensed index never reaches the board", () => {
+    const rows = [
+      gpuRow({ source: "shadeform", provider: "lambda", providerClass: "marketplace", basis: "ask", skuKey: "lambda-ask" }),
+      gpuRow({ source: "vast", provider: "Marketplace asks", providerClass: "marketplace", basis: "ask", skuKey: "vast-ask" }),
+      gpuRow({ source: "aws-list", provider: "AWS", skuKey: "aws" }),
+      gpuRow({ source: "aggregate", provider: "Neocloud list median", providerClass: "aggregate", skuKey: "neo" }),
+      gpuRow({ source: "aws-spot", provider: "AWS", basis: "spot", skuKey: "aws-spot" }),
+      gpuRow({ source: "licensed", provider: "Index", basis: "index", skuKey: "index" }),
+      gpuRow({ gpuModel: "B200", source: "aws-list", provider: "AWS", skuKey: "b200" }),
+    ];
+    const one = gpuBoardSections(rows, "H100");
+    expect(one.map((section) => [section.label, section.rows.map((row) => row.skuKey)])).toEqual([
+      ["List price", ["neo", "aws"]], ["Provider-declared spot", ["aws-spot"]], ["Ask", ["vast-ask", "lambda-ask"]],
+    ]);
+    expect(gpuBoardSections(rows).map((section) => section.label)).toEqual(["H100 List price", "H100 Provider-declared spot", "H100 Ask", "B200 List price"]);
+  });
+
+  test("change windows appear only once a figure exists, so a young history reads as new instead of columns of dashes", () => {
+    expect(gpuChangeWindows([gpuRow(), gpuRow({ skuKey: "other" })])).toEqual([]);
+    expect(gpuChangeWindows([gpuRow({ change1d: 0 }), gpuRow({ skuKey: "other", change30d: -2 })])).toEqual(["change1d", "change30d"]);
+  });
+
+  test("sparklines fetch only one model's medians, and nothing before a change figure exists", () => {
+    const median = gpuRow({ skuKey: "median", providerClass: "aggregate" });
+    const rows = [median, ...Array.from({ length: 40 }, (_, index) => gpuRow({ skuKey: `p${index}` }))];
+    expect(gpuSparklineSeries(rows, "H100")).toEqual([]);
+    const moved = rows.map((row, index) => index === 3 ? { ...row, change1d: 1 } : row);
+    expect(gpuSparklineSeries(moved, "H100")).toEqual([median.id]);
+    expect(gpuSparklineSeries(moved, "")).toEqual([]);
+  });
+
+  test("the price ladder leaves provider medians out, so their constituents are not counted twice", () => {
+    const list = [3, 4, 5, 10].map((price, index) => gpuRow({ skuKey: `p${index}`, pricePerGpuHr: price }));
+    const median = gpuRow({ skuKey: "median", providerClass: "aggregate", pricePerGpuHr: 4.5 });
+    const [ladder] = gpuPriceLadder([...list, median, gpuRow({ skuKey: "b", gpuModel: "B200", pricePerGpuHr: 99 })], "H100");
+    expect(ladder).toEqual({ basis: "list", n: 4, min: 3, max: 10, p25: 3.75, median: 4.5, p75: 6.25 });
+  });
+
+  test("history periods fold unchanged hourly snapshots and measure each move against the previous price", () => {
+    const at = (hour: number, price: number) => ({ observedAt: `2026-10-0${1 + Math.floor(hour / 24)}T${String(hour % 24).padStart(2, "0")}:00:00.000Z`, pricePerGpuHr: price });
+    const periods = gpuPricePeriods([at(5, 5), at(1, 4), at(2, 4), at(3, 5), at(4, 5)]);
+    expect(periods.map((period) => [period.from.slice(11, 13), period.to?.slice(11, 13) ?? null, period.price])).toEqual([["03", "05", 5], ["01", "03", 4]]);
+    expect(periods[0]!.change).toBeCloseTo(25);
+    expect(periods[1]!.change).toBeNull();
+  });
+});
+
+
+test("backfilled observed changes stay on their evidence date while published notices use effective dates", () => {
+  const observed = gpuEvent({ origin: "observed", provenance: "archive", observedAt: "2024-03-01T00:00:00.000Z", effectiveAt: "2020-01-01T00:00:00.000Z" });
+  const published = gpuEvent({ origin: "published", observedAt: "2026-10-03T00:00:00.000Z", effectiveAt: "2026-10-01T00:00:00.000Z" });
+  expect(gpuEventDate(observed)).toBe(observed.observedAt);
+  expect(gpuEventDate(published)).toBe(published.effectiveAt!);
+  expect(gpuEventSections([observed, published]).map(section => section.label)).toEqual(["Thu, Oct 1, 2026", "Fri, Mar 1, 2024"]);
 });

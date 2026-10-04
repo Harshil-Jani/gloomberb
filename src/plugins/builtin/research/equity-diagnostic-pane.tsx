@@ -468,7 +468,7 @@ function PreviewReportView({ report, width, onUpgrade, onPlan }: {
   );
 }
 
-export function EquityDiagnosticView({ focused, width }: {
+export function EquityDiagnosticView({ focused, width, height }: {
   focused: boolean;
   width: number;
   height: number;
@@ -561,13 +561,14 @@ export function EquityDiagnosticView({ focused, width }: {
     return <PaneStatusBody empty emptyTitle="No ticker selected." emptyMessage="Move the cursor in a list pane to populate this view." />;
   }
   if (signInRequired || verificationRequired) {
-    return <SignInWall action="run the Equity Diagnostic" needsVerification={verificationRequired} />;
+    return <SignInWall placement="diag-signin" width={width} height={height} symbol={symbol} exchange={exchange} action="run the Equity Diagnostic" needsVerification={verificationRequired} />;
   }
   // Buttons in an empty state's actions answer Enter and are in the pane menu.
   if (proRequired) {
     return (
       <ProWall
         placement="diag-wall"
+        width={width} height={height} symbol={symbol} exchange={exchange}
         title="The Equity Diagnostic is part of Gloom Cloud Pro."
         message="An on-demand review of one company's filings, financials, ownership, and news, with red flags, anomalies, and green flags cited back to their source."
       />

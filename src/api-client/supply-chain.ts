@@ -1,4 +1,31 @@
 export type SupplyRole = "customer" | "supplier" | "partner" | "competitor" | "investee";
+export type SupplyTier = 1 | 2 | 3 | 4 | 5 | 6;
+export type SupplyTierFilter = "sec" | "company" | "call" | "reported" | "unconfirmed";
+type SupplyClaim = "disclosed" | "company_confirmed" | "reported" | "rumored";
+export interface SupplyOptions { tiers?: SupplyTierFilter[]; includeLeads?: boolean; }
+export interface SupplyEvidenceItem {
+  id: string;
+  tier: SupplyTier;
+  claimType: SupplyClaim;
+  url: string;
+  title: string;
+  publisher: string;
+  publishedAt: string;
+  fetchedAt: string;
+  quote: string | null;
+  quoteRights: "full" | "short" | "link_only";
+  textOrigin: "publisher_text" | "asr" | "ocr" | "snippet";
+  quoteLanguage: string | null;
+  englishGloss: string | null;
+  originKey: string;
+  confidence: number;
+  status: "active" | "superseded" | "rejected" | "stale";
+  verificationStatus?: "verified" | "lead";
+  valueKind: string | null;
+  value: number | null;
+  valueUnit: string | null;
+  currency: string | null;
+}
 export interface SupplyEntity {
   id: string;
   name: string;
@@ -21,18 +48,37 @@ export interface SupplyRow {
   pctBasis: "revenue" | "receivables" | "cost" | "purchases" | null;
   usd: number | null;
   usdBasis: "disclosed" | "derived" | null;
+  /** Amount in the filing's disclosed units; multiply by nativeScale for currency units. */
+  nativeAmount?: number | null;
+  nativeCurrency?: string | null;
+  nativeScale?: number | null;
+  jurisdiction?: string | null;
+  entityScope?: "entity" | "group" | "anonymous" | "aggregate" | null;
   period: string;
   fiscalYear: string | null;
-  sourceKind: "xbrl" | "filing_text" | "call" | "news" | "web" | "import";
+  sourceKind: "xbrl" | "filing_text" | "call" | "news" | "web" | "import" | "press_release";
   form: string | null;
   filedDate: string | null;
   asOf: string;
   confidence: number;
   quote: string;
   quoteLanguage: string | null;
+  /** English machine translation, separate from the validated original-language quote. */
+  quoteGloss?: string | null;
+  sectionRef?: string | null;
+  sourceAttribution?: string | null;
   quoteMatchMode: "exact" | "whitespace" | "nfkc_whitespace" | null;
   filingUrl: string;
   accession: string | null;
+  tier?: SupplyTier;
+  claimType?: SupplyClaim;
+  corroboration?: number;
+  leadStatus?: "none" | "lead" | "verified" | "rejected" | "stale";
+  firstSeenAt?: string | null;
+  lastSeenAt?: string | null;
+  lastConfirmedAt?: string | null;
+  whyUnconfirmed?: string | null;
+  evidence?: SupplyEvidenceItem[];
 }
 export interface SupplyChainPayload {
   symbol: string;
@@ -48,4 +94,5 @@ export interface SupplyChainPayload {
   truncated: boolean;
   previewRowsPerRole: 3 | null;
   disclaimer: string;
+  tierCounts?: Record<SupplyTierFilter, number>;
 }

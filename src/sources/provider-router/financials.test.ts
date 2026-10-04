@@ -65,6 +65,27 @@ describe("provider-router financial quote usability", () => {
     expect(isProviderQuoteUsableForCurrentSession(nifty, "NSE")).toBe(false);
   });
 
+  test("keeps Chinese closes through National Day, but rejects older or unusable observations", () => {
+    for (const [symbol, exchange] of [["601138.SS", "SSE"], ["301219.SZ", "SZSE"]]) {
+      const close = createTestQuote({ symbol, listingExchangeName: exchange, marketState: "CLOSED",
+        dataSource: "delayed", lastUpdated: Date.parse("2026-09-30T07:04:07Z") });
+      // Oct 1-7 are closed; Oct 8 opens at 09:30 Shanghai.
+      for (const now of ["2026-10-04T08:00:00Z", "2026-10-07T08:00:00Z", "2026-10-08T01:00:00Z"]) {
+        clock.mockReturnValue(Date.parse(now));
+        expect(isProviderQuoteUsableForCurrentSession(close, exchange)).toBe(true);
+        expect(isProviderQuoteUsableForCurrentSession({ ...close, stale: true }, exchange)).toBe(false);
+        for (const lastUpdated of [Date.parse("2026-09-29T07:04:07Z"), 0, NaN, Date.now() + 60 * 60_000]) {
+          expect(isProviderQuoteUsableForCurrentSession({ ...close, lastUpdated }, exchange)).toBe(false);
+        }
+      }
+      // Tuesday 09:35 Shanghai is still before the delayed feed's first session prints.
+      clock.mockReturnValue(Date.parse("2026-10-13T01:35:00Z"));
+      expect(isProviderQuoteUsableForCurrentSession({ ...close,
+        lastUpdated: Date.parse("2026-10-12T07:00:00Z"),
+      }, exchange)).toBe(true);
+    }
+  });
+
   test("rejects old active-session provider quotes", () => {
     expect(isProviderQuoteUsableForCurrentSession(createTestQuote({
       listingExchangeName: "FWB2",

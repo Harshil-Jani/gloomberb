@@ -77,6 +77,9 @@ Press `Ctrl+P` to open the command bar, or press `` ` `` to search for a ticker.
 | `SEAS AAPL` | Seasonality: monthly returns by year and year overlays |
 | `RDCF AAPL` | Reverse DCF: the cash flow growth the price assumes |
 | `PEB AAPL` | P/E band: price against multiples of trailing EPS, and today's P/E in its own history |
+| `SIW` | Short squeeze watch: crowded shorts in your portfolios and watchlists that are moving up |
+| `RIPL` | Earnings Ripple: customers of your holdings that report soon |
+| `MDAY SPY` | Macro-day reaction: how a name moves on CPI, jobs and FOMC days against a normal day |
 | `COT [code or root]` | CFTC positioning and cross-market extremes |
 | `DOE` / `NGS` | EIA weekly oil stocks and gas storage, with builds, draws and five-year ranges |
 | `CPI [component]` / `ECAN` | US consumer prices by component, with weights, contributions to the headline and the next release |
@@ -87,7 +90,7 @@ Press `Ctrl+P` to open the command bar, or press `` ` `` to search for a ticker.
 | `PF` | Portfolios and watchlists |
 | `HELP` | Commands and keyboard shortcuts |
 
-Use `Tab` to switch panes and `j` / `k` to navigate lists. The [user guide](docs/usage.md) covers charts, broker setup, keyboard shortcuts, and the full command reference. See [research data conventions](docs/research-data.md) for return definitions, financial sources, and model assumptions. [Supply chain disclosures](docs/supply-chain.md) explains SPLC evidence, reverse relationships and flow diagrams.
+Use `Tab` to switch panes and `j` / `k` to navigate lists. The [user guide](docs/usage.md) covers charts, broker setup, keyboard shortcuts, and the full command reference. See [research data conventions](docs/research-data.md) for return definitions, financial sources, and model assumptions. [Supply chain evidence](docs/supply-chain.md) explains Pro SPLC trust tiers, source evidence, reverse relationships, flow diagrams and multi-hop graphs and path searches. [Credit documents](docs/credit-documents.md) covers CRDOC/COVN capital structure, covenant headroom and amendment evidence. [Research attention](docs/research-attention.md) covers the Pro ATTN dataset, privacy-qualified counts and Gloom Trending. [Hiring and app attention](docs/hiring-app-attention.md) covers HIRE/APPS observations, evidence and Pro previews.  [Government awards](docs/government-awards.md) covers AWARDS, procurement history and source coverage. [Power and grid capacity](docs/power-grid.md) covers POWER queues, large loads, utility exposure and source history. [Perpetual markets](docs/perpetuals.md) covers funding, open interest, premiums and Pro access.  [Exposure analysis](docs/exposure.md) covers EXPO scenario estimates, portfolio weights and evidence paths.
 
 ## CLI
 
@@ -133,6 +136,8 @@ gloomberb config set telemetry.usage false
 ```
 
 Setting `GLOOMBERB_NO_TELEMETRY=1` or `DO_NOT_TRACK=1` in the environment turns all of it off. The browser app also honours Do Not Track and Global Privacy Control.
+
+**Attention Counts are separate and off by default.** Run `Attention Counts` in the command bar and review the consent dialog to share ticker research counts for Gloom Trending. This sends ticker symbols and the kind of explicit research action only while signed in with a verified account. It does not send holdings, watchlist names, queries or an install id. Consent stays on this device; cloud sync cannot enable it elsewhere. Turn the setting off to discard unsent counts, or run `gloomberb config set telemetry.attention false`. The environment and browser opt-outs above also disable Attention Counts. See the [attention privacy review](docs/attention-privacy.md) for the authenticated collection boundary, retention, aggregation and remaining risks.
 
 ## Sponsors
 

@@ -37,6 +37,7 @@ import type {
 } from "../../../api-client";
 import { SignInWall } from "../cloud/auth-actions";
 import { useCloudPlanAction, useCloudUpgradeAction } from "../shared/cloud-upgrade";
+import { WallTeaser } from "../shared/wall-teaser";
 import { usePlanAccess } from "../../../api-client/plan-access";
 import {
   createSavedSearch,
@@ -476,6 +477,8 @@ export function ResearchSearchPane({ focused, paneId, width, height }: PaneProps
   if (signInRequired || verificationRequired) {
     return (
       <SignInWall
+        placement="srch-signin"
+        width={width} height={height}
         action="search transcripts, news, and filings"
         needsVerification={verificationRequired}
       />
@@ -508,14 +511,21 @@ export function ResearchSearchPane({ focused, paneId, width, height }: PaneProps
     return (
       <Box flexDirection="column" width={width} height={height}>
         {tabs}
-        <PaneStatusBody
-          empty
-          emptyTitle="This search needs Gloom Cloud Pro."
-          actions={<>
-            <Button label="Upgrade to Pro" compact onPress={openUpgrade} />
-            <Button label="Manage account" variant="secondary" compact onPress={openPlan} />
-          </>}
-        />
+        <WallTeaser
+          placement="srch-wall"
+          width={width}
+          height={Math.max(1, height - tabRows)}
+          title="This search needs Gloom Cloud Pro."
+        >
+          <PaneStatusBody
+            empty
+            emptyTitle="This search needs Gloom Cloud Pro."
+            actions={<>
+              <Button label="Upgrade to Pro" compact onPress={openUpgrade} />
+              <Button label="Manage account" variant="secondary" compact onPress={openPlan} />
+            </>}
+          />
+        </WallTeaser>
       </Box>
     );
   }

@@ -1,4 +1,13 @@
+import { creditDocumentsModule } from "./builtin/credit-documents";
+import { attentionModule } from "./builtin/attention";
+import { companyAttentionModule } from "./builtin/company-attention";
+import { catalystsModule } from "./builtin/catalysts";
+import { companyKpisModule } from "./builtin/company-kpis";
+import { powerModule } from "./builtin/power";
+import { perpsModule } from "./builtin/perps";
+import { exposureModule } from "./builtin/exposure";
 import { supplyChainModule } from "./builtin/supply-chain";
+import { awardsModule } from "./builtin/awards";
 import { debtMaturitiesModule } from "./builtin/debt-maturities";
 import { revenueBreakdownModule } from "./builtin/revenue-breakdown";
 import { mnaModule } from "./builtin/mna";
@@ -57,8 +66,10 @@ import { optionsCalculatorModule } from "./builtin/options-calculator";
 import { volSurfaceModule } from "./builtin/vol-surface";
 import { realizedVolModule } from "./builtin/realized-vol";
 import { seasonalityModule } from "./builtin/seasonality";
+import { earningsRippleModule } from "./builtin/earnings-ripple";
 import { reverseDcfModule } from "./builtin/reverse-dcf";
 import { peBandModule } from "./builtin/pe-band";
+import { macroDayModule } from "./builtin/macro-day";
 import { ivHistoryModule } from "./builtin/iv-history";
 import { backtestModule } from "./builtin/backtest";
 import { composeBuiltinPlugin } from "./builtin/plugin-module";
@@ -107,8 +118,10 @@ const browserTickerResearchPlugin = composeBuiltinPlugin({
     volSurfaceModule,
     realizedVolModule,
     seasonalityModule,
+    earningsRippleModule,
     reverseDcfModule,
     peBandModule,
+    macroDayModule,
     ivHistoryModule,
     backtestModule,
     timeSalesModule,
@@ -119,6 +132,12 @@ const browserTickerResearchPlugin = composeBuiltinPlugin({
     debtMaturitiesModule,
     revenueBreakdownModule,
     supplyChainModule,
+    creditDocumentsModule,
+    companyAttentionModule,
+    catalystsModule,
+    companyKpisModule,
+    awardsModule,
+    exposureModule,
     mnaModule,
     browserDividendYieldModule,
     earningsCallsModule,
@@ -155,7 +174,10 @@ const browserMarketOverviewPlugin = composeBuiltinPlugin({
     cotModule,
     doeModule,
     gpuModule,
+    attentionModule,
+    powerModule,
     cryptoBoardModule,
+    perpsModule,
   ],
 });
 
