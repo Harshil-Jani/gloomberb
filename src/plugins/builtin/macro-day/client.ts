@@ -1,5 +1,6 @@
 import { getSharedMarketDataCoordinator, MarketDataCoordinator, resolveEntryValue } from "../../../market-data/coordinator";
 import type { InstrumentRef } from "../../../market-data/request-types";
+import { tickerHasListingSuffix } from "../../../sources/listing-symbols";
 import type { DataProvider } from "../../../types/data-provider";
 import type { PricePoint } from "../../../types/financials";
 import { abortable, abortError } from "../../../utils/async-deadline";
@@ -16,9 +17,13 @@ export interface MacroDayHistory {
 const CANCELLED = "Macro-day history load was cancelled";
 const US_LISTINGS_ONLY = "Macro-day moves are for US listings.";
 
-/** A listing whose venue sits outside New York trades US releases on a different clock. */
-function isNonUsVenue(exchange?: string): boolean {
-  const zone = resolveExchangeTimeZone(exchange);
+/**
+ * A listing whose venue sits outside New York trades US releases on a different clock.
+ * A bare symbol such as 7203.T carries no exchange, so its venue suffix names it.
+ */
+function isNonUsVenue(instrument: InstrumentRef): boolean {
+  if (tickerHasListingSuffix(instrument.symbol)) return true;
+  const zone = resolveExchangeTimeZone(instrument.exchange);
   return !!zone && zone !== "America/New_York";
 }
 
@@ -29,7 +34,7 @@ export async function loadMacroDayHistory(
 ): Promise<MacroDayHistory> {
   if (request.signal?.aborted) throw abortError(CANCELLED);
   const now = Date.now();
-  if (isNonUsVenue(request.instrument.exchange)) return { history: [], stale: false, error: US_LISTINGS_ONLY, fetchedAt: now };
+  if (isNonUsVenue(request.instrument)) return { history: [], stale: false, error: US_LISTINGS_ONLY, fetchedAt: now };
   const coordinator = marketData ? new MarketDataCoordinator(marketData) : getSharedMarketDataCoordinator();
   try {
     if (!coordinator) throw new Error("Market data coordinator unavailable");

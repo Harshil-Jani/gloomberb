@@ -27,6 +27,8 @@ export const macroDayHeadless: HeadlessPaneDefinition<"bundle"> = {
     ctx.signal.throwIfAborted();
     const model = projectMacroDays(history.history, { symbol: instrument.symbol, lookbackYears: Number(args.options.lookbackYears) || 5 });
     const row = (label: string, stats: MacroDayStats) => ({ label, ...stats });
+    const release = String(args.options.release ?? "all");
+    const events = release === "all" ? model.events : model.events.filter((event) => event.kind === release);
     return {
       sections: [
         { title: "By release", columns: [{ key: "label", header: "Day" }, { key: "count", header: "Days" },
@@ -36,7 +38,7 @@ export const macroDayHeadless: HeadlessPaneDefinition<"bundle"> = {
           row("Any release", model.allEvents), row("Normal day", model.normal)] },
         { title: "Release days", columns: [{ key: "date", header: "Date" }, { key: "event", header: "Release" },
           { key: "session", header: "Session" }, { key: "move", header: "Move", format: percent }, { key: "multiple", header: "vs normal", format: multiple }],
-        rows: model.events.map((event) => ({ ...event, event: MACRO_EVENT_LABELS[event.kind] })) },
+        rows: events.map((event) => ({ ...event, event: MACRO_EVENT_LABELS[event.kind] })) },
       ],
       complete: !history.stale && !history.error && model.events.length > 0,
       unavailableSymbols: model.events.length ? [] : [instrument.symbol],
