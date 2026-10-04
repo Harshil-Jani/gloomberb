@@ -71,6 +71,16 @@ The latest month is a return to date until December closes the year: the Returns
 - **Sensitivity.** The table solves the same growth for each discount rate and for terminal growth of 2%, 2.5% and 3%. Selecting a row sets the discount rate.
 - **Not computed.** Negative trailing free cash flow has no growth rate that prices it. A listing whose cash flows are reported in another currency than its market value (many ADRs) is not converted, and shows why instead.
 
+## P/E band
+
+`PEB <ticker>` draws the weekly close against lines at fixed multiples of trailing EPS, so the price can be read against the stock's own valuation history: on the 20x line it trades at twenty times what it earned over the last year.
+
+- **Trailing EPS.** Four consecutive reported quarters summed, through the same statement series the charts use. A quarter whose EPS is withheld, unreported or on an unverified split basis makes every sum that needs it unavailable; nothing is reconstructed from the year less the other quarters. A reported fiscal year is itself a trailing twelve-month figure: at a fiscal year end it takes the place of the quarterly sum. US filers carry their SEC history, which reports no fourth-quarter EPS, so most of their history steps once a year; other listings have the few years of statements the snapshot carries.
+- **When it steps.** Each figure takes effect on the date it became public: its filing date, or for a sum the latest filing among its quarters. A figure restated onto a later split's share count takes effect at its original filing, because the price history is split-adjusted the same way. A figure with no publication date on record steps at its period end, and a footer warning counts them. An unavailable sum leaves the previous figure in force for up to sixteen months after that figure's period end.
+- **Bands.** Round multiples (1x, 2x, 5x, 10x and so on apart) across the 5th to 95th percentile of the weekly P/E in the lookback, the finest spacing that needs four lines or fewer, widened to three. A week whose trailing EPS is zero or negative has no P/E and no band.
+- **Current P/E.** The latest quote over the trailing EPS in force today. Its percentile is the share of weekly P/E readings in the lookback (5 years, 10 years, or everything on record) at or below it; the figure says when the window is shorter than the lookback. The table lists each figure with the close of the week it became known and the P/E then.
+- **Not computed.** EPS is not converted between currencies: a listing whose EPS is reported in another currency than its price (many ADRs) shows why instead. Pence prices against pound statements are scaled without an FX rate.
+
 ## Price history corrections
 
 These rules apply to every symbol. The app keeps no per-company history fixes.

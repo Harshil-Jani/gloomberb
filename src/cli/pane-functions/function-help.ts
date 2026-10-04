@@ -290,6 +290,13 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     data: ON_RELEASE,
     bloomberg: [],
   },
+  PEB: {
+    summary: "Is the stock cheap or rich against itself? Weekly price against round multiples of trailing EPS, stepping when each EPS figure became known, with today's P/E ranked in its own history.",
+    usage: ["PEB AAPL", "PEB RELIANCE.NS"],
+    keys: [],
+    data: ON_RELEASE,
+    bloomberg: [],
+  },
   VCA: {
     summary: "IV rank, term slope, skew and IV against realized vol for up to 60 US tickers, flagged rich or cheap against each name's own year. Alone it screens index and sector ETFs.",
     usage: ["VCA", "VCA NVDA, AAPL, TSLA"],

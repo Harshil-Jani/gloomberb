@@ -58,6 +58,7 @@ import { volSurfaceModule } from "./builtin/vol-surface";
 import { realizedVolModule } from "./builtin/realized-vol";
 import { seasonalityModule } from "./builtin/seasonality";
 import { reverseDcfModule } from "./builtin/reverse-dcf";
+import { peBandModule } from "./builtin/pe-band";
 import { ivHistoryModule } from "./builtin/iv-history";
 import { backtestModule } from "./builtin/backtest";
 import { composeBuiltinPlugin } from "./builtin/plugin-module";
@@ -107,6 +108,7 @@ const browserTickerResearchPlugin = composeBuiltinPlugin({
     realizedVolModule,
     seasonalityModule,
     reverseDcfModule,
+    peBandModule,
     ivHistoryModule,
     backtestModule,
     timeSalesModule,
