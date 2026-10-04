@@ -375,6 +375,13 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     data: same("Twice a month, as FINRA publishes"),
     bloomberg: ["SI"],
   },
+  SIW: {
+    summary: "Which of your names are crowded shorts that are moving up? Short interest as a share of float, days to cover, the change since the prior settlement and the month's price move across your portfolios and watchlists, or the tickers you give.",
+    usage: ["SIW", "SIW GME, AMC, CVNA"],
+    keys: [OPEN],
+    data: same("Twice a month, as FINRA publishes; daily closes"),
+    bloomberg: [],
+  },
   SIV: {
     summary: "FINRA daily off-exchange short volume as a share of volume, against its one-year range. Not short interest; SI has that.",
     usage: ["SIV TSLA"],
