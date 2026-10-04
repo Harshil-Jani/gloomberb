@@ -80,6 +80,16 @@ The latest month is a return to date until December closes the year: the Returns
 - **Sensitivity.** The table solves the same growth for each discount rate and for terminal growth of 2%, 2.5% and 3%. Selecting a row sets the discount rate.
 - **Not computed.** Negative trailing free cash flow has no growth rate that prices it. A listing whose cash flows are reported in another currency than its market value (many ADRs) is not converted, and shows why instead.
 
+## Macro-day reaction
+
+`MDAY <ticker>` compares how a US listing moves on the days of the main US releases with how it moves on any other day. It answers "does this name care about CPI day?"
+
+- **Release days.** CPI and the Employment Situation (payrolls) come from the BLS release archives, FOMC statement days (the last day of each scheduled meeting) from the Federal Reserve's meeting calendar. The dates are a published list kept in the app, from January 2021 to the date in its source notes, not a forecast schedule; sessions after that date are left out of every figure until the list is updated. Releases cancelled or moved, such as those of the 2025 government shutdown, are as published.
+- **Move.** Close to close on the release day: the previous session's close to the release day's close. CPI and payrolls come out at 8:30 ET, before the open, and the FOMC statement at 14:00 ET, before the close, so that close carries either. A release on a weekday the market was shut (payrolls on Good Friday) is read on the next session. A release whose close-to-close would span a gap of more than the release day in the price history is left out.
+- **Normal day.** Every other session in the lookback that is not a release day of the three kinds. PCE and GDP days are not in the list, so they count as normal days.
+- **Figures.** Average absolute move and its multiple of a normal day's, average signed move, and the share of release days that closed up. With All selected the figures compare the three releases; selecting one shows its own. When CPI and FOMC fall on the same day the move counts for both.
+- **History.** Five years of daily closes at most, so the lookback runs to five years.
+
 ## Price history corrections
 
 These rules apply to every symbol. The app keeps no per-company history fixes.

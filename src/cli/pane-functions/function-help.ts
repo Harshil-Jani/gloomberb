@@ -297,6 +297,13 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     data: ON_RELEASE,
     bloomberg: [],
   },
+  MDAY: {
+    summary: "Does this name care about CPI day? Its average move on CPI, jobs report and FOMC days against a normal day, the average signed move and share of up days, and the move on every release day.",
+    usage: ["MDAY SPY"],
+    keys: [],
+    data: DAILY_CLOSES,
+    bloomberg: [],
+  },
   VCA: {
     summary: "IV rank, term slope, skew and IV against realized vol for up to 60 US tickers, flagged rich or cheap against each name's own year. Alone it screens index and sector ETFs.",
     usage: ["VCA", "VCA NVDA, AAPL, TSLA"],
