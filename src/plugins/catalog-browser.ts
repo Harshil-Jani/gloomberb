@@ -57,6 +57,7 @@ import { optionsCalculatorModule } from "./builtin/options-calculator";
 import { volSurfaceModule } from "./builtin/vol-surface";
 import { realizedVolModule } from "./builtin/realized-vol";
 import { seasonalityModule } from "./builtin/seasonality";
+import { earningsRippleModule } from "./builtin/earnings-ripple";
 import { reverseDcfModule } from "./builtin/reverse-dcf";
 import { ivHistoryModule } from "./builtin/iv-history";
 import { backtestModule } from "./builtin/backtest";
@@ -106,6 +107,7 @@ const browserTickerResearchPlugin = composeBuiltinPlugin({
     volSurfaceModule,
     realizedVolModule,
     seasonalityModule,
+    earningsRippleModule,
     reverseDcfModule,
     ivHistoryModule,
     backtestModule,

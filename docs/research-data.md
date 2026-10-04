@@ -60,6 +60,15 @@ Chart controls: select ranges and intervals above the plot; click a legend entry
 
 The latest month is a return to date until December closes the year: the Returns table shows it untinted and marks its year with `*`, and it stays out of the month's average, median and up share. Those statistics cover completed months in the lookback only; a month with few years of history has few observations, and the headless `count` says how many. The Overlay tab draws each year's return since its prior year-end at each month-end on one January-to-December axis. The average path is the mean of the completed years at each month-end every one of them reached; the running year is drawn but left out of it.
 
+## Earnings ripple
+
+`RIPL` lists the companies that report earnings in the next 30 days and that one of your holdings depends on as a customer. With no tickers it checks every US listing in your portfolios and watchlists (up to 60); `RIPL CRUS QRVO` checks the named ones.
+
+- **Where the link comes from.** Each holding's own filings, as `SPLC` shows them under *says*: a customer named with a share of the holding's **revenue**. US rules require a company to disclose any customer above 10% of revenue, so these are the dependencies that matter most. Shares of receivables or purchases measure something else and are left out. A share marked `*` covers a segment rather than the whole company.
+- **Which rows.** One row per holding and customer, from the latest filing period. Anonymous customers ("Customer A") and group concentrations have no ticker and cannot be matched to a report. Customers listed outside the US are left out because the earnings calendar covers US listings.
+- **The report.** Date and time (BMO before the open, AMC after the close) from the earnings calendar, with the customer's mean absolute move over its last reports. **Holding reports** shows the holding's own date when it falls in the window, so you can see whether it reports before or after its customer.
+- **Limits.** The share is as of the filing period shown, often a year old. Absence from the list does not mean a holding has no exposure: many companies do not name their customers. Free accounts see the top three customers per holding, the same preview as `SPLC`.
+
 ## Reverse DCF
 
 `RDCF <ticker>` turns a DCF around. A normal DCF assumes a growth rate and gets a value; a reverse DCF takes today's value and finds the growth rate. It answers "what does the price already assume?"
