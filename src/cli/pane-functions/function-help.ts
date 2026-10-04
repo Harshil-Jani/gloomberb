@@ -283,6 +283,13 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     data: DAILY_CLOSES,
     bloomberg: ["SEAS"],
   },
+  RIPL: {
+    summary: "Which of my holdings live off a company that reports soon? Customers your holdings name in their own filings, with the share of revenue each makes up, by report date.",
+    usage: ["RIPL", "RIPL CRUS QRVO"],
+    keys: [key("Enter", " supply chain"), key("e", "arnings")],
+    data: ON_RELEASE,
+    bloomberg: [],
+  },
   RDCF: {
     summary: "What growth is the price assuming? The yearly free cash flow growth over ten years that makes a DCF equal today's enterprise value, next to the growth the company delivered.",
     usage: ["RDCF AAPL"],

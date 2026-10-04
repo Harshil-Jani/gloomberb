@@ -62,6 +62,7 @@ import { optionsCalculatorModule } from "./options-calculator";
 import { volSurfaceModule } from "./vol-surface";
 import { realizedVolModule } from "./realized-vol";
 import { seasonalityModule } from "./seasonality";
+import { earningsRippleModule } from "./earnings-ripple";
 import { reverseDcfModule } from "./reverse-dcf";
 import { ivHistoryModule } from "./iv-history";
 import { backtestModule } from "./backtest";
@@ -103,6 +104,7 @@ export const tickerResearchPlugin = composeBuiltinPlugin({
     volSurfaceModule,
     realizedVolModule,
     seasonalityModule,
+    earningsRippleModule,
     reverseDcfModule,
     ivHistoryModule,
     backtestModule,
