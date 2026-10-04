@@ -914,3 +914,22 @@ licensed sources behind the platform cannot support them honestly:
 - Supply chain and M&A databases: no free structured source.
 - Level 2 order book: the market data plan supplies trades and NBBO only; `TAS`
   and `QR` show what is available.
+
+## Credit documents (CRDOC / COVN)
+
+Contract terms and revisions retain literal filing quotes, character spans, confidence and reporting dates. Headroom requires matching financial definitions and borrower scope; absent adjustments or stale financials withhold it. Contractual calendar-year maturities retain their native currencies, separate from DDIS fiscal buckets. This is a Pro dataset with evidence-bearing previews. See [credit documents](credit-documents.md) for methodology, coverage and screening limitations.
+
+## Company operating metrics and guidance (KPIS, GUIDE)
+
+[Company KPIs and management guidance](company-kpis.md) covers the canonical dictionary, native currencies and fiscal periods, evidence, immutable revisions, range semantics and actual matching. These Pro functions provide a fixed latest preview on Free and complete stored history on Pro. `GUID`, `EM`, `EE` and `ERN` link to them from their pane menus.
+
+## Power and grid capacity (POWER, Pro)
+
+POWER combines public interconnection queue snapshots, completion and withdrawal cohorts, large-load requests and approvals, utility exposure, and generation context. Every record preserves units, source dates, observation time, raw evidence and primary links. Free accounts see a limited preview. Historical benchmarks are separate from current queues; rates exclude summary and capacity-segment rows. See [Power and grid capacity](power-grid.md) for regional coverage, history semantics, company links and CLI/REST examples.
+
+## Perpetual markets (Pro)
+
+`PERP` provides per-market History and Evidence across enabled stock, index, commodity, FX and crypto perpetual contracts. Free accounts receive a latest-value preview; Pro unlocks retained history. The full board belongs to the external perpetuals plugin. Raw, eight-hour and annualized funding retain their intervals. Own history is sampled every 5, 15 or 60 minutes by each venue's USD open-interest ranking; new markets are recorded immediately. A separate five-minute baseline cache supports OI changes. Closed-market stock premiums retain a dated underlying reference. See [perpetual methodology and coverage](perpetuals.md) for venue scope, disabled adapters, correction handling, currencies, nulls and exact formulas.
+## Exposure engine (EXPO)
+
+EXPO is a Pro operating-exposure scenario engine with a one-holding, one-hop free preview. It combines available global company and counterparty disclosures, keeps source evidence and reporting denominators on every path, and reports signed portfolio stress and country/supplier/customer concentrations without predicting equity returns. Geography and supply-chain coverage varies by issuer; missing sensitivities and relationships remain unknown. See [Exposure analysis](exposure.md) for scenarios, signed NAV weights, methodology, source limitations and CLI examples.

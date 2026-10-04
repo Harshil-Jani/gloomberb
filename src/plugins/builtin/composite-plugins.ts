@@ -1,4 +1,13 @@
+import { creditDocumentsModule } from "./credit-documents";
+import { attentionModule } from "./attention";
+import { companyAttentionModule } from "./company-attention";
+import { catalystsModule } from "./catalysts";
+import { companyKpisModule } from "./company-kpis";
+import { powerModule } from "./power";
+import { perpsModule } from "./perps";
+import { exposureModule } from "./exposure";
 import { supplyChainModule } from "./supply-chain";
+import { awardsModule } from "./awards";
 import { cryptoBoardModule } from "./crypto-board";
 import { portfolioAnalyticsModule } from "./analytics";
 import { brokerManagerModule } from "./broker-manager";
@@ -117,6 +126,12 @@ export const tickerResearchPlugin = composeBuiltinPlugin({
     debtMaturitiesModule,
     revenueBreakdownModule,
     supplyChainModule,
+    creditDocumentsModule,
+    companyAttentionModule,
+    catalystsModule,
+    companyKpisModule,
+    awardsModule,
+    exposureModule,
     mnaModule,
     dividendYieldModule,
     holdersModule,
@@ -159,7 +174,10 @@ export const marketOverviewPlugin = composeBuiltinPlugin({
     cotModule,
     doeModule,
     gpuModule,
+    attentionModule,
+    powerModule,
     cryptoBoardModule,
+    perpsModule,
   ],
 });
 
