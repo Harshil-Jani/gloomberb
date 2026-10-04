@@ -2,10 +2,10 @@ import { MarketDataCoordinator } from "../../../market-data/coordinator";
 import type { HeadlessPaneDefinition } from "../../../types/plugin";
 import { resolveHeadlessInstrument } from "../shared/headless-market-data";
 import { loadPeBandInputs } from "./client";
-import { projectPeBand } from "./model";
+import { formatPerShare, projectPeBand } from "./model";
 
 const multiple = (value: unknown) => typeof value === "number" ? `${value.toFixed(1)}x` : "--";
-const amount = (value: unknown) => typeof value === "number" ? value.toFixed(2) : "--";
+const amount = (value: unknown) => typeof value === "number" ? formatPerShare(value) : "--";
 const percent = (value: unknown) => typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "--";
 
 export const peBandHeadless: HeadlessPaneDefinition<"bundle"> = {
@@ -27,6 +27,7 @@ export const peBandHeadless: HeadlessPaneDefinition<"bundle"> = {
         { title: "P/E band", columns: [{ key: "label", header: "" }, { key: "value", header: "Value" }], rows: [
           { label: "Trailing P/E", value: multiple(current?.pe) },
           { label: "Percentile of own history", value: current?.percentile == null ? "--" : `${current.percentile.toFixed(0)}` },
+          { label: "Ranked over", value: model.sample ? `${model.sample.weeks} weeks since ${model.sample.start.toISOString().slice(0, 10)}` : "--" },
           { label: "P/E low, median, high", value: model.range ? `${multiple(model.range.min)}, ${multiple(model.range.median)}, ${multiple(model.range.max)}` : "--" },
           { label: "Price", value: `${amount(current?.price)} ${model.currency ?? ""}`.trim() },
           { label: "Trailing EPS", value: current?.step ? `${amount(current.eps)} (${current.step.basis === "annual" ? "FY" : "TTM"} ${current.step.periodEnd})` : "--" },
@@ -42,7 +43,8 @@ export const peBandHeadless: HeadlessPaneDefinition<"bundle"> = {
       complete: !inputs.stale && !inputs.error && !inputs.historyError && !model.error,
       unavailableSymbols: current?.pe != null ? [] : [instrument.symbol],
       errors: [inputs.error, inputs.historyError, model.error, model.notice].filter((value): value is string => !!value),
-      metadata: { currency: model.currency, lookbackYears, multiples: model.multiples, undatedEpsPeriods: model.undated, unavailableTtmSums: model.unavailable,
+      metadata: { currency: model.currency, lookbackYears,
+        sampleStart: model.sample?.start.toISOString().slice(0, 10) ?? null, sampleWeeks: model.sample?.weeks ?? 0, multiples: model.multiples, undatedEpsPeriods: model.undated, unavailableTtmSums: model.unavailable,
         stale: inputs.stale, fetchedAt: inputs.fetchedAt, methodology: "docs/research-data.md#pe-band" },
     };
   },

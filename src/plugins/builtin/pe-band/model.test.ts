@@ -49,6 +49,13 @@ describe("P/E band", () => {
     expect(chooseMultiples(Array.from({ length: 12 }, (_, index) => 20 + index))).toEqual([20, 25, 30]);
     expect(chooseMultiples([18.2, 18.5, 18.9])).toEqual([18, 19, 20]);
     expect(chooseMultiples([-5, 0])).toEqual([]);
+    // A decade at hundreds of times earnings must not lift every line off a stock now at 20.2x (AMZN):
+    // without today's P/E the lines sit at 200x-600x, with it they bracket 20.2x.
+    const richPast = [20, 25, 30, 40, 60, 80, 300, 500, 600, 668];
+    expect(chooseMultiples(richPast)).toEqual([200, 400, 600]);
+    expect(chooseMultiples(richPast, 20.2)).toEqual([20, 30, 40]);
+    // Today below the whole history still gets a line under it.
+    expect(chooseMultiples(Array.from({ length: 12 }, (_, index) => 20 + index), 19.6)).toEqual([15, 20, 25, 30]);
 
     const quarters = ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31"].map((date) => quarter(date, 2.5, date));
     const weeks = [80, 100, 120, 160].map((close, index) => ({ date: new Date(Date.UTC(2026, 0, 5 + 7 * index)), close }));
@@ -57,6 +64,7 @@ describe("P/E band", () => {
     expect(model.current?.pe).toBe(14);
     expect(model.current?.percentile).toBe(75);
     expect(model.range).toEqual({ min: 8, median: 11, max: 16 });
+    expect(model.sample).toEqual({ start: new Date(Date.UTC(2026, 0, 5)), weeks: 4 });
 
     // Pence prices against pound statements need no FX rate; dollars against Taiwan dollars do.
     const pence = projectPeBand(financials(quarters.map((row) => ({ ...row, currency: "GBP" })), [], { price: 1400, currency: "GBp" }), weeks,

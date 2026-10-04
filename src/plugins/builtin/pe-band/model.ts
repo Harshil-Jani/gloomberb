@@ -56,6 +56,14 @@ export interface PeBandModel {
   multiples: number[];
   current: { price: number; eps: number | null; pe: number | null; percentile: number | null; step: EpsStep | null } | null;
   range: { min: number; median: number; max: number } | null;
+  /** The weekly P/E readings the percentile and range rank over: the first one's date and how many. */
+  sample: { start: Date; weeks: number } | null;
+  /**
+   * Band values above this are left off the chart, so the value axis fits the
+   * price and the lines near it: one and a half times the highest close, or
+   * the line just above today's P/E when that is higher.
+   */
+  bandCeiling: number | null;
   /** Figures in the window dated by period end because no publication date is on record. */
   undated: number;
   /** Trailing sums in the window that are unavailable (a quarter's EPS is withheld or not reported). */
@@ -107,6 +115,18 @@ export function trailingEpsSteps(financials: TickerFinancials): EpsStep[] {
   return steps.sort((a, b) => a.knownAt.getTime() - b.knownAt.getTime() || a.periodEnd.localeCompare(b.periodEnd));
 }
 
+/**
+ * Decimals that keep three significant digits of a per-share amount: two from
+ * 1 up, more below it, so 0.0712 does not print as 0.07 and a YoY can be
+ * recomputed from the figures shown.
+ */
+export function perShareDigits(value: number): number {
+  const magnitude = Math.abs(value);
+  return magnitude >= 1 || magnitude === 0 || !Number.isFinite(magnitude) ? 2 : Math.min(6, Math.ceil(-Math.log10(magnitude)) + 2);
+}
+
+export const formatPerShare = (value: number) => value.toFixed(perShareDigits(value));
+
 function quantile(sorted: readonly number[], q: number): number {
   const position = (sorted.length - 1) * q;
   const low = Math.floor(position), high = Math.ceil(position);
@@ -114,17 +134,31 @@ function quantile(sorted: readonly number[], q: number): number {
 }
 
 /**
- * Round multiples across the stock's own P/E history between its 5th and 95th
- * percentiles: the finest spacing (1x, 2x, 5x, 10x...) that needs four lines
- * or fewer, widened to three lines toward the side the lines leave more
- * history uncovered.
+ * Round multiples around today's P/E and across the stock's own history. The
+ * span runs from the 5th to the 95th percentile of the weekly P/E, stretched
+ * to take in today's P/E and cut to between half and twice it, so a history
+ * far from today (AMZN at 600x a decade ago, 20x now) cannot push every line
+ * away from the price. The finest spacing (1x, 2x, 5x, 10x...) that needs
+ * four lines or fewer wins, and the lines always include the round multiples
+ * on either side of today's P/E. Without a current P/E the span is the
+ * history's alone. Three lines at least, widened toward the side the lines
+ * leave more of the span uncovered.
  */
-export function chooseMultiples(pes: readonly number[]): number[] {
+export function chooseMultiples(pes: readonly number[], current?: number | null): number[] {
   const sorted = pes.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
   if (!sorted.length) return [];
-  const low = quantile(sorted, 0.05), high = quantile(sorted, 0.95);
+  const today = current != null && Number.isFinite(current) && current > 0 ? current : null;
+  let low = quantile(sorted, 0.05), high = quantile(sorted, 0.95);
+  if (today) {
+    low = Math.max(Math.min(low, today), today / 2);
+    high = Math.min(Math.max(high, today), today * 2);
+  }
   for (const step of MULTIPLE_STEPS) {
     let first = Math.max(1, Math.ceil(low / step)), last = Math.floor(high / step);
+    if (today) {
+      first = Math.max(1, Math.min(first, Math.floor(today / step)));
+      last = Math.max(last, Math.ceil(today / step));
+    }
     if (last - first + 1 > MAX_BANDS) continue;
     while (last - first + 1 < MIN_BANDS) {
       // An empty span (both bounds between two lines) takes the nearest line on each side.
@@ -162,7 +196,7 @@ export function projectPeBand(
   options: { symbol: string; lookbackYears: number; now?: number },
 ): PeBandModel {
   const currency = financials?.quote?.currency ?? null;
-  const empty: PeBandModel = { symbol: options.symbol, currency, weeks: [], rows: [], multiples: [], current: null, range: null,
+  const empty: PeBandModel = { symbol: options.symbol, currency, weeks: [], rows: [], multiples: [], current: null, range: null, sample: null, bandCeiling: null,
     undated: 0, unavailable: 0, error: null, notice: null };
   if (!financials) return { ...empty, error: "Fundamentals unavailable." };
   const allSteps = trailingEpsSteps(financials);
@@ -208,16 +242,21 @@ export function projectPeBand(
       yoy: step.eps != null && prior?.eps != null && step.eps > 0 && prior.eps > 0 ? step.eps / prior.eps - 1 : null };
   }).reverse();
 
-  const pes = weeks.flatMap((week) => week.pe != null ? [week.pe] : []);
+  const ranked = weeks.filter((week) => week.pe != null);
+  const pes = ranked.map((week) => week.pe!);
   const ordered = [...pes].sort((a, b) => a - b);
   const quotePrice = financials.quote?.price;
   const price = quotePrice != null && Number.isFinite(quotePrice) && quotePrice > 0 ? quotePrice : sorted.at(-1)?.close ?? null;
   const currentStep = stepAt(allSteps, now);
   const currentEps = priced(currentStep);
   const currentPe = price != null && currentEps != null && currentEps > 0 ? price / currentEps : null;
+  const multiples = chooseMultiples(pes, currentPe);
+  const above = currentPe == null ? undefined : multiples.find((multiple) => multiple >= currentPe);
+  const highestClose = weeks.reduce((max, week) => Math.max(max, week.close), 0);
   return {
-    ...empty, weeks, rows,
-    multiples: chooseMultiples(pes),
+    ...empty, weeks, rows, multiples,
+    sample: ranked.length ? { start: ranked[0]!.date, weeks: ranked.length } : null,
+    bandCeiling: highestClose > 0 ? Math.max(highestClose * 1.5, above != null && currentEps != null ? above * currentEps : 0) : null,
     current: price == null ? null : { price, eps: currentEps, pe: currentPe, step: currentStep,
       percentile: currentPe == null ? null : percentileRank(pes, currentPe) },
     range: ordered.length ? { min: ordered[0]!, median: quantile(ordered, 0.5), max: ordered.at(-1)! } : null,

@@ -14,7 +14,7 @@ import { Box } from "../../../ui";
 import { formatCurrency, formatPercentileRank } from "../../../utils/format";
 import { useAssetData } from "../../runtime";
 import { loadPeBandInputs } from "./client";
-import { projectPeBand, type PeBandModel, type PeBandRow } from "./model";
+import { formatPerShare, perShareDigits, projectPeBand, type PeBandModel, type PeBandRow } from "./model";
 
 export const LOOKBACK_OPTIONS = [{ value: "5", label: "5Y" }, { value: "10", label: "10Y" }, { value: "0", label: "Max" }];
 
@@ -45,11 +45,11 @@ function renderCell(row: PeBandRow, column: DataTableColumn, colors: ReturnType<
     // A figure with no publication date on record steps at its period end.
     case "known": return row.dated ? { text: row.knownAt.toISOString().slice(0, 10), value: row.knownAt.toISOString().slice(0, 10) }
       : { text: "period end", color: colors.textMuted };
-    case "eps": return { text: row.eps == null ? "--" : row.eps.toFixed(2), value: row.eps,
+    case "eps": return { text: row.eps == null ? "--" : formatPerShare(row.eps), value: row.eps,
       color: row.eps != null && row.eps <= 0 ? colors.negative : undefined };
     case "yoy": return { text: pct(row.yoy), value: row.yoy == null ? null : row.yoy * 100,
       color: row.yoy == null || Math.abs(row.yoy) < 0.0005 ? undefined : row.yoy > 0 ? colors.positive : colors.negative };
-    case "price": return { text: row.price == null ? "--" : row.price.toFixed(2), value: row.price };
+    case "price": return { text: row.price == null ? "--" : formatPerShare(row.price), value: row.price };
     default: return { text: multiple(row.pe), value: row.pe };
   }
 }
@@ -59,7 +59,11 @@ function chartSeries(model: PeBandModel, colors: ReturnType<typeof useThemeColor
   return [
     // Cheap multiples toward the positive colour, rich ones toward the negative, both faded so the price stays on top.
     ...model.multiples.map((value, index) => staticSeries(
-      model.weeks.map((week) => scalarPoint(week.date, week.eps == null ? null : week.eps * value)),
+      // Values past the ceiling leave the chart, so a far line cannot stretch the axis away from the price.
+      model.weeks.map((week) => {
+        const band = week.eps == null ? null : week.eps * value;
+        return scalarPoint(week.date, band != null && model.bandCeiling != null && band > model.bandCeiling ? null : band);
+      }),
       { id: `x${value}`, label: `${value}x`, calendarSpaced: true, color: blendHex(colors.bg,
         blendHex(colors.positive, colors.negative, last > 0 ? index / last : 0.5), 0.75) },
     )),
@@ -97,10 +101,11 @@ export function PeBandPane({ width, height, focused }: PaneProps) {
   const currency = model?.currency ?? undefined;
   const firstWeek = model?.weeks[0]?.date;
   const lastWeek = model?.weeks.at(-1)?.date;
+  const sampleStart = model?.sample?.start;
   // The window the percentile ranks within: the lookback, or the shorter run of EPS on record.
-  const windowLabel = !firstWeek ? undefined
-    : lookbackYears > 0 && (lastWeek!.getTime() - firstWeek.getTime()) > (lookbackYears - 0.1) * 365.25 * 86_400_000
-      ? `${lookbackYears}Y` : `since ${firstWeek.getUTCFullYear()}`;
+  const windowLabel = !sampleStart || !lastWeek ? undefined
+    : lookbackYears > 0 && (lastWeek.getTime() - sampleStart.getTime()) > (lookbackYears - 0.1) * 365.25 * 86_400_000
+      ? `${lookbackYears}Y` : `since ${sampleStart.getUTCFullYear()}`;
 
   const selected = rows.some((row) => rowKey(row) === selectedId) ? selectedId : rows[0] ? rowKey(rows[0]) : null;
   const rowDate = useCallback((row: PeBandRow) => (firstWeek && row.knownAt >= firstWeek ? row.knownAt : null), [firstWeek?.getTime()]);
@@ -126,13 +131,13 @@ export function PeBandPane({ width, height, focused }: PaneProps) {
       { id: "pe", label: "P/E", value: multiple(current.pe),
         detail: current.pe != null ? formatPercentileRank(current.percentile, windowLabel) : current.eps != null ? "EPS not positive" : "EPS unavailable" },
       { id: "median", label: "Median P/E", value: multiple(range?.median), detail: range ? `${multiple(range.min)} to ${multiple(range.max)}` : undefined },
-      { id: "eps", label: "EPS", value: current.eps == null ? "--" : formatCurrency(current.eps, currency),
+      { id: "eps", label: "EPS", value: current.eps == null ? "--" : formatCurrency(current.eps, currency, perShareDigits(current.eps)),
         detail: step ? periodLabel(step) : undefined },
-      { id: "price", label: "Price", value: formatCurrency(current.price, currency) },
+      { id: "price", label: "Price", value: formatCurrency(current.price, currency, perShareDigits(current.price)) },
     ];
   }, [model, windowLabel, currency]);
 
-  const formatPrice = useCallback((value: number) => formatCurrency(value, currency), [currency]);
+  const formatPrice = useCallback((value: number) => formatCurrency(value, currency, perShareDigits(value)), [currency]);
   const formatAxis = useMemo(() => spanAxisFormatter((value, digits) => formatCurrency(value, currency, Math.max(2, digits))), [currency]);
   const query = <QueryBar width={width} filters={[{ id: "lookback", label: "Lookback", value: String(lookback), options: LOOKBACK_OPTIONS, onChange: setLookback }]} />;
 
