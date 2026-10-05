@@ -630,7 +630,7 @@ function getCompanyNameKey(detail: string): string {
   return normalizeCompanyName(detail.split("|")[0] || "");
 }
 
-function getIssuerGroupKey(detail: string): string {
+export function getIssuerGroupKey(detail: string): string {
   // Listing descriptions do not create a different issuer. Strip only these
   // recognized tails for grouping, preserving full names and query relevance.
   const issuer = normalizeSearchText(detail.split("|")[0] || "")

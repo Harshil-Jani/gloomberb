@@ -412,6 +412,24 @@ describe("ticker-search utilities", () => {
     });
   }
 
+  test("a saved second listing keeps its venue's place among the issuer's listings", () => {
+    const venues = ["NYSE", "XETRA", "XSTU", "FWB2", "VIE", "SWX", "MUNICH", "HANOVER", "BUD"];
+    const results = buildTickerSearchCandidates({
+      query: "SAP",
+      tickers: new Map([
+        ["SAP", createTestTicker("SAP", "SAP SE", { exchange: "NYSE", assetCategory: "EQUITY" })],
+        ["SAP:XETR", createTestTicker("SAP:XETR", "SAP SE", { exchange: "XETRA", assetCategory: "Common Stock" })],
+      ]),
+      providerResults: venues.map((exchange) => makeSearchResult("SAP", "SAP SE", { exchange, type: "Common Stock" })),
+    });
+
+    expect(results.slice(0, 3).map((item) => [item.label, item.exchangeLabel, item.kind])).toEqual([
+      ["SAP", "NYSE", "ticker"],
+      ["SAP:XETR", "XETRA", "ticker"],
+      ["SAP", "XSTU", "search"],
+    ]);
+  });
+
   test("uses provider ordering to prefer the canonical saved listing for company-name queries", () => {
     const tickers = new Map<string, TickerRecord>([
       ["APC", createTestTicker("APC", "Apple Inc.", {
