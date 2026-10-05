@@ -208,6 +208,7 @@
           "scanner-flow",
           "scanner-hilo",
           "sectors",
+          "themes",
           "world-indices",
           "world-venue-map"
         ],
