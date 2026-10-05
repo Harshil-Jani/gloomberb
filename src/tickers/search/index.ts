@@ -5,6 +5,7 @@ import { canonicalExchange, parsePublicTickerKey, publicTickerKey } from "../../
 import { getListingSymbol, tickerHasListingSuffix } from "../../sources/listing-symbols";
 import { parseOptionSymbol } from "../../utils/options";
 import { resolveCurrencyUnit } from "../../utils/currency-units";
+import { assetClassMarketSymbol, parseAssetClassQuery } from "./asset-classes";
 import { searchContractKey, searchInstrumentKey } from "./identity";
 import { tickerInstrumentLabel } from "../instrument-label";
 import {
@@ -208,7 +209,8 @@ export async function searchTickerCandidates({
     providerResults,
     localLimit,
     totalLimit,
-    includeOptionContracts,
+    // A search that hides contracts still shows them when asked: "AAPL OPT".
+    includeOptionContracts: includeOptionContracts || parseAssetClassQuery(query)?.code === "OPT",
   });
   return assemble(await searchProviderResults(
     dataProvider,
@@ -392,10 +394,15 @@ function searchResultPopularity(result: InstrumentSearchResult): number | undefi
 
 async function searchProviderResults(
   dataProvider: DataProvider,
-  query: string,
+  rawQuery: string,
   searchContext?: SearchRequestContext,
   onPartial?: (results: InstrumentSearchResult[]) => void,
 ): Promise<InstrumentSearchResult[]> {
+  // "ES FUT" looks up ES, and ES=F as well: the catalogue answers a bare root
+  // with stocks only. The ranking keeps the futures.
+  const assetClass = parseAssetClassQuery(rawQuery);
+  const query = assetClass?.symbolQuery ?? rawQuery;
+  const marketSymbol = assetClass ? assetClassMarketSymbol(assetClass) : null;
   // A Map rather than a list plus a seen set, because a later source can send
   // back a richer version of a symbol already recorded. Overwriting a key keeps
   // its original position, so an upgrade does not reorder the list.
@@ -411,7 +418,9 @@ async function searchProviderResults(
   // The variants are independent lookups of the same words, so they run
   // together. Awaited in turn they multiplied every per-source timeout by the
   // number of spellings tried.
-  await Promise.all(buildProviderSearchQueries(query).map(async (searchQuery) => {
+  const searchQueries = buildProviderSearchQueries(query);
+  if (marketSymbol && !searchQueries.includes(marketSymbol)) searchQueries.push(marketSymbol);
+  await Promise.all(searchQueries.map(async (searchQuery) => {
     try {
       const results = await dataProvider.search(searchQuery, {
         ...searchContext,
