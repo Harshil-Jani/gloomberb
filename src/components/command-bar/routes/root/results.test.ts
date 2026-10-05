@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { PaneTemplateDef } from "../../../../types/plugin";
 import { orderListResults, type ResultItem } from "../../list/model";
 import { PLUGIN_INSTALL_CATEGORY } from "../../view-model";
+import { mergePlainRootTickerResults } from "../ticker-search/results";
 import { buildRootResultModel, type RootResultModelOptions } from "./results";
 
 function rootOptions(overrides: Partial<RootResultModelOptions>): RootResultModelOptions {
@@ -92,6 +93,46 @@ describe("provider rows in the root result model", () => {
     }));
 
     expect(items.map((item) => item.id)).toEqual([paneRow.id]);
+  });
+
+  test("an exact ticker stays ahead of the News, Filings and Documents sections", () => {
+    const tickerRow: ResultItem = {
+      id: "ticker:AAPL",
+      label: "AAPL",
+      detail: "Apple Inc.",
+      category: "Search Results",
+      kind: "ticker",
+      right: "NASDAQ",
+      action: () => {},
+    };
+    const storyRow: ResultItem = {
+      id: "search-provider:news:loaded-stories:story-1",
+      label: "AAPL guides higher",
+      detail: "Wire",
+      category: "News",
+      kind: "action",
+      action: () => {},
+    };
+    const filingRow: ResultItem = {
+      id: "search-provider:sec:filings:0000320193-25-000079",
+      label: "Annual Report",
+      detail: "Apple Inc.",
+      badge: "10-K",
+      category: "Filings",
+      kind: "action",
+      action: () => {},
+    };
+    const { items } = buildRootResultModel(rootOptions({
+      rootQuery: "AAPL",
+      providerResultItems: [documentRow, filingRow, storyRow],
+    }));
+    const ordered = orderListResults(mergePlainRootTickerResults("AAPL", [tickerRow], items), {
+      sectionOrder: "app-first",
+      categoryPriorities: new Map([["News", 190], ["Filings", 195], ["Documents", 200]]),
+    });
+
+    expect(ordered[0]).toMatchObject({ id: tickerRow.id, category: "Exact Match" });
+    expect(ordered.map((item) => item.id)).toEqual([tickerRow.id, storyRow.id, filingRow.id, documentRow.id]);
   });
 
   test("stay out of the way once a prefix claims the query", () => {
