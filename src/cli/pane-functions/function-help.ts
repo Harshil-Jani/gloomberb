@@ -910,6 +910,13 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     data: same("As studies are posted"),
     bloomberg: [],
   },
+  CLTR: {
+    summary: "SEC staff comment letters and company responses, newest first. Search their text, or type a ticker for one company's letters, and open a letter to read it.",
+    usage: ["CLTR", "CLTR revenue recognition", "CLTR AAPL"],
+    keys: [SEARCH, OPEN],
+    data: AS_FILED,
+    bloomberg: [],
+  },
   HDS: {
     summary: "Institutional holders as a table (value, shares, change, percent held) or as an ownership treemap.",
     usage: ["HDS NVDA"],
