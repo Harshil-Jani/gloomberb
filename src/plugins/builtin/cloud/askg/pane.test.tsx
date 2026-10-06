@@ -10,7 +10,8 @@ import { setSharedRegistryForTests, type PluginRegistry } from "../../../registr
 import { Box, Text } from "../../../../ui";
 import { askgConversationListStore } from "./conversation-store";
 import { resetASKGClientManifestCache } from "./host";
-import { ASKGPane } from "./pane";
+import type { ASKGToolRow } from "./model";
+import { ASKGPane, ToolTimelineRow } from "./pane";
 
 const tui = createOpenTuiTestHarness();
 
@@ -21,6 +22,8 @@ const PANE_WIDTH = 64;
 const WIDE_PANE_WIDTH = 96;
 
 const requests: string[] = [];
+const sessionBodies: Array<Record<string, unknown>> = [];
+let configPortfolios: Array<{ id: string; name: string; currency: string; brokerInstanceId?: string }> = [];
 let sessionStatus = 200;
 let storedConversations: Array<Record<string, unknown>> = [];
 let storedTranscripts: Record<string, Record<string, unknown>> = {};
@@ -32,6 +35,7 @@ function Harness({ paneWidth = PANE_WIDTH }: { paneWidth?: number }) {
       paneId: "askg",
     }));
     initial.focusedPaneId = PANE_ID;
+    initial.config = { ...initial.config, portfolios: configPortfolios };
     return initial;
   });
   return (
@@ -85,6 +89,8 @@ function transcript(id: string, question: string, answer: string) {
 
 beforeEach(() => {
   requests.length = 0;
+  sessionBodies.length = 0;
+  configPortfolios = [];
   sessionStatus = 200;
   storedConversations = [];
   storedTranscripts = {};
@@ -95,6 +101,7 @@ beforeEach(() => {
     const parsed = new URL(url);
     requests.push(`${init?.method ?? "GET"} ${parsed.pathname}`);
     if (parsed.pathname === "/askg/session") {
+      if (typeof init?.body === "string") sessionBodies.push(JSON.parse(init.body));
       if (sessionStatus !== 200) {
         return new Response(JSON.stringify({ message: "Ask Gloom is unavailable." }), {
           status: sessionStatus,
@@ -220,6 +227,65 @@ describe("ASKGPane failures", () => {
     // The failed attempt is replaced, not stacked above the retry.
     const retried = tui.frame();
     expect(retried.split("what does a 5y bond return").length - 1).toBe(1);
+  });
+});
+
+describe("ASKGPane tool rows", () => {
+  test("a row with long arguments stays on one line and its note sits below it", async () => {
+    const row = (name: string, argumentSummary: string, rowCount: number, note: string): ASKGToolRow => ({
+      toolCallId: name,
+      name,
+      argumentSummary,
+      writeTier: "read",
+      origin: "client",
+      status: "partial",
+      requiresConfirmation: false,
+      rowCount,
+      note,
+      result: { rows: [] },
+      expanded: false,
+    });
+    const rows = [
+      row("pf", "broker:ibkr-main:U1234567 · limit=50", 50, "No market value for 1211; totals leave it out"),
+      row("port", "broker:ibkr-main:U1234567 · equity-shift=-10 · rate-shift=100 · view=holdings · vol-shift=10", 94, "6 foreign listings skipped"),
+    ];
+    await act(async () => {
+      await tui.render(
+        <TestDialogProvider>
+          <Box flexDirection="column" width={70} height={6}>
+            {rows.map((entry) => (
+              <ToolTimelineRow key={entry.toolCallId} row={entry} width={70} selected={false} expanded={false}
+                selectedRowRef={() => {}} onSelect={() => {}} onToggle={() => {}} onUndo={() => {}} />
+            ))}
+          </Box>
+        </TestDialogProvider>,
+        { width: 70, height: 6 },
+      );
+    });
+    await flush();
+    const lines = tui.frame().split("\n");
+
+    expect(lines[0]).toMatch(/^▸ pf .* 50 rows · partial\s*$/);
+    expect(lines[1]?.trim()).toBe("No market value for 1211; totals leave it out");
+    expect(lines[2]).toMatch(/^▸ port .* 94 rows · partial\s*$/);
+    expect(lines[3]?.trim()).toBe("6 foreign listings skipped");
+  });
+});
+
+describe("ASKGPane context", () => {
+  test("a question carries the user's portfolio ids, so Gloom does not guess them", async () => {
+    sessionStatus = 503;
+    configPortfolios = [
+      { id: "main", name: "Main Portfolio", currency: "USD" },
+      { id: "broker:ibkr-main:U1234567", name: "U1234567", currency: "USD", brokerInstanceId: "ibkr-main" },
+    ];
+    await ask("what do i have open");
+
+    const context = sessionBodies[0]?.context as { userData?: { portfolios?: unknown[] } } | undefined;
+    expect(context?.userData?.portfolios).toEqual([
+      { id: "main", name: "Main Portfolio", kind: "manual" },
+      { id: "broker:ibkr-main:U1234567", name: "U1234567", kind: "broker" },
+    ]);
   });
 });
 
