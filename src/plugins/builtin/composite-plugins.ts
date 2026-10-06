@@ -73,6 +73,7 @@ import { realizedVolModule } from "./realized-vol";
 import { seasonalityModule } from "./seasonality";
 import { earningsRippleModule } from "./earnings-ripple";
 import { reverseDcfModule } from "./reverse-dcf";
+import { peBandModule } from "./pe-band";
 import { macroDayModule } from "./macro-day";
 import { ivHistoryModule } from "./iv-history";
 import { backtestModule } from "./backtest";
@@ -116,6 +117,7 @@ export const tickerResearchPlugin = composeBuiltinPlugin({
     seasonalityModule,
     earningsRippleModule,
     reverseDcfModule,
+    peBandModule,
     macroDayModule,
     ivHistoryModule,
     backtestModule,

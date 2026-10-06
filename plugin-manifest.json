@@ -346,6 +346,7 @@
           "options-calculator",
           "options-positioning",
           "options-scenario",
+          "pe-band",
           "quote-monitor",
           "realized-vol",
           "relative-valuation",
