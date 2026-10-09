@@ -1,12 +1,14 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataTableView, EmptyState, PaneStatusBody, usePaneFooter, usePaneNoticeFooter, usePaneTabs,
   type DataTableCell, type DataTableColumn, type PaneHint } from "../../../components";
 import { usePaneRefreshKey } from "../../../components/data-table/table-pane";
+import { getTableWidth } from "../../../components/ui/table-layout";
 import { usePlanAccess } from "../../../api-client/plan-access";
 import { useAsyncResource, useAutoRefresh, usePaneSettingValue, usePluginAppActions, usePluginPaneState, useTickers } from "../../../public/react";
 import type { PaneProps } from "../../../types/plugin";
 import { Box } from "../../../ui";
 import { isUsListingExchange } from "../../../utils/exchanges";
+import { displayWidth } from "../../../utils/format";
 import { CLOUD_PLAN_KEY, useCloudUpgradeAction } from "../shared/cloud-upgrade";
 import { UpgradeLabel } from "../shared/locked-rows";
 import { useResearchCloudSession } from "../shared/research-cloud-session";
@@ -30,16 +32,62 @@ const COLUMNS: DataTableColumn[] = [
 ];
 
 const SECOND_HOP_COLUMNS: DataTableColumn[] = [
-  { id: "date", label: "Date", width: 11, align: "left" },
+  { id: "date", label: "Date", width: 10, align: "left" },
   { id: "timing", label: "Time", width: 5, align: "left" },
-  { id: "company", label: "Reports", width: 22, align: "left" },
-  { id: "link", label: "Link", width: 20, align: "left" },
+  { id: "company", label: "Reports", width: 14, flexGrow: 1, align: "left" },
+  { id: "link", label: "Link", width: 19, align: "left" },
   { id: "via", label: "Via", width: 9, align: "left" },
   { id: "holding", label: "Holding", width: 9, align: "left" },
   { id: "shares", label: "Share per hop", width: 28, align: "left" },
   { id: "move", label: "Avg move", width: 9, align: "right" },
   { id: "holdingDate", label: "Holding reports", width: 16, align: "right" },
 ];
+const HOP_SEPARATOR = " › ";
+
+/**
+ * Holding to via, then via to the company that reports. The first hop is
+ * padded with no-break spaces, which the desktop does not collapse.
+ */
+function shareText(row: SecondHopRow, firstHopWidth: number) {
+  const first = hopLabel(row.hops[0]);
+  return `${first}${"\u00a0".repeat(Math.max(0, firstHopWidth - displayWidth(first)))}${HOP_SEPARATOR}${hopLabel(row.hops[1])}`;
+}
+
+/**
+ * The 2 hops table at this width. The date, the company and the route (via,
+ * holding, every hop's share) always show, so the route never scrolls out of
+ * view; a pane too narrow for all of it clips the shares. What room is left
+ * goes to the rest, most needed first, each only if it fits: the link, the
+ * report time, a long via name in full, the average move, shares lined up so
+ * every second hop starts at the same place, and the holding's own report.
+ * `firstHopWidth` is what the first hop is padded to, 0 when not lined up.
+ */
+function secondHopLayout(width: number, rows: readonly SecondHopRow[]) {
+  const widest = (texts: readonly string[]) => Math.max(0, ...texts.map(displayWidth));
+  const firstHop = widest(rows.map((row) => hopLabel(row.hops[0])));
+  const shares = Math.min(44, Math.max(28, widest(rows.map((row) => shareText(row, 0)))));
+  const aligned = Math.min(44, Math.max(shares, firstHop + HOP_SEPARATOR.length + widest(rows.map((row) => hopLabel(row.hops[1])))));
+  const widths: Record<string, number> = { via: 9, shares };
+  let firstHopWidth = 0;
+  const shown = new Set(["date", "company", "via", "holding", "shares"]);
+  const columns = () => SECOND_HOP_COLUMNS.filter((column) => shown.has(column.id))
+    .map((column) => widths[column.id] ? { ...column, width: widths[column.id]! } : column);
+  // The vertical scrollbar takes a cell, including when the rows fit.
+  const room = () => width - 1 - getTableWidth(columns());
+  const fitted = widths.shares = Math.max(28, shares + Math.min(0, room()));
+  const extras: [add: () => void, undo: () => void][] = [
+    ...["link", "timing"].map((id): [() => void, () => void] => [() => shown.add(id), () => shown.delete(id)]),
+    [() => { widths.via = Math.min(18, Math.max(9, widest(rows.map((row) => row.via)))); }, () => { widths.via = 9; }],
+    [() => shown.add("move"), () => shown.delete("move")],
+    [() => { widths.shares = aligned; firstHopWidth = firstHop; }, () => { widths.shares = fitted; firstHopWidth = 0; }],
+    [() => shown.add("holdingDate"), () => shown.delete("holdingDate")],
+  ];
+  for (const [add, undo] of extras) {
+    add();
+    if (room() < 0) undo();
+  }
+  return { columns: columns(), firstHopWidth };
+}
 
 const move = (row: RippleRow | SecondHopRow): DataTableCell =>
   ({ text: row.averageMove == null ? "--" : `±${(row.averageMove * 100).toFixed(1)}%`, value: row.averageMove });
@@ -57,7 +105,7 @@ function renderCell(row: RippleRow, column: DataTableColumn): DataTableCell {
   }
 }
 
-function renderSecondHopCell(row: SecondHopRow, column: DataTableColumn): DataTableCell {
+function renderSecondHopCell(row: SecondHopRow, column: DataTableColumn, firstHopWidth: number): DataTableCell {
   switch (column.id) {
     case "date": return { text: row.date };
     case "timing": return { text: row.timing?.toUpperCase() ?? "--" };
@@ -65,8 +113,7 @@ function renderSecondHopCell(row: SecondHopRow, column: DataTableColumn): DataTa
     case "link": return { text: row.link === "customer" ? "customer's customer" : "supplier's supplier" };
     case "via": return { text: row.via };
     case "holding": return { text: row.holding };
-    // Holding to via first, then via to the company that reports.
-    case "shares": return { text: row.hops.map(hopLabel).join(" › ") };
+    case "shares": return { text: shareText(row, firstHopWidth), value: shareText(row, 0) };
     case "move": return move(row);
     default: return { text: row.holdingDate ?? "--" };
   }
@@ -97,7 +144,10 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
   const holdingsKey = holdings.join(",");
   const secondHop = tab === "two-hop";
   // A free account's graph stops at one hop, so it makes no graph requests and its second tab reuses the first load.
-  const graphHop = secondHop && access.hasProAccess;
+  // Once a Pro account opens 2 hops the graph stays in the load, so going back and forth between tabs never reloads.
+  const [graphOpened, setGraphOpened] = useState(false);
+  useEffect(() => { if (secondHop && access.hasProAccess) setGraphOpened(true); }, [secondHop, access.hasProAccess]);
+  const graphHop = access.hasProAccess && (secondHop || graphOpened);
   const loader = useCallback((force: boolean) => loadRipple(holdings, cachedRippleSources(accessKey, force, graphHop), undefined, { secondHop: graphHop }),
     [holdingsKey, accessKey, graphHop]);
   const ripple = useAsyncResource(holdings.length ? loader : null);
@@ -120,6 +170,8 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
     ...(failures.length ? [`No disclosures for ${failures.map((failure) => failure.symbol).join(", ")}`] : []),
     ...(!secondHop && truncated.length ? [`Free preview: top three customers and suppliers for ${truncated.join(", ")}`] : []),
     ...(second?.failures.length ? [`No two-hop graph for ${second.failures.map((failure) => failure.symbol).join(", ")}`] : []),
+    // The graph returns at most 50 companies per direction, so a large holding's list can be cut short.
+    ...(second?.truncated.length ? [`Graph search capped for ${second.truncated.map((entry) => entry.symbol).join(", ")}; some companies two hops away may be missing`] : []),
   ] });
   const openSupply = useCallback((row: { holding: string }) => createPaneFromTemplate("supply-chain-pane", { symbol: row.holding }), [createPaneFromTemplate]);
   usePaneFooter("earnings-ripple", () => {
@@ -131,11 +183,14 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
       ...((secondHop ? locked : truncated.length) ? [{ id: "upgrade", key: CLOUD_PLAN_KEY, label: "upgrade", title: "Upgrade to Pro", onPress: openUpgrade }] : []),
     ];
     return { info: [
-      ...(ripple.loading ? [{ id: "loading", parts: [{ text: secondHop ? "loading supply chain graph" : "loading disclosures", tone: "muted" as const }] }] : []),
+      ...(ripple.loading ? [{ id: "loading", parts: [{ text: secondHop && graphHop ? "loading supply chain graph" : "loading disclosures", tone: "muted" as const }] }] : []),
       ...(ripple.data?.stale ? [{ id: "stale", parts: [{ text: "stale", tone: "warning" as const }] }] : []),
     ], hints };
-  }, [ripple.loading, ripple.data?.stale, current, secondHop, locked, openSupply, createPaneFromTemplate, truncated.length, openUpgrade]);
+  }, [ripple.loading, ripple.data?.stale, current, secondHop, graphHop, locked, openSupply, createPaneFromTemplate, truncated.length, openUpgrade]);
 
+  const secondLayout = useMemo(() => secondHopLayout(width, secondRows), [width, secondRows]);
+  const firstHopWidth = secondLayout.firstHopWidth;
+  const renderSecondCell = useCallback((row: SecondHopRow, column: DataTableColumn) => renderSecondHopCell(row, column, firstHopWidth), [firstHopWidth]);
   const windowMeta = () => [["window", `${ripple.data?.from} to ${ripple.data?.to}`]];
   const bodyHeight = Math.max(3, height - tabRows);
   return <Box width={width} height={height} flexDirection="column" overflow="hidden">
@@ -149,12 +204,12 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
         emptyTitle={secondHop ? `No company two disclosed hops from these holdings reports in the next ${RIPPLE_DAYS} days.`
           : `No disclosed customer or supplier of these holdings reports in the next ${RIPPLE_DAYS} days.`}>
         {secondHop
-          ? <DataTableView<SecondHopRow> focused={focused} columns={SECOND_HOP_COLUMNS} items={secondRows} rootWidth={width} rootHeight={bodyHeight}
+          ? <DataTableView<SecondHopRow> focused={focused} columns={secondLayout.columns} items={secondRows} rootWidth={width} rootHeight={bodyHeight}
             getItemKey={(row) => row.id} emptyStateTitle="No reports." sortColumnId={null} sortDirection="asc"
             selection={{ kind: "id", selectedId: selectedSecond?.id ?? null, getId: (row) => row.id, onChange: setSelectedSecondId }}
             onActivate={openSupply}
             getExportMetadata={() => [...windowMeta(), ["share per hop", "percent of the reporting company's revenue unless another basis is named, holding to via, then via to the company"]]}
-            renderCell={renderSecondHopCell} />
+            renderCell={renderSecondCell} />
           : <DataTableView<RippleRow> focused={focused} columns={COLUMNS} items={rows} rootWidth={width} rootHeight={bodyHeight}
             getItemKey={(row) => row.id} emptyStateTitle="No reports." sortColumnId={null} sortDirection="asc"
             selection={{ kind: "id", selectedId: selected?.id ?? null, getId: (row) => row.id, onChange: setSelectedId }}
