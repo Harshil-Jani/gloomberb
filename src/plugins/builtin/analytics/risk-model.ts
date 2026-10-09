@@ -434,12 +434,19 @@ export function buildPortfolioRisk(
     holding.weight =
       book?.rows.find((row) => row.id === holding.id)?.weight ?? null;
   const closeMarked = members.filter((row) => row.markSource === "close").length;
+  const converted = members.filter((row) => row.convertedFrom != null).length;
   const held = new Set(holdings.map((row) => row.id));
   const warnings = [
     ...market.warnings,
     ...(closeMarked
       ? [
           `${closeMarked} holding${closeMarked === 1 ? "" : "s"} had no current quote; weighted at the latest completed close.`,
+        ]
+      : []),
+    // Daily closes pair by date, so a market that closes before or after the US session is not synchronous with it.
+    ...(converted
+      ? [
+          "Converted holdings are matched to the US close of the same date; where their market closes at another time, correlations and betas to US holdings read lower than they are.",
         ]
       : []),
     // A held instrument's failure is its left-out reason; factor proxies report here.

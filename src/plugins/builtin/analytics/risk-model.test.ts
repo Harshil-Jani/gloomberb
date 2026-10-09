@@ -128,6 +128,10 @@ test("foreign listings with daily FX closes enter the basket in USD and the foot
   // Converted returns sit on the basket's calendar, so the estimates still have 60 matched sessions.
   expect(model.metrics.every((row) => row.value != null)).toBe(true);
   expect(model.rows.holdings.find((row) => row.label === "JPY1")?.detail).toContain("from JPY at daily FX");
+  // Closes at another time than the US session read low against US holdings, and the pane says so.
+  expect(model.warnings).toContain(
+    "Converted holdings are matched to the US close of the same date; where their market closes at another time, correlations and betas to US holdings read lower than they are.",
+  );
 });
 test("past the size limit the largest holdings by value are modelled and the rest left out", async () => {
   // Listed smallest first, so the limit has to rank by value rather than keep the order.
