@@ -18,7 +18,7 @@ import { isPlainKey } from "../../../utils/keyboard";
 import { useAsyncResource } from "../../../react/async-resource";
 import { cloudGeoRequest } from "../world-venue-map/client";
 import { geoSeriesToken, loadGeoCorrelationHistory } from "./geo";
-import { formatCorrelation } from "./compute";
+import { formatCorrelation, type DailyClose } from "./compute";
 import {
   CORRELATION_RANGE_OPTIONS,
   DEFAULT_CORRELATION_SYMBOLS,
@@ -53,6 +53,13 @@ import { correlationHeadless, relationshipHeadless } from "./headless";
 import { CORRELATION_HISTORY_RESOLUTION } from "./history";
 import { buildMatrixPairHistory, clampMatrixCursor, matrixChartRows, matrixSelection, moveMatrixCursor, type MatrixCursor } from "./matrix/selection";
 import { MatrixPairChart } from "./matrix/pair-chart";
+
+/** A map series' values and when they arrived; after a failed load, the error and any values kept from before. */
+interface GeoSeriesLoad {
+  values?: DailyClose[];
+  fetchedAt?: number;
+  error?: string;
+}
 
 function CorrelationMatrixPane({ focused, width, height }: PaneProps) {
   const pane = usePaneInstance();
@@ -111,11 +118,24 @@ function CorrelationMatrixPane({ focused, width, height }: PaneProps) {
   const chartEntries = useChartQueries(chartRequests);
 
   // Map series load beside the tickers; one that fails leaves the others and every ticker pair working.
+  // A failed refresh keeps the series' last values for the same range, as a ticker keeps its last history.
+  const geoRetainedRef = useRef(new Map<string, { values: DailyClose[]; fetchedAt: number }>());
   const geoLoader = useMemo(() => geoKey ? async () => {
+    const range = settings.rangePreset;
     const results = await Promise.allSettled(geoEntries.map((entry) => (
-      loadGeoCorrelationHistory(cloudGeoRequest, geoSeriesToken(entry)!, settings.rangePreset)
+      loadGeoCorrelationHistory(cloudGeoRequest, geoSeriesToken(entry)!, range)
     )));
-    return new Map(geoEntries.map((entry, index) => [entry, results[index]!]));
+    return new Map(geoEntries.map((entry, index): [string, GeoSeriesLoad] => {
+      const result = results[index]!;
+      const key = `${range}|${entry}`;
+      if (result.status === "fulfilled") {
+        const loaded = { values: result.value, fetchedAt: Date.now() };
+        geoRetainedRef.current.set(key, loaded);
+        return [entry, loaded];
+      }
+      const error = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      return [entry, { ...geoRetainedRef.current.get(key), error }];
+    }));
   } : null, [geoKey, settings.rangePreset]);
   const geoHistory = useAsyncResource(geoLoader, { keepPreviousData: true });
 
@@ -129,15 +149,15 @@ function CorrelationMatrixPane({ focused, width, height }: PaneProps) {
       map.set(instrument.symbol, getSeriesForEntry(instrument.symbol, entry, settings.rangePreset));
     }
     for (const symbol of geoEntries) {
-      const result = geoHistory.data?.get(symbol);
-      map.set(symbol, !result
+      const loaded = geoHistory.data?.get(symbol);
+      map.set(symbol, !loaded
         ? { symbol, prices: [], basis: "difference", status: "loading", observationCount: 0 }
-        : result.status === "fulfilled"
-          ? { ...buildGeoCorrelationSeries(symbol, result.value), loading: geoHistory.loading }
-          : {
-            symbol, prices: [], basis: "difference", status: "error", observationCount: 0,
-            refreshError: result.reason instanceof Error ? result.reason.message : String(result.reason),
-          });
+        : loaded.values
+          ? {
+            ...buildGeoCorrelationSeries(symbol, loaded.values),
+            loading: geoHistory.loading, refreshError: loaded.error, fetchedAt: loaded.fetchedAt,
+          }
+          : { symbol, prices: [], basis: "difference", status: "error", observationCount: 0, refreshError: loaded.error });
     }
     return map;
   }, [chartEntries, chartRequests, instruments, settings.rangePreset, geoKey, geoHistory.data, geoHistory.loading]);
