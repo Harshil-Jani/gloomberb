@@ -254,6 +254,8 @@ The level tool (`Shift+H`, or `═` in the chart toolbar) draws horizontal price
 | `DIST` | Distress records: 8-K bankruptcy, obligation and listing filings, going-concern disclosures, Taiwan listing designations, French and UK insolvency notices (the M&A pane on its Distress tab; [details](distress-monitor.md)) |
 | `TV` | Live business news television ([TV plugin](https://github.com/gloom-sh/gloom-tv)) |
 | `BI` | S&P 500 sector performance |
+| `THEM [theme]` | Thematic baskets with equal-weight returns and breadth, and each theme's members (the Themes tab of `BI`) |
+| `MEMB <fund>` | ETF holdings with weights, member returns, daily contributions and index changes |
 | `FXC` | FX cross rates: the majors, or up to 45 currencies |
 | `FNG` | Fear and greed market gauge |
 
@@ -262,6 +264,8 @@ The level tool (`Shift+H`, or `═` in the chart toolbar) draws horizontal price
 `gloomberb fn HM` reports the map by sector from the same snapshot the pane starts from: each sector's names, total market cap and share of the board, its day move weighted by market cap, how many names rose and fell, and its best and worst name. `--group industry` breaks it down by industry within each sector, `--universe us-etf` summarizes the ETF board as one group weighted by net assets, and `--json` adds the whole board's figures in `data.metadata.board`. Moves are weighted by market cap, not by the square-root tile area; a name with no move yet counts toward its group's size but not its move or breadth, and is named in a notice above the table and in `data.metadata.noMove`. The report does not include the moves the pane streams on top of the snapshot.
 
 `HM` has a third tab, named for the list open in the portfolio pane (`PF`): the one last focused when there are several, your first portfolio when none is open. It sizes a portfolio's holdings by market value in the portfolio's currency, as `PF` shows it, whatever **Size by** says, and a watchlist's names by the square root of their market cap in your base currency, or plain market cap with **Size by**; tiles are colored by the day's move, or that session's in the pre-market and after hours, and grouped by sector when the list's tickers have one. A name without a position, quote, market cap or exchange rate gets the smallest tile and no figure, and past 160 names the smallest are left out, which the footer says. **Link to portfolio** in its settings switches the heatmap to that tab whenever the portfolio pane changes list. `3` opens the tab, and `[` / `]` step through all three.
+
+An open theme in `THEM` and the Members tab of `MEMB` add two entries to the pane menu (`.`). **Open Members In…** opens the members, in the order the list shows them, in `RRG` (up to 24), `CORR` (2 to 10), `SIW` (up to 60) or `RIPL` (up to 10); a function whose plugin is turned off is not offered. **Save as Watchlist…** asks for a name and saves the first 100 members to a new watchlist. A `MEMB` search narrows both to the holdings it matches.
 
 News rows credit the article's publisher and open its original URL. The managed
 news feed includes only articles whose publisher and original link can be
