@@ -38,6 +38,7 @@ import type { DoeBoardPayload } from "./doe";
 import type { GpuBoardPayload, GpuEventsPayload, GpuHistoryPayload, GpuHistoryQuery } from "./gpu";
 import type { CpiBoardPayload } from "./cpi";
 import type { TapeSnapshot } from "./tape";
+import { signalWithTimeout } from "../utils/async-deadline";
 import type { ExchangeRateSnapshot } from "../types/exchange-rate";
 import type { RatePathPayload } from "./rates";
 import type { EarningsCalendarPayload, EarningsCalendarQuery, EarningsHistoryPayload } from "./earnings";
@@ -579,7 +580,7 @@ export class CloudDataApi {
   }
 
   async getCloudTape(symbol: string, exchange: string, signal?: AbortSignal): Promise<TapeSnapshot> {
-    return this.request<TapeSnapshot>(`/cloud/tape/${encodeURIComponent(symbol)}?exchange=${encodeURIComponent(exchange)}`, { signal: signal ?? AbortSignal.timeout(30_000) });
+    return this.request<TapeSnapshot>(`/cloud/tape/${encodeURIComponent(symbol)}?exchange=${encodeURIComponent(exchange)}`, { signal: signalWithTimeout(signal, 30_000) });
   }
 
   async getCloudYieldCurve(): Promise<CloudYieldPointPayload[]> {
@@ -635,29 +636,29 @@ export class CloudDataApi {
     }
     const text = query.toString();
     const suffix = text ? `?${text}` : "";
-    return this.request<MnaDealsPayload>(`/cloud/mna/deals${suffix}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+    return this.request<MnaDealsPayload>(`/cloud/mna/deals${suffix}`, { signal: signalWithTimeout(options?.signal, 30_000) });
   }
 
   async getCloudMnaDeal(id: string, options?: { signal?: AbortSignal }): Promise<MnaDealPayload> {
-    return this.request<MnaDealPayload>(`/cloud/mna/deals/${encodeURIComponent(id)}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+    return this.request<MnaDealPayload>(`/cloud/mna/deals/${encodeURIComponent(id)}`, { signal: signalWithTimeout(options?.signal, 30_000) });
   }
 
   // Public records about companies in difficulty. The answers are unchecked
   // JSON: the distress tab's parsers validate them before anything is drawn.
   async getPublicDistressFilings(params: DistressFilingsParams, options?: { signal?: AbortSignal }): Promise<unknown> {
-    return this.request<unknown>(`/public/events${distressQuery(params)}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+    return this.request<unknown>(`/public/events${distressQuery(params)}`, { signal: signalWithTimeout(options?.signal, 30_000) });
   }
 
   async getPublicGoingConcern(params: GoingConcernParams = {}, options?: { signal?: AbortSignal }): Promise<unknown> {
-    return this.request<unknown>(`/public/going-concern${distressQuery(params)}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+    return this.request<unknown>(`/public/going-concern${distressQuery(params)}`, { signal: signalWithTimeout(options?.signal, 30_000) });
   }
 
   async getPublicDistressDesignations(params: DistressDesignationsParams = {}, options?: { signal?: AbortSignal }): Promise<unknown> {
-    return this.request<unknown>(`/public/distress-designations${distressQuery(params)}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+    return this.request<unknown>(`/public/distress-designations${distressQuery(params)}`, { signal: signalWithTimeout(options?.signal, 30_000) });
   }
 
   async getPublicInsolvencyNotices(params: InsolvencyNoticesParams = {}, options?: { signal?: AbortSignal }): Promise<unknown> {
-    return this.request<unknown>(`/public/insolvency-notices${distressQuery(params)}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+    return this.request<unknown>(`/public/insolvency-notices${distressQuery(params)}`, { signal: signalWithTimeout(options?.signal, 30_000) });
   }
 
   async getCloudIpoCalendar(params: IpoCalendarParams = {}, options?: { signal?: AbortSignal }): Promise<IpoCalendarPayload> {
@@ -667,7 +668,7 @@ export class CloudDataApi {
     }
     const text = query.toString();
     const suffix = text ? `?${text}` : "";
-    return this.request<IpoCalendarPayload>(`/cloud/ipo/calendar${suffix}`, { signal: options?.signal ?? AbortSignal.timeout(30_000) });
+    return this.request<IpoCalendarPayload>(`/cloud/ipo/calendar${suffix}`, { signal: signalWithTimeout(options?.signal, 30_000) });
   }
 
   async getCloudShortVolume(symbol: string, scope: ShortVolumeScope = "nms"): Promise<ShortVolumePayload> {
