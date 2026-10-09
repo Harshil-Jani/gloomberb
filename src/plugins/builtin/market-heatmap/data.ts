@@ -6,6 +6,8 @@ export const MARKET_HEATMAP_UNIVERSES = [
   { id: "us-equity", label: "US Stocks" },
   { id: "us-etf", label: "US ETFs" },
 ] as const;
+/** The 500 largest US stocks (an older server answers with its own maximum); ETFs stay flat and need fewer. */
+export const MARKET_HEATMAP_REQUEST_COUNT: Record<MarketHeatmapUniverseId, number> = { "us-equity": 500, "us-etf": 160 };
 export interface MarketHeatmapFetchOptions { count?: number; forceRefresh?: boolean; cache?: boolean; }
 export interface MarketHeatmapSources { client?: Pick<typeof apiClient, "getMarketHeatmap">; }
 const DEFAULT_COUNT = 80;
