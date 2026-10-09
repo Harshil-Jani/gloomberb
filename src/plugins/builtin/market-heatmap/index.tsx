@@ -44,6 +44,7 @@ import { resolvePortfolioTotalsCurrency } from "../portfolio-list/metrics";
 import { useThrottledMemo } from "../portfolio-list/use-throttled-memo";
 import { PORTFOLIO_REORDER_THROTTLE_MS } from "../portfolio-list/use-throttled-ticker-order";
 import {
+  MARKET_HEATMAP_REQUEST_COUNT,
   MARKET_HEATMAP_UNIVERSES,
   fetchMarketHeatmap,
   resetMarketHeatmapCache,
@@ -78,6 +79,8 @@ import {
   rankHeatmapQuoteWeights,
   useSettledValue,
 } from "./live";
+import { marketHeatmapHeadless } from "./headless";
+import { heatmapMove, resolveHeatmapGrouping, sizeWeightedMove, type HeatmapGrouping } from "./model";
 import {
   overlayScreenerQuoteEntries,
   resolveScreenerQuoteFeedStatus,
@@ -85,8 +88,6 @@ import {
 
 const NO_ASSETS: HeatmapBoardAsset[] = [];
 const NO_TARGETS: QuoteSubscriptionTarget[] = [];
-/** The 500 largest US stocks (an older server answers with its own maximum); ETFs stay flat and need fewer. */
-const MARKET_HEATMAP_REQUEST_COUNT: Record<MarketHeatmapUniverseId, number> = { "us-equity": 500, "us-etf": 160 };
 const SNAPSHOT_REFRESH_MS = 60_000;
 const LAYOUT_THROTTLE_MS = 5_000;
 /** A size change below this share of a tile's area is not worth moving it. */
@@ -130,13 +131,6 @@ function sizeLabel(asset: HeatmapBoardAsset): string | null {
   return `${label} ${formatMoneyCompact(asset.size, asset.sizeCurrency ?? asset.currency)}`;
 }
 
-/** The move, or null when there is none: no change data is not a flat session. */
-function changeOf(asset: HeatmapBoardAsset): number | null {
-  return asset.hasChange && typeof asset.changePercent === "number" && Number.isFinite(asset.changePercent)
-    ? asset.changePercent
-    : null;
-}
-
 /** Marks a pre-market or after-hours move, which is measured from the regular close. */
 function sessionMark(asset: HeatmapBoardAsset): string | null {
   if (asset.extendedSession === "PRE") return "PM";
@@ -147,29 +141,6 @@ function sessionMark(asset: HeatmapBoardAsset): string | null {
 function formatMove(asset: HeatmapBoardAsset, change: number | null): string {
   const mark = sessionMark(asset);
   return change == null ? "—" : mark ? `${formatPercentRaw(change)} ${mark}` : formatPercentRaw(change);
-}
-
-type HeatmapGrouping = "sector-industry" | "sector" | "flat";
-
-/**
- * Sector and industry blocks when the board knows its sectors. A board where
- * most of the value has none (ETFs, or a snapshot whose classification
- * failed) lays out flat rather than as one big unlabeled block.
- */
-function resolveGrouping(assets: readonly HeatmapBoardAsset[], industries: boolean): HeatmapGrouping {
-  let total = 0;
-  let classified = 0;
-  const sectors = new Set<string>();
-  for (const asset of assets) {
-    const weight = asset.weight ?? asset.size ?? 0;
-    total += weight;
-    if (asset.sector) {
-      classified += weight;
-      sectors.add(asset.sector);
-    }
-  }
-  if (sectors.size < 2 || classified < total / 2) return "flat";
-  return industries ? "sector-industry" : "sector";
 }
 
 /**
@@ -205,7 +176,7 @@ const paintItemCache = new WeakMap<HeatmapBoardAsset, MetricTreemapItem<HeatmapB
 function paintItem(asset: HeatmapBoardAsset): MetricTreemapItem<HeatmapBoardAsset> {
   const cached = paintItemCache.get(asset);
   if (cached) return cached;
-  const change = changeOf(asset);
+  const change = heatmapMove(asset);
   const details = [
     asset.price > 0 ? formatCurrency(asset.price, asset.currency) : null,
     sizeLabel(asset),
@@ -239,18 +210,10 @@ function otherSummary(items: readonly MetricTreemapItem<HeatmapBoardAsset>[]): s
 }
 
 function otherTooltip(items: readonly MetricTreemapItem<HeatmapBoardAsset>[]): string[] {
-  let weight = 0;
-  let weightedMove = 0;
-  for (const item of items) {
-    const change = changeOf(item.data);
-    const size = item.data.size ?? 0;
-    if (change == null || !(size > 0)) continue;
-    weight += size;
-    weightedMove += change * size;
-  }
+  const move = sizeWeightedMove(items.map((item) => item.data));
   return [
     tf("Other · {count} smaller names", { count: items.length }),
-    ...(weight > 0 ? [`${formatPercentRaw(weightedMove / weight)} ${t("cap-weighted")}`] : []),
+    ...(move != null ? [`${formatPercentRaw(move)} ${t("cap-weighted")}`] : []),
   ];
 }
 
@@ -397,7 +360,7 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
   // Sizes follow live prices at most every LAYOUT_THROTTLE_MS and only past
   // LAYOUT_TOLERANCE; a new snapshot relays out at once. Ticks only recolour.
   const grouping = useMemo(
-    () => resolveGrouping(boardAssets, activeUniverse === "us-equity"),
+    () => resolveHeatmapGrouping(boardAssets, activeUniverse === "us-equity"),
     [activeUniverse, boardAssets],
   );
   const layoutAssets = useThrottledMemo(
@@ -631,9 +594,9 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
         parts: [
           { text: selectedAsset.symbol, tone: "label" as const },
           {
-            text: changeOf(selectedAsset) == null ? "—" : formatPercentRaw(changeOf(selectedAsset)!),
+            text: heatmapMove(selectedAsset) == null ? "—" : formatPercentRaw(heatmapMove(selectedAsset)!),
             tone: "value" as const,
-            color: changeOf(selectedAsset) == null ? undefined : priceColor(changeOf(selectedAsset)!),
+            color: heatmapMove(selectedAsset) == null ? undefined : priceColor(heatmapMove(selectedAsset)!),
             bold: true,
           },
           ...(sessionMark(selectedAsset) ? [{ text: sessionMark(selectedAsset)!, tone: "muted" as const }] : []),
@@ -718,6 +681,7 @@ export const marketHeatmapPlugin: GloomPlugin = {
       name: "Market Heatmap",
       icon: "H",
       component: MarketHeatmapPane,
+      headless: marketHeatmapHeadless,
       defaultPosition: "right",
       defaultMode: "floating",
       defaultFloatingSize: { width: 110, height: 36 },

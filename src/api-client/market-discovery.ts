@@ -53,6 +53,10 @@ export interface MarketHeatmapResult {
   universe: MarketHeatmapUniverseId;
   source: MarketHeatmapSource;
   fetchedAt: number;
+  /** The market session when the snapshot was taken, such as `PRE`, `REGULAR` or `POST`. */
+  session?: string | null;
+  /** The latest regular session the snapshot knows, as a New York date (`YYYY-MM-DD`). */
+  regularSessionDate?: string | null;
   assets: MarketHeatmapAsset[];
 }
 
