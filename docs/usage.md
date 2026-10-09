@@ -607,7 +607,7 @@ gloomberb fn PORT main --view stress --equity-shift -15 --rate-shift 100 --vol-s
 gloomberb shot PORT main --width 1100 --height 620 --output portfolio-risk.png
 ```
 
-Risk, Factors, Correlation and Stress model the USD equity holdings with daily history, up to the 150 largest by value. When some holdings are left out (foreign listings, shorts, options, holdings without a quote or history), the footer says how much of the account the estimates cover and `!` lists each holding left out and why; below half of the account's market value the views say so instead of estimating. See [research data](research-data.md#portfolio-risk-depth-port-mars) for the method.
+Risk, Factors, Correlation and Stress model the equity holdings with daily history, up to the 150 largest by value. A listing quoted in another currency is converted to USD at daily FX closes, and the footer counts those holdings. When some holdings are left out (foreign listings without daily FX closes, shorts, options, holdings without a quote or history), the footer says how much of the account the estimates cover and `!` lists each holding left out and why; below half of the account's market value the views say so instead of estimating. See [research data](research-data.md#portfolio-risk-depth-port-mars) for the method.
 
 `--evidence` accepts the same JSON text as the clipboard import. Account-return and attribution examples in the methodology are illustrative inputs, not sample market data. A report includes raw values, source dates, percentile coverage, holdings, factor regressions and warnings; screenshots freeze that same local model.
 

@@ -62,6 +62,7 @@ function coverageSummary(coverage: RiskCoverage, limit = Infinity) {
     coveredValue: coverage.coveredValue,
     holdings: coverage.holdings,
     covered: coverage.covered,
+    convertedFromLocalCurrency: coverage.converted,
     leftOut: coverage.leftOut
       .slice(0, limit)
       .map((row) => ({ symbol: row.symbol, reason: row.reason, share: row.share })),
@@ -73,8 +74,10 @@ function coverageSummary(coverage: RiskCoverage, limit = Infinity) {
 function coverageError(coverage: RiskCoverage | undefined): string | null {
   const shortfall = riskCoverageShortfall(coverage);
   if (shortfall) return `Basket estimates unavailable: ${shortfall.title} ${shortfall.message}`.trim();
-  const text = riskCoverageText(coverage);
-  return text ? `Basket ${text}; metadata.coverage lists each with its reason.` : null;
+  // Converted holdings are covered, not an error; only a left-out holding raises one.
+  return coverage?.leftOut.length
+    ? `Basket ${riskCoverageText(coverage)}; metadata.coverage lists each with its reason.`
+    : null;
 }
 
 /** One view, its strongest or first rows, and the portfolio's totals instead of the model. */
@@ -116,7 +119,7 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
       "Explicit local evidence for account returns and attribution",
     ],
     limitations: [
-      `Fixed-current-weight USD equity basket over the holdings that qualify, largest ${RISK_HISTORY_LIMIT} by value; metadata.coverage states the covered share of market value and each holding left out`,
+      `Fixed-current-weight USD equity basket over the holdings that qualify, largest ${RISK_HISTORY_LIMIT} by value; foreign listings convert to USD at daily FX closes; metadata.coverage states the covered share of market value and each holding left out`,
       "No account performance inferred",
       "ETF price-return factor proxies",
       "Historical percentiles need 20 rolling samples",

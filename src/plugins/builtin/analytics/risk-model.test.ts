@@ -59,9 +59,9 @@ function market(staleQuotes: readonly string[] = []): RiskMarketSnapshot {
     fetchedAt: now.toISOString(),
   };
 }
-async function brokerModel(holdings = brokerFixtureHoldings()) {
+async function brokerModel(holdings = brokerFixtureHoldings(), fx = false) {
   const tickers = brokerFixtureTickers(holdings);
-  const client = brokerRiskClient(now, holdings);
+  const client = brokerRiskClient(now, holdings, { fx });
   const market = await fetchPortfolioRiskMarket(
     portfolioRiskRequests(portfolioRiskTickers(tickers, BROKER_PORTFOLIO.id), BROKER_PORTFOLIO.id),
     client as never,
@@ -71,7 +71,7 @@ async function brokerModel(holdings = brokerFixtureHoldings()) {
 }
 test("a broker account estimates on the holdings that qualify and lists every other with its reason", async () => {
   const { model, client } = await brokerModel();
-  // Foreign listings are quoted for their value but never request USD history.
+  // Without daily FX closes a foreign listing is quoted for its value but never requests its own history.
   expect(client.calls.histories.filter((symbol) => /^(EUR|GBP|HKD|JPY|TWD)\d$/.test(symbol))).toEqual([]);
   expect(client.calls.rates.toSorted()).toEqual(["EUR", "GBP", "HKD", "JPY", "TWD"]);
   // 85 US listings worth $365,500 of $468,560: foreign listings at the load's rates, the rest at the broker's value.
@@ -80,12 +80,12 @@ test("a broker account estimates on the holdings that qualify and lists every ot
   expect(riskCoverageText(model.coverage)).toBe("covers 78% of market value \u00b7 9 holdings left out");
   expect(riskCoverageNotices(model.coverage)).toEqual([
     "9 holdings left out of the basket, largest first:",
-    "EUR2 (4.3% of market value): Foreign holdings: historical FX returns required",
-    "TWD1 (4.0% of market value): Foreign holdings: historical FX returns required",
-    "EUR1 (3.5% of market value): Foreign holdings: historical FX returns required",
-    "GBP1 (2.7% of market value): Foreign holdings: historical FX returns required",
-    "HKD1 (2.2% of market value): Foreign holdings: historical FX returns required",
-    "JPY1 (2.2% of market value): Foreign holdings: historical FX returns required",
+    "EUR2 (4.3% of market value): Foreign holdings: daily FX closes unavailable",
+    "TWD1 (4.0% of market value): Foreign holdings: daily FX closes unavailable",
+    "EUR1 (3.5% of market value): Foreign holdings: daily FX closes unavailable",
+    "GBP1 (2.7% of market value): Foreign holdings: daily FX closes unavailable",
+    "HKD1 (2.2% of market value): Foreign holdings: daily FX closes unavailable",
+    "JPY1 (2.2% of market value): Foreign holdings: daily FX closes unavailable",
     "UNQ1 (1.7% of market value): Daily history unavailable",
     "UNQ2 (1.1% of market value): Daily history unavailable",
     "UNQ3 (0.4% of market value): Daily history unavailable",
@@ -98,7 +98,7 @@ test("a broker account estimates on the holdings that qualify and lists every ot
   expect(model.metrics.every((row) => row.value != null)).toBe(true);
   expect(model.factors.every((row) => row.value != null)).toBe(true);
   expect(model.rows.correlation).toHaveLength((85 * 84) / 2);
-  expect(model.rows.holdings.find((row) => row.label === "TWD1")).toMatchObject({ value: null, leftOut: "Foreign holdings: historical FX returns required" });
+  expect(model.rows.holdings.find((row) => row.label === "TWD1")).toMatchObject({ value: null, leftOut: "Foreign holdings: daily FX closes unavailable" });
   expect(model.complete).toBe(false);
 
   // A left-out holding nothing values makes the share an upper bound.
@@ -107,6 +107,27 @@ test("a broker account estimates on the holdings that qualify and lists every ot
   expect(bound.unvalued).toBe(1);
   expect(riskCoverageText(bound)).toBe("covers at most 78% of market value \u00b7 9 holdings left out");
   expect(riskCoverageNotices(bound).at(-1)).toBe("UNQ3 (value unknown): Daily history unavailable");
+});
+
+test("foreign listings with daily FX closes enter the basket in USD and the footer says so", async () => {
+  const { model, client } = await brokerModel(brokerFixtureHoldings(), true);
+  // One FX history per currency, however many holdings convert with it.
+  expect(client.calls.histories.filter((symbol) => symbol.endsWith("=X")).toSorted())
+    .toEqual(["EURUSD=X", "GBPUSD=X", "HKD=X", "JPY=X", "TWD=X"]);
+  // $365,500 of US listings plus $88,060 of foreign ones at the current rates.
+  expect(model.coverage).toMatchObject({ covered: 91, converted: 6, coveredValue: 453_560, sufficient: true });
+  expect(riskCoverageText(model.coverage)).toBe(
+    "covers 96% of market value \u00b7 3 holdings left out \u00b7 6 holdings converted from local currency",
+  );
+  const jpy = model.holdings.find((row) => row.symbol === "JPY1")!;
+  // 500 shares at 3,000 JPY, marked at the current rate of 0.0068 USD per yen.
+  expect(jpy).toMatchObject({ convertedFrom: "JPY", currency: "USD", leftOut: null });
+  expect(jpy.value).toBeCloseTo(10_200, 6);
+  // Pence convert through GBP: 500 shares at 2,000p and 1.25 USD per pound.
+  expect(model.holdings.find((row) => row.symbol === "GBP1")!.value).toBeCloseTo(12_500, 6);
+  // Converted returns sit on the basket's calendar, so the estimates still have 60 matched sessions.
+  expect(model.metrics.every((row) => row.value != null)).toBe(true);
+  expect(model.rows.holdings.find((row) => row.label === "JPY1")?.detail).toContain("from JPY at daily FX");
 });
 test("past the size limit the largest holdings by value are modelled and the rest left out", async () => {
   // Listed smallest first, so the limit has to rank by value rather than keep the order.
@@ -139,7 +160,7 @@ test("below half of market value the basket views estimate nothing and say why",
   expect(model.holdings.every((row) => row.weight == null)).toBe(true);
   expect(riskCoverageShortfall(model.coverage)).toEqual({
     title: "Qualifying holdings cover 5% of market value; basket estimates need 50%.",
-    message: "Most of what is left out: Foreign holdings: historical FX returns required (81.1% of market value).",
+    message: "Most of what is left out: Foreign holdings: daily FX closes unavailable (81.1% of market value).",
   });
   expect(() =>
     buildPortfolioRisk(portfolio, [], market(), {
