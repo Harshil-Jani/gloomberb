@@ -2,6 +2,7 @@ import { formatPriceEarnings, PRICE_EARNINGS_NOTICE } from "../../../utils/price
 import type { HeadlessPaneDefinition } from "../../../types/headless";
 import { formatCurrency, formatLevelPercent, formatNumber, formatPercent } from "../../../utils/format";
 import { loadHeadlessFinancials, loadHeadlessSymbols } from "../shared/headless-market-data";
+import { quoteFreshnessFields } from "../shared/report-freshness";
 import { RELATIVE_VALUATION_STALE_FUNDAMENTALS_NOTICE, RELATIVE_VALUATION_STALE_QUOTE_NOTICE, relativeValuationValues } from "./relative-valuation-model";
 import { paneSchemas } from "./headless-schema";
 
@@ -27,7 +28,7 @@ export const relativeValuationHeadless: HeadlessPaneDefinition<"rows"> = {
   ],
   async load({ symbols }, ctx) {
     const loaded = await loadHeadlessSymbols(symbols, ctx, (symbol) => loadHeadlessFinancials(ctx, symbol));
-    const rows = loaded.entries.map(({ symbol, data }) => ({ symbol, ...relativeValuationValues(data) }));
+    const rows = loaded.entries.map(({ symbol, data }) => ({ symbol, ...relativeValuationValues(data), ...quoteFreshnessFields(data?.quote) }));
     const unavailableSymbols = [...loaded.unavailableSymbols, ...rows.filter((row) => ![
       row.marketCap, row.trailingPE, row.forwardPE, row.evSales, row.fcfYield, row.revenueGrowth, row.operatingMargin,
     ].some((value) => value != null)).map(({ symbol }) => symbol)];
