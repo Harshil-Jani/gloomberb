@@ -22,6 +22,7 @@ import type { OverviewFunctionLink, PositionTableRow, StatField } from "./types"
 import { getPortfolioPositionMetrics, getPortfolioQuoteDisplay, resolvePortfolioMarketValue, resolvePortfolioPositionPnl, portfolioPnlPercent, signedPositionDirection } from "../../portfolio-list/position-metrics";
 import { liveDividendYield, liveForwardPE, liveMarketCapitalization, liveTrailingPE } from "../../portfolio-list/live-valuation";
 import { formatReportedMoney } from "../../../../utils/reported-money";
+import { fundamentalsCurrency, reportedEnterpriseValue } from "../../../../utils/fundamentals";
 import { formatShortDate } from "../../../../utils/datetime-format";
 import { safeExternalUrl } from "../../../../utils/external-url";
 
@@ -68,6 +69,7 @@ function compactPositionAccount(position: TickerPosition): string {
 export function buildOverviewStats({
   quote,
   fundamentals,
+  financialCurrency,
   quoteCurrency,
   baseCurrency,
   marketCapExchangeRates = new Map(),
@@ -77,6 +79,8 @@ export function buildOverviewStats({
 }: {
   quote: Quote | undefined;
   fundamentals: TickerFinancials["fundamentals"] | undefined;
+  /** The currency the statements report in, for fundamentals that declare none. */
+  financialCurrency?: TickerFinancials["financialCurrency"];
   quoteCurrency: string;
   baseCurrency: string;
   toBase: CurrencyConverter;
@@ -88,7 +92,7 @@ export function buildOverviewStats({
   today?: string;
 }): StatField[] {
   const stats: StatField[] = [];
-  const money = (value: number, perShare = false) => formatReportedMoney(value, fundamentals?.financialCurrency, perShare);
+  const money = (value: number, perShare = false) => formatReportedMoney(value, fundamentalsCurrency({ fundamentals, financialCurrency }), perShare);
 
   if (quote?.volume != null) {
     // Live figures keep their decimals (12.30M, not 12.3M) so the digits hold still.
@@ -178,10 +182,11 @@ export function buildOverviewStats({
       valueColor: priceColor(fundamentals.revenueGrowth),
     });
   }
+  const enterpriseValue = reportedEnterpriseValue(fundamentals);
   if (fundamentals?.unavailableFields?.includes("enterpriseValue")) {
     stats.push({ label: "EV", value: "—" });
-  } else if (fundamentals?.enterpriseValue != null) {
-    stats.push({ label: "EV", value: formatCompactCurrency(fundamentals.enterpriseValue, quoteCurrency) });
+  } else if (enterpriseValue != null) {
+    stats.push({ label: "EV", value: formatCompactCurrency(enterpriseValue, quoteCurrency) });
   }
   if (finite(fundamentals?.beta)) {
     stats.push({ label: "Beta", value: formatNumber(fundamentals.beta, 2), link: RELATIONSHIP_GRAPH });
