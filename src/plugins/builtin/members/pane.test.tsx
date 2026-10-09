@@ -1,16 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { act, useState } from "react";
+import { act, useCallback, useState } from "react";
 import { setCloudApiFetchTransport } from "../../../api-client";
 import { createOpenTuiTestHarness } from "../../../renderers/opentui/test-utils";
 import { appReducer, createInitialState, type AppAction } from "../../../state/app/context";
 import { createTestPaneConfig, TestPaneFrame } from "../../../test-support/pane";
 import { MemoryPluginPersistence } from "../../../test-support/plugin-persistence";
 import { createTestPluginRuntime } from "../../../test-support/plugin-runtime";
+import type { ContextMenuActionItem, ContextMenuItem } from "../../../types/context-menu";
+import { setSharedRegistryForTests, type PluginRegistry } from "../../registry";
+import { MEMBER_DESTINATIONS } from "../shared/members-menu";
 import { fundChangesCache, fundListCache, fundMembersCache } from "./client";
 import { MembersPane } from "./pane";
 import { board, changes, member } from "./test-fixture";
 const tui = createOpenTuiTestHarness();
-afterEach(() => { setCloudApiFetchTransport(null); fundMembersCache.reset(); fundChangesCache.reset(); fundListCache.reset(); });
+afterEach(() => { setCloudApiFetchTransport(null); setSharedRegistryForTests(undefined); fundMembersCache.reset(); fundChangesCache.reset(); fundListCache.reset(); });
 test("partial holdings keep number columns aligned, open tickers and lazily load the change stack", async () => {
   for (const cache of [fundMembersCache, fundChangesCache, fundListCache]) cache.attach(new MemoryPluginPersistence());
   const calls: string[] = [], pins: string[] = [];
@@ -48,4 +51,36 @@ test("partial holdings keep number columns aligned, open tickers and lazily load
   frame = await tui.waitForFrameToContain("Estimate from IVV share counts");
   expect(frame).toContain("2026-10-08");
   expect(frame.split(headline)).toHaveLength(2);
+});
+test("Movers has no members menu, and a search narrows what the menu opens", async () => {
+  for (const cache of [fundMembersCache, fundChangesCache, fundListCache]) cache.attach(new MemoryPluginPersistence());
+  setCloudApiFetchTransport(async () => Response.json(board));
+  setSharedRegistryForTests({ paneTemplates: new Map(MEMBER_DESTINATIONS.map((destination) => [destination.templateId, {}])),
+    getPaneTemplatePluginId: () => undefined } as unknown as PluginRegistry);
+  const opened: unknown[] = [];
+  let menu: ContextMenuItem[] = [];
+  const entry = (label: string) => menu.find((item): item is ContextMenuActionItem => item.type !== "divider" && item.type !== "role" && item.label === label);
+  const initial = createInitialState(createTestPaneConfig(":memory:", { instanceId: "members", paneId: "members", binding: { kind: "fixed", symbol: "IVV" }, settings: {} }));
+  const runtime = createTestPluginRuntime({ createPaneFromTemplate: (templateId, options) => { opened.push([templateId, options]); } });
+  function Harness() {
+    const [state, setState] = useState(initial);
+    const dispatch = useCallback((action: AppAction) => setState((previous) => appReducer(previous, action)), []);
+    return <TestPaneFrame state={state} dispatch={dispatch} paneId="members" pluginId="members" width={115} height={22} runtime={runtime}>
+      {(body, footer) => { menu = footer.menu; return <MembersPane paneId="members" paneType="members" focused {...body} />; }}
+    </TestPaneFrame>;
+  }
+  await act(async () => { await tui.render(<Harness />, { width: 115, height: 22 }); });
+  await tui.waitForFrameToContain("Company AAA");
+  await tui.clickFrameText("Movers");
+  await tui.waitForFrameToContain("Detractors");
+  expect(entry("Open Members In…")).toBeUndefined();
+  await tui.clickFrameText("Members");
+  await tui.waitForFrameToExclude("Detractors");
+  await tui.clickFrameText("ticker, name or sector");
+  await act(async () => { await tui.setup().mockInput.typeText("BBB"); });
+  await tui.waitForFrameToExclude("Company AAA");
+  await act(async () => { await entry("Open Members In…")!.onSelect!(); });
+  await tui.waitForFrameToContain("Open IVV members matching \"BBB\" in");
+  await act(async () => tui.setup().mockInput.pressEnter());
+  expect(opened).toEqual([["relative-rotation-rrg", { symbols: ["BBB"], arg: "BBB" }]]);
 });
