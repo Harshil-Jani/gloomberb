@@ -124,7 +124,7 @@ Text that no command claims searches symbols and names, and every result carries
 | `JOBS [ticker]` | Hiring from the company's careers system; alone, every covered company |
 | `QQ <tickers>` | Ticker quote monitor |
 | `CMP <tickers>` | Normalized price comparison |
-| `CORR <tickers>` | Ticker return correlations |
+| `CORR <tickers>` | Ticker return correlations; `GEO:<name>` adds a map series, for example `CORR FRO, STNG, GEO:HORMUZ` |
 | `ANR <ticker>` | Analyst targets and ratings |
 | `DIAG <ticker>` | Equity Diagnostic with cited flags and anomalies |
 | `SEC <ticker>` | SEC filings and company disclosures |

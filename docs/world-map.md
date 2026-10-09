@@ -20,7 +20,7 @@ Dense layers show counts until you zoom in (wheel, `+`, `-`). Ticker links marke
 
 ## Series in G
 
-`GEO:<name>` charts a map series beside anything else, for example `G XOM, GEO:HORMUZ`. `CHOKE` opens the main chokepoints' daily transits, `CHOKE SUEZ` one of them. The chart editor's series search finds map series by name.
+`GEO:<name>` charts a map series beside anything else, for example `G XOM, GEO:HORMUZ`. `CHOKE` opens the main chokepoints' daily transits, `CHOKE SUEZ` one of them. The chart editor's series search finds map series by name. `CORR FRO, STNG, GEO:HORMUZ` correlates a map series with tickers; see [research data](research-data.md#charts-comparisons-and-correlations) for how a count is paired with returns.
 
 ## From the shell
 

@@ -2,10 +2,11 @@ import type { HeadlessPaneDefinition } from "../../../types/headless";
 import type { TimeRange } from "../../../time-series/range";
 import { formatNumber } from "../../../utils/format";
 import { resolveHeadlessInstrument, loadHeadlessSymbols } from "../shared/headless-market-data";
-import { buildCorrelationMatrix, buildCorrelationSeries, pairKey } from "./matrix/model";
+import { buildCorrelationMatrix, buildCorrelationSeries, buildGeoCorrelationSeries, pairKey, type CorrelationSeries } from "./matrix/model";
+import { geoSeriesToken, loadGeoCorrelationHistory } from "./geo";
 import { buildRelationshipAnalysis, DEFAULT_RELATIONSHIP_SECOND_SYMBOL } from "./relationship/model";
 import { paneSchemas } from "./headless-schema";
-import { CORRELATION_RETURN_BASIS, loadCorrelationHistory } from "./history";
+import { CORRELATION_RETURN_BASIS, GEO_CORRELATION_CHANGE_BASIS, loadCorrelationHistory } from "./history";
 import type { HeadlessPaneContext } from "../../../types/headless";
 import { newestReportTime } from "../../../utils/utc-time";
 import { DAILY_CLOSES } from "../shared/report-freshness";
@@ -14,6 +15,14 @@ async function loadHistory(ctx: HeadlessPaneContext, key: string, range: TimeRan
   const { symbol, exchange } = await resolveHeadlessInstrument(ctx, key);
   return loadCorrelationHistory(ctx.marketData, symbol, exchange ?? "", range,
     ctx.refresh ? { cacheMode: "refresh" } : undefined);
+}
+
+/** A ticker's daily closes, or a map series' daily values read straight from the Cloud client. */
+async function loadCorrelationInput(ctx: HeadlessPaneContext, key: string, range: TimeRange): Promise<CorrelationSeries> {
+  const geo = geoSeriesToken(key);
+  if (!geo) return buildCorrelationSeries(key, await loadHistory(ctx, key, range));
+  const request = <T,>(path: string, init?: RequestInit) => ctx.apiClient.geo<T>(path, { ...init, signal: init?.signal ?? ctx.signal });
+  return buildGeoCorrelationSeries(key, await loadGeoCorrelationHistory(request, geo, range, ctx.signal));
 }
 
 export const correlationHeadless: HeadlessPaneDefinition<"rows"> = {
@@ -28,8 +37,8 @@ export const correlationHeadless: HeadlessPaneDefinition<"rows"> = {
   ],
   async load({ symbols, options }, ctx) {
     const range = (options.rangePreset ?? "1Y") as TimeRange;
-    const loaded = await loadHeadlessSymbols(symbols, ctx, (symbol) => loadHistory(ctx, symbol, range));
-    const bySymbol = new Map(loaded.entries.map(({ symbol, data }) => [symbol, buildCorrelationSeries(symbol, data)]));
+    const loaded = await loadHeadlessSymbols(symbols, ctx, (symbol) => loadCorrelationInput(ctx, symbol, range));
+    const bySymbol = new Map(loaded.entries.map(({ symbol, data }) => [symbol, data]));
     const matrix = buildCorrelationMatrix(symbols, bySymbol);
     const rows = symbols.flatMap((left, index) => symbols.slice(index + 1).map((right) => {
       const result = matrix.results.get(pairKey(left, right));
@@ -54,6 +63,7 @@ export const correlationHeadless: HeadlessPaneDefinition<"rows"> = {
         range,
         unavailablePairs,
         returnAlignment: CORRELATION_RETURN_BASIS,
+        ...(symbols.some((symbol) => geoSeriesToken(symbol)) ? { mapSeriesChange: GEO_CORRELATION_CHANGE_BASIS } : {}),
         availability: symbols.map((symbol) => ({
           symbol, status: bySymbol.get(symbol)?.status ?? "error", observationCount: bySymbol.get(symbol)?.observationCount ?? 0,
           ...(bySymbol.get(symbol)?.integrity ? { integrity: bySymbol.get(symbol)!.integrity } : {}),

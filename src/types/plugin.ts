@@ -272,6 +272,11 @@ interface PaneTemplateShortcut {
   aliases?: readonly string[];
   argPlaceholder?: string;
   argKind?: "text" | "ticker" | "ticker-list";
+  /**
+   * For a ticker list, entries kept as typed instead of resolved as tickers:
+   * CORR keeps map series (`GEO:HORMUZ`) beside its tickers.
+   */
+  keepArgToken?: (token: string) => boolean;
   argOptional?: boolean;
   /**
    * With no argument typed and none to infer from the active ticker, open
