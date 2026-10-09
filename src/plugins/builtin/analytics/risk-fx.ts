@@ -1,17 +1,11 @@
 import type { CloudMarketResponse, CloudPricePointPayload } from "../../../api-client/types";
 import { fxLegForCurrency, type FxLeg } from "../../../market-data/coordinator/fx-legs";
+import { dailyFxCloses, FxHistoryError, type FxCloses } from "../../../market-data/fx-closes";
 import { getPublishedUsEquityCalendarDay } from "../../../market-data/published-us-sessions";
 import type { PricePoint } from "../../../types/financials";
 import { resolveCurrencyUnit } from "../../../utils/currency-units";
-import { evidenceDay } from "./risk-evidence";
 
-/** USD per unit of one currency at each completed daily FX close, by date. */
-export interface FxCloses {
-  currency: string;
-  closes: ReadonlyMap<string, number>;
-  first: string;
-  asOf: string;
-}
+export type { FxCloses };
 
 /** How a listing quoted in another currency is restated in USD. */
 export interface RiskConversion {
@@ -55,33 +49,12 @@ export function validateFxHistory(
   leg: FxLeg,
   now = new Date(),
 ): FxCloses {
-  if (response.status !== "success" || !Array.isArray(response.data) || response.data.length < 2)
-    throw new Error(FX_UNAVAILABLE);
-  if (response.stale || response.providerMeta?.stale) throw new Error(FX_STALE);
-  if (response.data.length > 1500) throw new Error(FX_UNAVAILABLE);
-  const today = now.toISOString().slice(0, 10);
-  const closes = new Map<string, number>();
-  for (const row of response.data) {
-    if (
-      !row ||
-      typeof row.date !== "string" ||
-      !Number.isFinite(Date.parse(row.date)) ||
-      !evidenceDay(row.date.slice(0, 10)) ||
-      !Number.isFinite(row.close) ||
-      row.close <= 0
-    )
-      throw new Error(FX_UNAVAILABLE);
-    const date = new Date(row.date).toISOString().slice(0, 10);
-    if (date >= today) continue;
-    const rate = leg.invert ? 1 / row.close : row.close;
-    const previous = closes.get(date);
-    if (previous != null && previous !== rate) throw new Error(FX_UNAVAILABLE);
-    closes.set(date, rate);
+  try {
+    return dailyFxCloses(response, leg, now);
+  } catch (error) {
+    if (error instanceof FxHistoryError) throw new Error(error.problem === "stale" ? FX_STALE : FX_UNAVAILABLE);
+    throw error;
   }
-  const dates = [...closes.keys()].sort();
-  const asOf = dates.at(-1);
-  if (!asOf || Date.parse(today) - Date.parse(asOf) > 7 * DAY_MS) throw new Error(FX_STALE);
-  return { currency: leg.currency, closes, first: dates[0]!, asOf };
 }
 
 /**
