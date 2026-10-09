@@ -81,6 +81,8 @@ const SEARCH = key("/", "search");
 const OPEN_SOURCE = key("o", "pen source");
 const POP_OUT = key("p", "op out");
 const STEP = key("←/→", " step");
+/** THEM and MEMB members: open them in RRG, CORR, SIW or RIPL, or save them as a watchlist. */
+const MEMBERS_MENU = key(".", " open members in, save as watchlist");
 const CHART_KEYS = [key("s", "eries"), key("i", "ndicators"), key("t", "imeframe"), key("f", "ormulas")];
 
 export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
@@ -663,14 +665,14 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
   MEMB: {
     summary: "ETF holdings with weights, shares, member returns, daily contributions and index changes. SPX and SPY use IVV holdings.",
     usage: ["MEMB", "MEMB SPY", "MEMB IWM"],
-    keys: [TABS, OPEN],
+    keys: [TABS, OPEN, MEMBERS_MENU],
     data: same("Dated fund holdings and partial delayed member returns. Nasdaq-100 is not covered."),
     bloomberg: ["MEMB", "MRR", "IMOV"],
   },
   THEM: {
     summary: "Curated thematic baskets with equal-weight returns and breadth. Open a theme to see its members, leaders and laggards. The Themes tab of BI.",
     usage: ["THEM", "THEM nuclear"],
-    keys: [TABS, OPEN, key("Esc", "back")],
+    keys: [TABS, OPEN, key("Esc", "back"), MEMBERS_MENU],
     data: same("Updated every 15 minutes"),
     bloomberg: ["IMAP", "custom baskets"],
   },
