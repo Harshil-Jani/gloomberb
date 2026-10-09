@@ -11,6 +11,7 @@ import type { PaneProps } from "../../../types/plugin";
 import { Box, type ScrollBoxRenderable } from "../../../ui";
 import { nextHeaderSort, type SortPreference } from "../../../utils/sort-values";
 import { isPlainArrowUp, stopSearchFocusNavigation } from "../../../utils/search-focus-navigation";
+import { useMembersMenu, type MemberListing } from "../shared/members-menu";
 import { cachedChanges, cachedFunds, cachedMembers, loadChanges, loadFunds, loadMembers } from "./client";
 import { canonicalFund, changeColumns, changeLabel, changeReason, COVERED, decimal, DEFAULT_SORT, isTab, memberColumns, memberRows, membersTitle, percent, TABS, type MembersTab } from "./model";
 
@@ -29,6 +30,10 @@ function Holdings({ fund, tab, width, height, focused, active }: ViewProps & { t
   const movers = tab === "movers";
   const rows = useMemo(() => memberRows(data?.members ?? [], tab, query, sort), [data, tab, query, sort]);
   const columns = useMemo(() => memberColumns(width, movers), [width, movers]);
+  const memberList = useMemo(() => data ? { title: fund, watchlistName: `${fund} members`,
+    members: rows.flatMap((row): MemberListing[] => isSectionedItemRow(row) && row.item.symbol
+      ? [{ symbol: row.item.symbol, name: row.item.name, sector: row.item.sector }] : []) } : null, [data, fund, rows]);
+  useMembersMenu("members:members-menu", memberList);
   useAutoRefresh(resource.updatedAt, () => { if (active) void resource.load(); });
   usePaneRefreshKey(() => void resource.reload(), { focused, enabled: active && !search.active });
   const info = useMemo<PaneFooterSegment[]>(() => {
