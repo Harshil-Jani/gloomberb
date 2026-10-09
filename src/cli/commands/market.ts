@@ -37,13 +37,23 @@ import { renderFundamentalsReport } from "./ticker";
 import { historyPriceDecimals, historyRows } from "../history-rows";
 import { CRYPTO_BOARD_HINT, quoteNotes } from "./crypto-hints";
 import { formatUtcTime } from "../../utils/utc-time";
+import { exportedFundamentals } from "../../utils/price-earnings";
+import { fundamentalsFreshness, quotesFreshness, rowsFreshness } from "../freshness";
+import {
+  barHistoryFreshness,
+  barResolutionFromDates,
+  REPORTED_DATA,
+  SEC_FILINGS,
+} from "../../plugins/builtin/shared/report-freshness";
 import {
   EXCHANGE_OPTION,
   listingHeading,
   listingIdentity,
   listingTitle,
   listingVenues,
+  loadForListing,
   loadListingQuote,
+  notTradedMessage,
   requireCliListing,
   type CliListing,
   type ListingIdentity,
@@ -379,16 +389,26 @@ async function runQuote(rawArgs: string[], ctx: Parameters<CliCommandDef["execut
     )));
     const targets: QuoteSubscriptionTarget[] = listings.map((listing) => ({ symbol: listing.request.symbol, exchange: listing.request.exchange }));
     const results = await market.dataProvider.getQuotesBatch(targets, { forceRefresh: ctx.cliOptions.refresh });
+    const listingOf = (result: QuoteBatchResult, index: number) => listings[targets.indexOf(result.target)] ?? listings[index]!;
+    // A listing with no quote on an exchange its symbol is not listed on says so; venues are only looked up for those.
+    const notTraded = await Promise.all(results.map((result, index) => (
+      result.quote ? null : notTradedMessage(listingOf(result, index), market)
+    )));
+    if (listings.length === 1 && notTraded[0]) ctx.fail(notTraded[0]);
     // Each row names its listing by key (SAN:EPA) and company, so the table needs no line above it.
     const data = results.map((result, index) => ({
       target: result.target,
-      listing: listingMetadata(listingIdentity(listings[targets.indexOf(result.target)] ?? listings[index]!, result.quote)),
+      listing: listingMetadata(listingIdentity(listingOf(result, index), result.quote)),
       quote: result.quote,
-      error: errorMessage(result.error),
+      error: notTraded[index] ?? errorMessage(result.error),
     }));
     // Text mode shows only "unavailable" in the cell; the JSON rows already carry each reason.
     const notes = ctx.cliOptions.format === "text" ? quoteNotes(data, { exchange }) : [];
-    ctx.printResult({ data, warnings: notes.length > 0 ? notes : undefined }, {
+    ctx.printResult({
+      data,
+      warnings: notes.length > 0 ? notes : undefined,
+      freshness: quotesFreshness(data.map((row) => row.quote)),
+    }, {
       rows: quoteRows,
       columns: commandName === "compare" ? compareColumns() : quoteColumns(),
     });
@@ -410,11 +430,12 @@ async function runHistory(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
     const listing = await requireCliListing(raw, requestedExchange, market, ctx);
     const { symbol, exchange } = listing.request;
     const context = { cacheMode: ctx.cliOptions.refresh ? "refresh" as const : "default" as const };
-    const loaded = market.dataProvider.getPriceHistoryWithMetadata
+    const load = () => market.dataProvider.getPriceHistoryWithMetadata
       ? market.dataProvider.getPriceHistoryWithMetadata(symbol, exchange, range, context)
       : market.dataProvider.getPriceHistory(symbol, exchange, range, context).then((points) => ({ points, resolution: null }));
     const [{ points, resolution }, quote] = await Promise.all([
-      loaded.catch((error) => failHistory(error, listing.key, ctx)),
+      loadForListing(listing, market, ctx, load, (loaded) => loaded.points.length === 0)
+        .catch((error) => failHistory(error, listing.key, ctx)),
       loadListingQuote(market.dataProvider, listing),
     ]);
     const identity = listingIdentity(listing, quote);
@@ -423,7 +444,13 @@ async function runHistory(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
     const price = (value: unknown) => typeof value === "number" ? value.toFixed(decimals) : "";
     // Intraday bars print in UTC, as the charts and time and sales label them, not the host zone.
     const intraday = data.some((row) => row.date.length > 10);
-    ctx.printResult({ data, metadata: { ...listingMetadata(identity), range, resolution } }, {
+    // A bar history: dated by its last bar, stale once bars of its size stop arriving.
+    const freshness = rowsFreshness(data, {
+      ...barHistoryFreshness(intraday ? null : barResolutionFromDates(data.map((row) => row.date))),
+      observedKey: "date",
+      oldest: null,
+    });
+    ctx.printResult({ data, metadata: { ...listingMetadata(identity), range, resolution }, freshness }, {
       heading: listingHeading(identity),
       columns: [
         intraday
@@ -448,9 +475,9 @@ async function runFinancials(rawArgs: string[], ctx: Parameters<CliCommandDef["e
   const raw = requireArg(args[0], `Usage: gloomberb ${commandName} <symbol>`, ctx);
   await withMarketData(ctx, async (market) => {
     const listing = await requireCliListing(raw, exchangeOption, market, ctx);
-    const financials = await market.dataProvider.getTickerFinancials(listing.request.symbol, listing.request.exchange, {
-      cacheMode: ctx.cliOptions.refresh ? "refresh" : "default",
-    });
+    const financials = await loadForListing(listing, market, ctx, () => market.dataProvider.getTickerFinancials(
+      listing.request.symbol, listing.request.exchange, { cacheMode: ctx.cliOptions.refresh ? "refresh" : "default" },
+    ));
     const identity = listingIdentity(listing, financials.quote);
     const data: FinancialsCliData = {
       symbol: listing.key,
@@ -459,7 +486,11 @@ async function runFinancials(rawArgs: string[], ctx: Parameters<CliCommandDef["e
       ...financials,
     };
     if (view !== "statements") {
-      ctx.printResult({ data }, { text: (financialsData) => renderFundamentalsReport(financialsData, view) });
+      ctx.printResult({
+        // JSON reads a multiple over a loss as null with its reason, never as a number.
+        data: { ...data, fundamentals: exportedFundamentals(data.fundamentals) },
+        freshness: fundamentalsFreshness(financials),
+      }, { text: () => renderFundamentalsReport(data, view) });
       return;
     }
     ctx.printResult({
@@ -469,9 +500,12 @@ async function runFinancials(rawArgs: string[], ctx: Parameters<CliCommandDef["e
         providerId: financials.quote?.providerId,
         annualStatements: financials.annualStatements.length,
         quarterlyStatements: financials.quarterlyStatements.length,
-        fundamentals: financials.fundamentals,
+        fundamentals: exportedFundamentals(financials.fundamentals),
         profile: financials.profile,
       },
+      freshness: rowsFreshness(financialStatementRows(data), {
+        ...REPORTED_DATA, basis: "financial statements", observedKey: "date", oldest: null,
+      }),
     }, {
       heading: listingHeading(identity),
       rows: financialStatementRows,
@@ -496,21 +530,25 @@ async function runNews(rawArgs: string[], ctx: Parameters<CliCommandDef["execute
   await withMarketData(ctx, async (market) => {
     const listing = args[0] ? await requireCliListing(args[0], exchangeOption, market, ctx) : null;
     const limit = ctx.cliOptions.limit ?? 20;
+    const loadNews = () => market.dataProvider.getNews({
+      feed: feed ?? (listing ? "ticker" : "latest"),
+      // Still set for news plugins that read the deprecated scope.
+      scope: listing ? "ticker" : "global",
+      ticker: listing?.request.symbol,
+      exchange: listing?.request.exchange || undefined,
+      limit,
+    });
     const [articles, quote] = await Promise.all([
-      market.dataProvider.getNews({
-        feed: feed ?? (listing ? "ticker" : "latest"),
-        // Still set for news plugins that read the deprecated scope.
-        scope: listing ? "ticker" : "global",
-        ticker: listing?.request.symbol,
-        exchange: listing?.request.exchange || undefined,
-        limit,
-      }),
+      listing ? loadForListing(listing, market, ctx, loadNews, (found) => found.length === 0) : loadNews(),
       listing ? loadListingQuote(market.dataProvider, listing) : null,
     ]);
     const identity = listing ? listingIdentity(listing, quote) : null;
     ctx.printResult({
       data: articles,
       metadata: { ticker: listing?.key ?? null, ...(identity ? listingMetadata(identity) : {}), feed: feed ?? null },
+      freshness: rowsFreshness(newsRows(articles), {
+        status: "not-a-feed", basis: "published stories", observedKey: "publishedAt", oldest: null,
+      }),
     }, {
       ...(identity ? { heading: listingHeading(identity) } : {}),
       rows: newsRows,
@@ -559,15 +597,20 @@ async function runFilings(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
     try {
       const context = identity?.name ? { listingName: identity.name } : undefined;
       const [filings, quote] = await Promise.all([
-        // A form filter searches every filing the service lists for the issuer, as the SEC pane does.
-        form
+        loadForListing(listing, market, ctx, () => form
+          // A form filter searches every filing the service lists for the issuer, as the SEC pane does.
           ? market.dataProvider.getSecFilings(symbol, SEC_FILING_FETCH_LIMIT, exchange, context)
             .then((all) => all.filter((filing) => filingFormMatches(filing.form, form)).slice(0, count))
           : market.dataProvider.getSecFilings(symbol, count, exchange, context),
+        (found) => found.length === 0),
         quotePromise,
       ]);
       const resolved = identity ?? listingIdentity(listing, quote);
-      ctx.printResult({ data: filings, metadata: { ...listingMetadata(resolved), ...(form ? { form } : {}) } }, {
+      ctx.printResult({
+        data: filings,
+        metadata: { ...listingMetadata(resolved), ...(form ? { form } : {}) },
+        freshness: rowsFreshness(filingRows(filings), { ...SEC_FILINGS, observedKey: "filingDate" }),
+      }, {
         heading: listingHeading(resolved),
         rows: filingRows,
         columns: FILING_COLUMNS,
@@ -613,7 +656,7 @@ async function printBeneficialOwners(
 ) {
   const { symbol, exchange } = listing.request;
   const [payload, holders, quote] = await Promise.all([
-    fetchBeneficialOwners(symbol, { form: beneficialRouteForm(form), history }),
+    loadForListing(listing, market, ctx, () => fetchBeneficialOwners(symbol, { form: beneficialRouteForm(form), history })),
     market.dataProvider.getHolders?.(symbol, exchange).catch(() => null) ?? null,
     loadListingQuote(market.dataProvider, listing),
   ]);
@@ -667,7 +710,11 @@ async function runHolders(
     const listing = await requireCliListing(raw, exchangeOption, market, ctx);
     if (form !== "13f") return printBeneficialOwners(listing, market, form, history, ctx);
     const [data, quote] = await Promise.all([
-      market.dataProvider.getHolders(listing.request.symbol, listing.request.exchange),
+      loadForListing(
+        listing, market, ctx,
+        () => market.dataProvider.getHolders(listing.request.symbol, listing.request.exchange),
+        (found) => found.holders.length === 0,
+      ),
       loadListingQuote(market.dataProvider, listing),
     ]);
     const identity = listingIdentity(listing, quote);
@@ -727,7 +774,7 @@ async function runAnalyst(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
   await withMarketData(ctx, async (market) => {
     const listing = await requireCliListing(raw, exchangeOption, market, ctx);
     const [data, quote] = await Promise.all([
-      market.dataProvider.getAnalystResearch(listing.request.symbol, listing.request.exchange),
+      loadForListing(listing, market, ctx, () => market.dataProvider.getAnalystResearch(listing.request.symbol, listing.request.exchange)),
       loadListingQuote(market.dataProvider, listing),
     ]);
     const identity = listingIdentity(listing, quote);
@@ -739,6 +786,9 @@ async function runAnalyst(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
         priceTarget: data.priceTarget,
         recommendations: data.recommendations,
       },
+      freshness: rowsFreshness(analystRows(data), {
+        ...REPORTED_DATA, basis: "analyst ratings", observedKey: "date", oldest: null,
+      }, { stale: data.stale === true }),
     }, {
       heading: listingHeading(identity),
       rows: analystRows,
@@ -761,11 +811,17 @@ async function runEvents(rawArgs: string[], ctx: Parameters<CliCommandDef["execu
   await withMarketData(ctx, async (market) => {
     const listing = await requireCliListing(raw, exchangeOption, market, ctx);
     const [data, quote] = await Promise.all([
-      market.dataProvider.getCorporateActions(listing.request.symbol, listing.request.exchange),
+      loadForListing(listing, market, ctx, () => market.dataProvider.getCorporateActions(listing.request.symbol, listing.request.exchange)),
       loadListingQuote(market.dataProvider, listing),
     ]);
     const identity = listingIdentity(listing, quote);
-    ctx.printResult({ data, metadata: listingMetadata(identity) }, {
+    ctx.printResult({
+      data,
+      metadata: listingMetadata(identity),
+      freshness: rowsFreshness(corporateActionRows(data), {
+        ...REPORTED_DATA, basis: "corporate actions", observedKey: "date", oldest: null,
+      }),
+    }, {
       heading: listingHeading(identity),
       rows: corporateActionRows,
       columns: [
@@ -787,10 +843,15 @@ async function runOptions(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
     const { symbol, exchange } = listing.request;
     const expirationDate = expiration == null ? undefined : Number(expiration);
     const quotePromise = loadListingQuote(market.dataProvider, listing);
-    const result = await market.dataProvider.getCachedQuery?.("getOptionsChain", [symbol, exchange, expirationDate, undefined])
-      .load({ force: ctx.cliOptions.refresh });
-    const chain = result?.value ?? await market.dataProvider.getOptionsChain(symbol, exchange, expirationDate, {
-      cacheMode: ctx.cliOptions.refresh ? "refresh" : "default",
+    const { result, chain } = await loadForListing(listing, market, ctx, async () => {
+      const cached = await market.dataProvider.getCachedQuery?.("getOptionsChain", [symbol, exchange, expirationDate, undefined])
+        .load({ force: ctx.cliOptions.refresh });
+      return {
+        result: cached,
+        chain: cached?.value ?? await market.dataProvider.getOptionsChain(symbol, exchange, expirationDate, {
+          cacheMode: ctx.cliOptions.refresh ? "refresh" : "default",
+        }),
+      };
     });
     const identity = listingIdentity(listing, await quotePromise);
     // A failed refresh falls back to the stored chain, which can be days old.
@@ -799,7 +860,13 @@ async function runOptions(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
         + (chain.asOf ? ` (last trade ${chain.asOf})` : "");
     const sessionWarning = refreshWarning ? null : priorSessionChainWarning(chain, identity.exchange, Date.now());
     const warnings = refreshWarning ? [refreshWarning] : sessionWarning ? [sessionWarning] : undefined;
-    ctx.printResult({ data: chain, metadata: { ...listingMetadata(identity), expirations: chain.expirationDates }, warnings }, {
+    // Dated by the chain's last trade; a chain that failed to refresh is the stored one, stale.
+    const freshness = rowsFreshness([], { asOf: chain.asOf ?? null }, {
+      ...(chain.dataSource ? { dataSource: chain.dataSource } : {}),
+      ...(chain.delayMinutes != null ? { delayMinutes: chain.delayMinutes } : {}),
+      stale: refreshWarning != null,
+    });
+    ctx.printResult({ data: chain, metadata: { ...listingMetadata(identity), expirations: chain.expirationDates }, warnings, freshness }, {
       heading: listingHeading(identity),
       rows: optionRows,
       columns: [
@@ -859,8 +926,15 @@ async function runEarnings(rawArgs: string[], ctx: Parameters<CliCommandDef["exe
     const listings = await Promise.all(symbols.map((symbol) => requireCliListing(
       symbol, exchangeOption, services, ctx, { ownExchangeWins: symbols.length > 1 },
     )));
-    const events = await services.dataProvider.getEarningsCalendar(listings.map((listing) => listing.key));
-    ctx.printResult({ data: events }, {
+    const events = await loadForListing(
+      listings, services, ctx,
+      () => services.dataProvider.getEarningsCalendar(listings.map((listing) => listing.key)),
+      (found) => found.length === 0,
+    );
+    ctx.printResult({
+      data: events,
+      freshness: rowsFreshness(earningsRows(events), { status: "not-a-feed", basis: "calendar", observedKey: "date", oldest: null }),
+    }, {
       rows: earningsRows,
       columns: [
         { key: "date", header: "Date" },

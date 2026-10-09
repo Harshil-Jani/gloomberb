@@ -3,7 +3,7 @@ import type { CliCommandDef } from "../../types/plugin";
 import { withCliServices } from "../context";
 import { formatCompact } from "../../utils/format";
 import {
-  fetchScreener,
+  fetchScreenerResult,
   fetchTrending,
   MARKET_SUMMARY_SYMBOLS,
   rankScreenerQuotes,
@@ -13,13 +13,17 @@ import { formatMoverPrice, moverReferencePrice } from "../../plugins/builtin/mar
 import { loadCalendar, matchesCountry, matchesImpact, type CountryFilter, type ImpactFilter } from "../../plugins/builtin/econ/calendar-model";
 import { isoDate, requireArg, takeOption } from "./command-utils";
 import { buildCorrelationSeries } from "../../plugins/builtin/correlation/matrix/model";
-import { correlateDailyCloses } from "../../plugins/builtin/correlation/compute";
+import { alignDailyCloses, correlateDailyCloses } from "../../plugins/builtin/correlation/compute";
+import { mixedSessionCloseNote } from "../../market-data/market/session-close-note";
 import { CORRELATION_RETURN_BASIS, loadCorrelationHistory } from "../../plugins/builtin/correlation/history";
-import { EXCHANGE_OPTION, requireCliListing, type CliListing } from "../listing-arg";
+import { EXCHANGE_OPTION, listingIdentity, loadForListing, loadListingQuote, requireCliListing, type CliListing } from "../listing-arg";
 import { CLI_COMMAND_GROUPS } from "../help";
 import { formatChangePercentCell, formatCompactCell } from "../helpers";
 import { WORLD_INDICES } from "../../plugins/builtin/world-indices/indices";
 import { getSectorCollection, SECTOR_COLLECTIONS } from "../../plugins/builtin/sectors/sector-data";
+import { DAILY_CLOSES } from "../../plugins/builtin/shared/report-freshness";
+import { newestReportTime, oldestReportTime } from "../../utils/utc-time";
+import { quotesFreshness, rowsFreshness } from "../freshness";
 
 // Batch quotes often omit names for indices and ETFs; these baskets are fixed, so name them here.
 const BASKET_NAMES = new Map<string, string>([
@@ -77,18 +81,17 @@ async function runMoverCommand(args: string[], ctx: Parameters<CliCommandDef["ex
         trending.map(({ symbol }) => ({ symbol, exchange: "" })),
         { forceRefresh: ctx.cliOptions.refresh },
       );
-      ctx.printResult({ data: quoteRows(results), metadata: { category } }, {
+      ctx.printResult({ data: quoteRows(results), metadata: { category }, freshness: quotesFreshness(results.map((result) => result.quote)) }, {
         textColumns: MOVER_COLUMNS.filter((column) => column.key !== "volume"),
       });
     });
     return;
   }
 
-  const rows = rankScreenerQuotes(
-    category,
-    await fetchScreener(category, limit, undefined, { forceRefresh: ctx.cliOptions.refresh }),
-  );
-  ctx.printResult({ data: rows }, {
+  const screener = await fetchScreenerResult(category, limit, undefined, { forceRefresh: ctx.cliOptions.refresh });
+  const rows = rankScreenerQuotes(category, screener.data);
+  // A screener snapshot, as the MOST report reads it: delayed, each row dated by its own last price.
+  ctx.printResult({ data: rows, freshness: rowsFreshness(rows, { status: "delayed" }, { stale: screener.stale === true }) }, {
     columns: [
       ...MOVER_COLUMNS.slice(0, 4),
       { key: "volume", header: "Volume", align: "right", value: (row) => formatCompact(Number(row.volume)) },
@@ -103,7 +106,7 @@ async function runQuoteBasket(symbols: string[], ctx: Parameters<CliCommandDef["
       symbols.map((symbol) => ({ symbol, exchange: "" })),
       { forceRefresh: ctx.cliOptions.refresh },
     );
-    ctx.printResult({ data: quoteRows(results), metadata }, {
+    ctx.printResult({ data: quoteRows(results), metadata, freshness: quotesFreshness(results.map((result) => result.quote)) }, {
       columns: [
         { key: "symbol", header: "Symbol" },
         { key: "name", header: "Name" },
@@ -143,7 +146,11 @@ async function runEcon(args: string[], ctx: Parameters<CliCommandDef["execute"]>
         forecast: event.forecast ?? "",
         prior: event.prior ?? "",
       }));
-    ctx.printResult({ data: rows, metadata: { country, impact } }, {
+    ctx.printResult({
+      data: rows,
+      metadata: { country, impact },
+      freshness: rowsFreshness(rows, { status: "not-a-feed", basis: "calendar", observedKey: "date", oldest: null }),
+    }, {
       columns: [
         // Text shows both halves of the event timestamp in UTC, never the host's zone; exports keep the source values.
         { key: "date", header: "Date", format: (value) => utcDateTimePart(value, "date") },
@@ -166,7 +173,11 @@ async function runFred(rawArgs: string[], ctx: Parameters<CliCommandDef["execute
   const seriesId = requireArg(args[0]?.toUpperCase(), "Usage: gloomberb fred <series-id> [--start <yyyy-mm-dd>]", ctx);
   const data = await apiClient.getCloudFredSeries(seriesId, { startDate, sortOrder });
   const rows = data.observations.slice(0, ctx.cliOptions.limit ?? data.observations.length);
-  ctx.printResult({ data: rows, metadata: { info: data.info, seriesId, startDate, sortOrder } }, {
+  ctx.printResult({
+    data: rows,
+    metadata: { info: data.info, seriesId, startDate, sortOrder },
+    freshness: rowsFreshness(rows, { source: "FRED", status: "not-a-feed", basis: "published statistics", observedKey: "date", oldest: null }),
+  }, {
     textColumns: [
       { key: "date", header: "Date" },
       { key: "value", header: data.info?.units ? `Value (${data.info.units})` : "Value", align: "right" },
@@ -189,7 +200,11 @@ async function runYieldCurve(args: string[], ctx: Parameters<CliCommandDef["exec
       title: data.info?.title ?? "",
     };
   }));
-  ctx.printResult({ data: results, metadata: { startDate } }, {
+  ctx.printResult({
+    data: results,
+    metadata: { startDate },
+    freshness: rowsFreshness(results, { source: "FRED", status: "not-a-feed", basis: "daily Treasury yields", observedKey: "date" }),
+  }, {
     textColumns: [
       { key: "tenor", header: "Tenor", value: (row) => YIELD_TENORS[String(row.seriesId)] ?? row.seriesId },
       { key: "value", header: "Yield %", align: "right" },
@@ -216,11 +231,33 @@ async function runCorrelation(rawArgs: string[], ctx: Parameters<CliCommandDef["
     // assets correlate spuriously, often with the opposite sign.
     const loadSeries = async (listing: CliListing) => buildCorrelationSeries(
       listing.key,
-      await loadCorrelationHistory(services.dataProvider, listing.request.symbol, listing.request.exchange, "1Y"),
+      await loadForListing(
+        listing, services, ctx,
+        () => loadCorrelationHistory(services.dataProvider, listing.request.symbol, listing.request.exchange, "1Y"),
+      ),
     );
     const [leftSeries, rightSeries] = await Promise.all([loadSeries(leftListing!), loadSeries(rightListing!)]);
     const { correlation, sampleSize } = correlateDailyCloses(leftSeries.prices, rightSeries.prices);
-    ctx.printResult({ data: [{ left, right, samples: sampleSize, correlation }], metadata: { range: "1Y", basis: CORRELATION_RETURN_BASIS } }, {
+    // A bare symbol names no exchange; its quote says where it lists, which sets when its daily close is taken.
+    const [leftQuote, rightQuote] = await Promise.all([leftListing!, rightListing!].map((listing) => loadListingQuote(services.dataProvider, listing)));
+    const sessionNote = mixedSessionCloseNote(
+      { symbol: leftListing!.symbol, exchange: listingIdentity(leftListing!, leftQuote).exchange, label: left },
+      { symbol: rightListing!.symbol, exchange: listingIdentity(rightListing!, rightQuote).exchange, label: right },
+      alignDailyCloses(leftSeries.prices, rightSeries.prices).at(-1)?.dateKey,
+    );
+    // The daily closes used, dated by the newest last bar as the CORR report is.
+    const lastBars = [leftSeries, rightSeries].map((series) => series.prices.at(-1)?.dateKey);
+    const freshness = rowsFreshness([], {
+      ...DAILY_CLOSES,
+      asOf: newestReportTime(lastBars),
+      oldest: oldestReportTime(lastBars),
+    });
+    ctx.printResult({
+      data: [{ left, right, samples: sampleSize, correlation }],
+      ...(sessionNote ? { warnings: [sessionNote] } : {}),
+      metadata: { range: "1Y", basis: CORRELATION_RETURN_BASIS },
+      freshness,
+    }, {
       layout: "record",
       textColumns: [
         { key: "left", header: "Symbols", value: (row) => `${row.left} / ${row.right}` },

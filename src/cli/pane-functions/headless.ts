@@ -1,4 +1,5 @@
 import { getSharedRegistry } from "../../plugins/registry";
+import { findCachedPortfolioAccount } from "../../plugins/builtin/portfolio-list/cached-account";
 import { parsePublicTickerKey } from "../../utils/exchanges";
 import { apiClient } from "../../api-client";
 import type { MarketContext } from "../types";
@@ -151,7 +152,9 @@ async function loadHeadlessPaneModel(
  */
 export async function loadResolvedHeadlessPaneModel(
   resolved: ResolvedPaneFunction,
-  context: Pick<MarketContext, "config" | "store" | "refresh"> & { dataProvider: HeadlessPaneContext["marketData"] },
+  context: Pick<MarketContext, "config" | "store" | "refresh"> & Partial<Pick<MarketContext, "persistence">> & {
+    dataProvider: HeadlessPaneContext["marketData"];
+  },
   rawArgument: string,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<LoadedHeadlessPaneModel> {
@@ -170,7 +173,7 @@ export async function loadResolvedHeadlessPaneModel(
       const portfolio = context.config.portfolios.find(row => row.id === id);
       if (!portfolio) return null;
       const tickers = (await context.store.loadAllTickers()).filter(row => row.metadata.portfolios.includes(id));
-      return { portfolio, tickers };
+      return { portfolio, tickers, account: findCachedPortfolioAccount(context.config, portfolio, context.persistence?.resources) };
     },
     async resolveWatchlist(id) {
       if (!context.config.watchlists.some(row => row.id === id)) return null;
@@ -246,6 +249,7 @@ export function serializeHeadlessPaneResult(
 ): Record<string, unknown> {
   const common = {
     ...(result.errors ? { errors: result.errors } : {}),
+    ...(result.notes?.length ? { notes: result.notes } : {}),
     ...(result.metadata ? { metadata: result.metadata } : {}),
   };
   switch (definition.shape) {
@@ -426,6 +430,13 @@ function reportTitle(
   return definition.describe ?? fallback;
 }
 
+/** One message stays on the label's line; several each get a line of their own, so none runs into the next. */
+function renderMessages(label: string, messages: readonly string[]): string[] {
+  return messages.length === 1
+    ? [cliStyles.warning(`${label}: ${messages[0]}`)]
+    : [cliStyles.warning(`${label}:`), ...messages.map((message) => `  ${message}`)];
+}
+
 /**
  * The text form of every headless report. It always ends with the source,
  * as-of and status line, so no pane can leave it out; a pane can only make it
@@ -467,7 +478,8 @@ export function renderHeadlessPaneText(
       return _exhaustive;
     }
   }
-  if (result.errors?.length) lines.push("", cliStyles.warning(`Errors: ${result.errors.join(" ")}`));
+  if (result.notes?.length) lines.push("", ...renderMessages("Notes", result.notes));
+  if (result.errors?.length) lines.push("", ...renderMessages("Errors", result.errors));
   return [lines.join("\n").trimEnd(), "", cliStyles.muted(formatFreshnessLine(freshness))].join("\n");
 }
 
