@@ -18,6 +18,13 @@ const outputFiles = await files(root);
 /** Desktop, fork, and native-host code that must never reach a browser bundle. */
 const NATIVE_OR_FORK = /kohor\.st|__GLOOM_CLOUD_HOSTED|\/_gloomberb\/rpc|receiveMessageFromBun|__electrobun/;
 /**
+ * Browser shims for Node's zlib and crypto, about 660 KB between them. They get
+ * bundled when Node-only code (self-update) reaches those modules through
+ * import() or require(), even with the specifier held in a variable; it has to
+ * use process.getBuiltinModule, which the bundler does not follow.
+ */
+const NODE_POLYFILL = /Z_BUF_ERROR|createDiffieHellman|pbkdf2Sync/;
+/**
  * Providers the web build has no path to.
  *
  * A host that sends no CORS headers can still ship here: that is how every
@@ -46,6 +53,7 @@ for (const path of outputFiles) {
   const content = await readFile(path, "utf8");
   if (/sourceMappingURL=/.test(content)) failures.push(`${name}: source map reference`);
   if (NATIVE_OR_FORK.test(content)) failures.push(`${name}: forbidden native or fork code`);
+  if (NODE_POLYFILL.test(content)) failures.push(`${name}: bundled Node zlib or crypto polyfill`);
   if (UNSUPPORTED_PROVIDER?.test(content)) failures.push(`${name}: unsupported provider code`);
   if (name.startsWith("assets/share/") && /\/telemetry\/(?:attention|errors|usage)/.test(content)) {
     failures.push(`${name}: authenticated telemetry client in a public share bundle`);
