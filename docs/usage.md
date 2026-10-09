@@ -228,7 +228,7 @@ The level tool (`Shift+H`, or `═` in the chart toolbar) draws horizontal price
 | `RRG` / `GRR` | Weekly relative rotation of sectors or a watchlist against a benchmark, with dated trails |
 | `BT <ticker>` / `BTST <ticker>` | Backtest a long-only indicator rule on daily history against buy-and-hold |
 | `EQS` | Equity screener over the stored Cloud universe: valuation, growth, margins, short interest, insider and 13F criteria, saved screens and export |
-| `PERP [market]` | Pro per-market funding, open interest, premium history and evidence; latest-value free preview |
+| `PERP [market]` | Pro per-market funding, open interest, premium history and evidence; latest-value free preview; BTC without a market |
 | `CRYP` | Top crypto assets by market cap with live prices, 7D, 30D and 1Y returns, 24h volume and market cap; stablecoins on their own tab |
 | `ECO` | Economic events and releases |
 | `ECST [statistic]` | Economic statistics: inflation, labour, growth, consumer, housing, rates |
@@ -397,6 +397,10 @@ Human-readable output is the default: tables fit the terminal width, and a singl
 Headless chart text includes a Unit column when a series supplies one; values keep that unit's scale (for example, `2.7 %` versus `270 bp`). DVD text labels cash growth, CAGR and earnings payout as percentages, while their structured `value` fields remain fractional ratios (`0.03` means 3%). `fn --csv` preserves the report fields and encodes nested sections or series as JSON cells, retaining raw numeric values alongside any separate display strings; it does not flatten or rescale those observations.
 
 CLI text prints every time in UTC with the zone named (`2026-10-09 00:08 UTC`); a date alone stays a date. JSON keeps the raw ISO or epoch values.
+
+`gloomberb fn PERP` and `fn CTM` without an argument start with a line saying which market they show, such as `Showing BTC. Try fn PERP ETH.`; `--json` carries it in `data.metadata.notices` and `data.metadata.defaultArgument`. `fn PERP`, `fn COT` and `fn CTM` fail on a name nothing matches and suggest ones that work.
+
+With `--require-bot-safe`, a report or screenshot that is incomplete because part of it needs Gloom Cloud Pro, or a sign-in, says so instead of a generic message.
 
 In short DVD panes, the summary scrolls separately so cash history stays visible. Page Up/Down scroll the summary; arrows or j/k navigate history. The mouse wheel scrolls the region under the pointer.
 
