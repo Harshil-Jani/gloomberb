@@ -68,6 +68,27 @@ describe("cloud quote wire values", () => {
   );
 });
 
+test("a previous close far below the 52-week low drops the move it implies, and a real gap keeps it", () => {
+  const base: CloudQuotePayload = {
+    symbol: "000001.SS", currency: "CNY", price: 3813.79, lastUpdated: 1,
+    providerId: "gloomberb-cloud", dataSource: "delayed", low52w: 3741.11,
+  };
+  // Served live on 2026-10-09: the close implies +1,859,927,904%.
+  const impossible = mapQuote({ ...base, previousClose: 0.00020505048, change: 3813.79, changePercent: 1859927904 });
+  expect(impossible.change).toBeNaN();
+  expect(impossible.changePercent).toBeNaN();
+  expect("previousClose" in impossible).toBe(false);
+  expect(mapQuote({ ...base, previousClose: 37.4, change: 3776.39, changePercent: 10097 }).change).toBeNaN();
+
+  // Just inside the margin, a stale 52-week low or an unadjusted split, and
+  // with no 52-week low there is nothing to judge against.
+  expect(mapQuote({ ...base, previousClose: 37.42, change: 3776.37, changePercent: 10092 }).previousClose).toBe(37.42);
+  const pennyGap = mapQuote({ ...base, symbol: "PNY", currency: "USD", price: 5, low52w: 0.4, previousClose: 0.5, change: 4.5, changePercent: 900 });
+  expect(pennyGap).toMatchObject({ previousClose: 0.5, change: 4.5, changePercent: 900 });
+  const { low52w: _omitted, ...withoutRange } = base;
+  expect(mapQuote({ ...withoutRange, previousClose: 0.0002, change: 3813.79, changePercent: 1 }).change).toBe(3813.79);
+});
+
 describe("mapCloudFinancials", () => {
   test("divides GBp history with the raw quote currency, not the normalized GBP quote", () => {
     const financials = mapCloudFinancials({
