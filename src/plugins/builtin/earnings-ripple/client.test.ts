@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { EarningsCalendarQuery, EarningsCalendarReport } from "../../../api-client/earnings";
 import type { SupplyChainPayload } from "../../../api-client/supply-chain";
-import type { GraphOptions, GraphPayload } from "../../../api-client/supply-chain-graph";
+import { DEFAULT_GRAPH_OPTIONS, type GraphOptions, type GraphPayload } from "../../../api-client/supply-chain-graph";
+import type { PaneTemplateContext } from "../../../types/plugin";
+import { graphOptions } from "../supply-chain/graph-client";
+import { supplyChainModule } from "../supply-chain/index";
 import { graphPayload } from "../supply-chain/test-fixture-graph";
-import { cachedRippleSources, loadRipple } from "./client";
+import { cachedRippleSources, loadRipple, rippleRouteSettings } from "./client";
 
 const link = (role: "customer" | "supplier") => (ticker: string) => ({
   role, counterparty: { ticker, name: ticker, exchange: "NASDAQ", aggregate: false },
@@ -131,7 +134,7 @@ describe("loadRipple", () => {
     const sources = { supplyChain: async (symbol: string) => chain(symbol, ["AAPL"]), calendar: calendarOf([report("AAPL"), report("X")]) };
     const direct = await loadRipple(holdings, sources, NOW);
     // The pane builds a free account's sources without a graph at all.
-    expect("graph" in cachedRippleSources("anonymous:preview", false, false)).toBe(false);
+    expect("graph" in cachedRippleSources("anonymous:preview", false, "off")).toBe(false);
     const free = await loadRipple(holdings, sources, NOW, { secondHop: true });
     expect([free.rows, free.secondHop]).toEqual([direct.rows, { rows: [], failures: [], truncated: [], locked: true }]);
 
@@ -158,5 +161,14 @@ describe("loadRipple", () => {
     expect(snapshot.secondHop?.truncated).toEqual([{ symbol: "MSFT", reasons: ["node_limit"] }]);
     expect(snapshot.secondHop?.locked).toBe(false);
     expect(snapshot.secondHop?.rows.map((row) => [row.holding, row.company])).toEqual([["MSFT", "AMAT"], ["NVDA", "ASML"]]);
+  });
+  test("a 2 hops row opens SPLC Path from the holding to the company, on RIPL's query in the row's direction", async () => {
+    const template = supplyChainModule.paneTemplates!.find((entry) => entry.id === "supply-chain-pane")!;
+    const context = { activeTicker: null } as unknown as PaneTemplateContext;
+    const route = await template.createInstance!(context, { symbol: "NVDA", values: rippleRouteSettings({ company: "ASML", link: "supplier" }) });
+    expect(route).toMatchObject({ binding: { kind: "fixed", symbol: "NVDA" }, settings: { tab: "path", to: "ASML" } });
+    expect(graphOptions(route!.settings!)).toEqual({ ...DEFAULT_GRAPH_OPTIONS, depth: 2, direction: "upstream", roles: ["customer", "supplier"], tiers: ["structured", "primary"] });
+    // Its own pane, so the holding's SPLC keeps the view it was on.
+    expect(route!.instanceId).not.toBe((await template.createInstance!(context, { symbol: "NVDA" }))!.instanceId);
   });
 });

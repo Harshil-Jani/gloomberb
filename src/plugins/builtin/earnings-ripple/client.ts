@@ -5,7 +5,7 @@ import { errorMessage } from "../../../utils/errors";
 import { addDays, newYorkToday } from "../earnings/board-model";
 import { loadEarningsBoard } from "../earnings/client";
 import { loadSupplyChain } from "../supply-chain/client";
-import { loadGraph } from "../supply-chain/graph-client";
+import { cachedGraph, loadGraph } from "../supply-chain/graph-client";
 import { projectRipple, projectSecondHop, rippleCompanyTickers, RIPPLE_DAYS, secondHopLinks, type RippleRow, type SecondHopRow } from "./model";
 
 export interface RippleSources {
@@ -23,6 +23,16 @@ export interface RippleSources {
  * partner routes cannot use up the 50 companies a direction returns.
  */
 const RIPPLE_GRAPH_OPTIONS: GraphOptions = { ...DEFAULT_GRAPH_OPTIONS, depth: 2, roles: ["customer", "supplier"], tiers: ["structured", "primary"] };
+
+/**
+ * What opens SPLC's Path view on a 2 hops row: from the holding to the company
+ * that reports, on RIPL's own query in the row's direction, so the route the
+ * row shows is the one Path lists.
+ */
+export function rippleRouteSettings(row: Pick<SecondHopRow, "company" | "link">): Record<string, string> {
+  return { tab: "path", to: row.company, depth: String(RIPPLE_GRAPH_OPTIONS.depth), direction: row.link === "supplier" ? "upstream" : "downstream",
+    roles: RIPPLE_GRAPH_OPTIONS.roles.join(","), tiers: RIPPLE_GRAPH_OPTIONS.tiers.join(",") };
+}
 
 interface Failure { symbol: string; error: string }
 
@@ -43,16 +53,21 @@ export interface RippleSnapshot {
   to: string;
 }
 
-/** The same caches SPLC and ERN fill, so opening either pane after this costs nothing. */
-export function cachedRippleSources(accessKey: string, force = false, graph = false): RippleSources & { staleFlags: boolean[] } {
+/**
+ * The same caches SPLC and ERN fill, so opening either pane after this costs
+ * nothing. `graph`: no graph source, graphs read through the cache, or graphs
+ * from the cache alone (fetched only when missing) while 2 hops is not on screen.
+ */
+export function cachedRippleSources(accessKey: string, force = false, graph: "off" | "load" | "cached" = "off"): RippleSources & { staleFlags: boolean[] } {
   const staleFlags: boolean[] = [];
   return {
     staleFlags,
     supplyChain: async (symbol) => { const result = await loadSupplyChain(symbol, accessKey, force); staleFlags.push(result.stale); return result.payload; },
     calendar: async (query) => { const result = await loadEarningsBoard(query, force); staleFlags.push(result.stale); return result.payload; },
     // Cached by the full query, apart from SPLC Graph's default one.
-    ...(graph ? { graph: async (symbol: string, options: GraphOptions) => {
-      const result = await loadGraph(symbol, "", options, accessKey, force); staleFlags.push(result.stale); return result.payload;
+    ...(graph !== "off" ? { graph: async (symbol: string, options: GraphOptions) => {
+      const cached = graph === "cached" ? cachedGraph(symbol, "", options, accessKey) : null;
+      const result = cached ?? await loadGraph(symbol, "", options, accessKey, force); staleFlags.push(result.stale); return result.payload;
     } } : {}),
   };
 }

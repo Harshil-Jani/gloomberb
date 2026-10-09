@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataTableView, EmptyState, PaneStatusBody, usePaneFooter, usePaneNoticeFooter, usePaneTabs,
   type DataTableCell, type DataTableColumn, type PaneHint } from "../../../components";
 import { usePaneRefreshKey } from "../../../components/data-table/table-pane";
@@ -12,7 +12,7 @@ import { displayWidth } from "../../../utils/format";
 import { CLOUD_PLAN_KEY, useCloudUpgradeAction } from "../shared/cloud-upgrade";
 import { UpgradeLabel } from "../shared/locked-rows";
 import { useResearchCloudSession } from "../shared/research-cloud-session";
-import { cachedRippleSources, loadRipple } from "./client";
+import { cachedRippleSources, loadRipple, rippleRouteSettings } from "./client";
 import { hopLabel, revenueOwner, RIPPLE_DAYS, type RippleRow, type SecondHopRow } from "./model";
 
 /** Calls per refresh stay bounded: one disclosure request per holding, plus one graph request per holding on the second hop. */
@@ -145,11 +145,15 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
   const secondHop = tab === "two-hop";
   // A free account's graph stops at one hop, so it makes no graph requests and its second tab reuses the first load.
   // Once a Pro account opens 2 hops the graph stays in the load, so going back and forth between tabs never reloads.
+  // A refresh on 1 hop reads the graphs from the cache instead of asking for them again.
   const [graphOpened, setGraphOpened] = useState(false);
   useEffect(() => { if (secondHop && access.hasProAccess) setGraphOpened(true); }, [secondHop, access.hasProAccess]);
   const graphHop = access.hasProAccess && (secondHop || graphOpened);
-  const loader = useCallback((force: boolean) => loadRipple(holdings, cachedRippleSources(accessKey, force, graphHop), undefined, { secondHop: graphHop }),
-    [holdingsKey, accessKey, graphHop]);
+  const secondHopShown = useRef(secondHop);
+  secondHopShown.current = secondHop;
+  const loader = useCallback((force: boolean) => loadRipple(holdings,
+    cachedRippleSources(accessKey, force, !graphHop ? "off" : secondHopShown.current ? "load" : "cached"), undefined, { secondHop: graphHop }),
+  [holdingsKey, accessKey, graphHop]);
   const ripple = useAsyncResource(holdings.length ? loader : null);
   useAutoRefresh(ripple.updatedAt, ripple.load);
   usePaneRefreshKey(() => { void ripple.reload(); }, { focused });
@@ -173,20 +177,23 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
     // The graph returns at most 50 companies per direction, so a large holding's list can be cut short.
     ...(second?.truncated.length ? [`Graph search capped for ${second.truncated.map((entry) => entry.symbol).join(", ")}; some companies two hops away may be missing`] : []),
   ] });
-  const openSupply = useCallback((row: { holding: string }) => createPaneFromTemplate("supply-chain-pane", { symbol: row.holding }), [createPaneFromTemplate]);
+  const openSupply = useCallback((row: RippleRow) => createPaneFromTemplate("supply-chain-pane", { symbol: row.holding }), [createPaneFromTemplate]);
+  // SPLC's own table does not reach a company two hops away; its Path view shows the row's route.
+  const openRoute = useCallback((row: SecondHopRow) => createPaneFromTemplate("supply-chain-pane", { symbol: row.holding, values: rippleRouteSettings(row) }),
+    [createPaneFromTemplate]);
   usePaneFooter("earnings-ripple", () => {
     const hints: PaneHint[] = [
-      ...(current ? [
-        { id: "supply", key: "s", label: "upply chain", onPress: () => openSupply(current) },
-        { id: "earnings", key: "e", label: "arnings", onPress: () => createPaneFromTemplate("earnings-calendar-pane", { arg: current.company }) },
-      ] : []),
+      ...(secondHop && selectedSecond ? [{ id: "supply", key: "s", label: "upply chain", title: `Supply chain path from ${selectedSecond.holding} to ${selectedSecond.company}`,
+        onPress: () => openRoute(selectedSecond) }]
+        : !secondHop && selected ? [{ id: "supply", key: "s", label: "upply chain", onPress: () => openSupply(selected) }] : []),
+      ...(current ? [{ id: "earnings", key: "e", label: "arnings", onPress: () => createPaneFromTemplate("earnings-calendar-pane", { arg: current.company }) }] : []),
       ...((secondHop ? locked : truncated.length) ? [{ id: "upgrade", key: CLOUD_PLAN_KEY, label: "upgrade", title: "Upgrade to Pro", onPress: openUpgrade }] : []),
     ];
     return { info: [
       ...(ripple.loading ? [{ id: "loading", parts: [{ text: secondHop && graphHop ? "loading supply chain graph" : "loading disclosures", tone: "muted" as const }] }] : []),
       ...(ripple.data?.stale ? [{ id: "stale", parts: [{ text: "stale", tone: "warning" as const }] }] : []),
     ], hints };
-  }, [ripple.loading, ripple.data?.stale, current, secondHop, graphHop, locked, openSupply, createPaneFromTemplate, truncated.length, openUpgrade]);
+  }, [ripple.loading, ripple.data?.stale, current, selected, selectedSecond, secondHop, graphHop, locked, openSupply, openRoute, createPaneFromTemplate, truncated.length, openUpgrade]);
 
   const secondLayout = useMemo(() => secondHopLayout(width, secondRows), [width, secondRows]);
   const firstHopWidth = secondLayout.firstHopWidth;
@@ -207,7 +214,7 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
           ? <DataTableView<SecondHopRow> focused={focused} columns={secondLayout.columns} items={secondRows} rootWidth={width} rootHeight={bodyHeight}
             getItemKey={(row) => row.id} emptyStateTitle="No reports." sortColumnId={null} sortDirection="asc"
             selection={{ kind: "id", selectedId: selectedSecond?.id ?? null, getId: (row) => row.id, onChange: setSelectedSecondId }}
-            onActivate={openSupply}
+            onActivate={openRoute}
             getExportMetadata={() => [...windowMeta(), ["share per hop", "percent of the reporting company's revenue unless another basis is named, holding to via, then via to the company"]]}
             renderCell={renderSecondCell} />
           : <DataTableView<RippleRow> focused={focused} columns={COLUMNS} items={rows} rootWidth={width} rootHeight={bodyHeight}

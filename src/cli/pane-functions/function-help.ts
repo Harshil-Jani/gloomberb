@@ -294,7 +294,7 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
   RIPL: {
     summary: "Which of my holdings are tied to a company that reports soon? Customers your holdings name in their filings, and suppliers whose filings name your holdings, with the disclosed revenue share, by report date. With Pro, the 2 hops tab adds a supplier's supplier or a customer's customer, the company in between and each hop's share.",
     usage: ["RIPL", "RIPL CRUS QRVO"],
-    keys: [TABS, key("Enter", " supply chain"), key("e", "arnings")],
+    keys: [TABS, key("Enter", " supply chain, the route on 2 hops"), key("e", "arnings")],
     data: ON_RELEASE,
     bloomberg: [],
   },
