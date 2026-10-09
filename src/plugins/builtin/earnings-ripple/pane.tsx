@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { DataTableView, EmptyState, PaneStatusBody, usePaneFooter, usePaneNoticeFooter,
+import { DataTableView, EmptyState, PaneStatusBody, usePaneFooter, usePaneNoticeFooter, usePaneTabs,
   type DataTableCell, type DataTableColumn, type PaneHint } from "../../../components";
 import { usePaneRefreshKey } from "../../../components/data-table/table-pane";
 import { usePlanAccess } from "../../../api-client/plan-access";
@@ -8,12 +8,15 @@ import type { PaneProps } from "../../../types/plugin";
 import { Box } from "../../../ui";
 import { isUsListingExchange } from "../../../utils/exchanges";
 import { CLOUD_PLAN_KEY, useCloudUpgradeAction } from "../shared/cloud-upgrade";
+import { UpgradeLabel } from "../shared/locked-rows";
 import { useResearchCloudSession } from "../shared/research-cloud-session";
 import { cachedRippleSources, loadRipple } from "./client";
-import { revenueOwner, RIPPLE_DAYS, type RippleRow } from "./model";
+import { hopLabel, revenueOwner, RIPPLE_DAYS, type RippleRow, type SecondHopRow } from "./model";
 
-/** Calls per refresh stay bounded: one disclosure request per holding. */
+/** Calls per refresh stay bounded: one disclosure request per holding, plus one graph request per holding on the second hop. */
 const RIPPLE_HOLDINGS_LIMIT = 60;
+
+const TABS = [{ value: "direct", label: "1 hop" }, { value: "two-hop", label: "2 hops" }];
 
 const COLUMNS: DataTableColumn[] = [
   { id: "date", label: "Date", width: 11, align: "left" },
@@ -26,6 +29,21 @@ const COLUMNS: DataTableColumn[] = [
   { id: "holdingDate", label: "Holding reports", width: 16, align: "right" },
 ];
 
+const SECOND_HOP_COLUMNS: DataTableColumn[] = [
+  { id: "date", label: "Date", width: 11, align: "left" },
+  { id: "timing", label: "Time", width: 5, align: "left" },
+  { id: "company", label: "Reports", width: 22, align: "left" },
+  { id: "link", label: "Link", width: 20, align: "left" },
+  { id: "via", label: "Via", width: 9, align: "left" },
+  { id: "holding", label: "Holding", width: 9, align: "left" },
+  { id: "shares", label: "Share per hop", width: 28, align: "left" },
+  { id: "move", label: "Avg move", width: 9, align: "right" },
+  { id: "holdingDate", label: "Holding reports", width: 16, align: "right" },
+];
+
+const move = (row: RippleRow | SecondHopRow): DataTableCell =>
+  ({ text: row.averageMove == null ? "--" : `±${(row.averageMove * 100).toFixed(1)}%`, value: row.averageMove });
+
 function renderCell(row: RippleRow, column: DataTableColumn): DataTableCell {
   switch (column.id) {
     case "date": return { text: row.date };
@@ -34,16 +52,35 @@ function renderCell(row: RippleRow, column: DataTableColumn): DataTableCell {
     case "link": return { text: row.link === "customer" ? "customer of" : "supplier to" };
     case "holding": return { text: row.holding };
     case "pct": return { text: `${row.pctOfRevenue}%${row.pctScope ? "*" : ""} of ${revenueOwner(row)}`, value: row.pctOfRevenue };
-    case "move": return { text: row.averageMove == null ? "--" : `±${(row.averageMove * 100).toFixed(1)}%`, value: row.averageMove };
+    case "move": return move(row);
+    default: return { text: row.holdingDate ?? "--" };
+  }
+}
+
+function renderSecondHopCell(row: SecondHopRow, column: DataTableColumn): DataTableCell {
+  switch (column.id) {
+    case "date": return { text: row.date };
+    case "timing": return { text: row.timing?.toUpperCase() ?? "--" };
+    case "company": return { text: `${row.company} ${row.companyName}` };
+    case "link": return { text: row.link === "customer" ? "customer's customer" : "supplier's supplier" };
+    case "via": return { text: row.via };
+    case "holding": return { text: row.holding };
+    // Holding to via first, then via to the company that reports.
+    case "shares": return { text: row.hops.map(hopLabel).join(" › ") };
+    case "move": return move(row);
     default: return { text: row.holdingDate ?? "--" };
   }
 }
 
 export function EarningsRipplePane({ width, height, focused }: PaneProps) {
   const [symbolsText] = usePaneSettingValue("symbols", "");
+  const [openingTab] = usePaneSettingValue("tab", "direct");
+  const [savedTab, setTab] = usePluginPaneState<string>("tab", openingTab);
+  const tab = savedTab === "two-hop" ? "two-hop" : "direct";
   const tickers = useTickers();
   const { createPaneFromTemplate } = usePluginAppActions();
   const [selectedId, setSelectedId] = usePluginPaneState<string | null>("selectedRow", null);
+  const [selectedSecondId, setSelectedSecondId] = usePluginPaneState<string | null>("selectedSecondHop", null);
   const session = useResearchCloudSession();
   const access = usePlanAccess();
   const accessKey = `${session.requestKey}:${access.hasProAccess ? "full" : "preview"}`;
@@ -58,46 +95,72 @@ export function EarningsRipplePane({ width, height, focused }: PaneProps) {
   }, [symbolsText, tickers]);
   const holdings = scope.holdings;
   const holdingsKey = holdings.join(",");
-  const loader = useCallback((force: boolean) => loadRipple(holdings, cachedRippleSources(accessKey, force)), [holdingsKey, accessKey]);
+  const secondHop = tab === "two-hop";
+  // A free account's graph stops at one hop, so it makes no graph requests and its second tab reuses the first load.
+  const graphHop = secondHop && access.hasProAccess;
+  const loader = useCallback((force: boolean) => loadRipple(holdings, cachedRippleSources(accessKey, force, graphHop), undefined, { secondHop: graphHop }),
+    [holdingsKey, accessKey, graphHop]);
   const ripple = useAsyncResource(holdings.length ? loader : null);
   useAutoRefresh(ripple.updatedAt, ripple.load);
   usePaneRefreshKey(() => { void ripple.reload(); }, { focused });
+  const { strip, rows: tabRows } = usePaneTabs(holdings.length ? { tabs: TABS, activeValue: tab, onSelect: setTab, focused, dense: true } : null);
 
   const rows = ripple.data?.rows ?? [];
+  const second = secondHop ? ripple.data?.secondHop ?? null : null;
+  const secondRows = second?.rows ?? [];
   const selected = rows.find((row) => row.id === selectedId) ?? rows[0] ?? null;
+  const selectedSecond = secondRows.find((row) => row.id === selectedSecondId) ?? secondRows[0] ?? null;
+  const current = secondHop ? selectedSecond : selected;
   const failures = ripple.data?.failures ?? [];
   const truncated = ripple.data?.truncated ?? [];
+  const locked = secondHop && (!access.hasProAccess || !!second?.locked);
   const openUpgrade = useCloudUpgradeAction("ripl");
   usePaneNoticeFooter({ registrationId: "earnings-ripple-notices", focused, notices: [
     ...(scope.total > holdings.length ? [`Checking ${holdings.length} of ${scope.total} holdings${scope.named ? "" : ", positions first. Name tickers in pane settings to pick others"}`] : []),
     ...(failures.length ? [`No disclosures for ${failures.map((failure) => failure.symbol).join(", ")}`] : []),
-    ...(truncated.length ? [`Free preview: top three customers and suppliers for ${truncated.join(", ")}`] : []),
+    ...(!secondHop && truncated.length ? [`Free preview: top three customers and suppliers for ${truncated.join(", ")}`] : []),
+    ...(second?.failures.length ? [`No two-hop graph for ${second.failures.map((failure) => failure.symbol).join(", ")}`] : []),
   ] });
-  const openSupply = useCallback((row: RippleRow) => createPaneFromTemplate("supply-chain-pane", { symbol: row.holding }), [createPaneFromTemplate]);
+  const openSupply = useCallback((row: { holding: string }) => createPaneFromTemplate("supply-chain-pane", { symbol: row.holding }), [createPaneFromTemplate]);
   usePaneFooter("earnings-ripple", () => {
     const hints: PaneHint[] = [
-      ...(selected ? [
-        { id: "supply", key: "s", label: "upply chain", onPress: () => openSupply(selected) },
-        { id: "earnings", key: "e", label: "arnings", onPress: () => createPaneFromTemplate("earnings-calendar-pane", { arg: selected.company }) },
+      ...(current ? [
+        { id: "supply", key: "s", label: "upply chain", onPress: () => openSupply(current) },
+        { id: "earnings", key: "e", label: "arnings", onPress: () => createPaneFromTemplate("earnings-calendar-pane", { arg: current.company }) },
       ] : []),
-      ...(truncated.length ? [{ id: "upgrade", key: CLOUD_PLAN_KEY, label: "upgrade", title: "Upgrade to Pro", onPress: openUpgrade }] : []),
+      ...((secondHop ? locked : truncated.length) ? [{ id: "upgrade", key: CLOUD_PLAN_KEY, label: "upgrade", title: "Upgrade to Pro", onPress: openUpgrade }] : []),
     ];
     return { info: [
-      ...(ripple.loading ? [{ id: "loading", parts: [{ text: "loading disclosures", tone: "muted" as const }] }] : []),
+      ...(ripple.loading ? [{ id: "loading", parts: [{ text: secondHop ? "loading supply chain graph" : "loading disclosures", tone: "muted" as const }] }] : []),
       ...(ripple.data?.stale ? [{ id: "stale", parts: [{ text: "stale", tone: "warning" as const }] }] : []),
     ], hints };
-  }, [ripple.loading, ripple.data?.stale, selected, openSupply, createPaneFromTemplate, truncated.length, openUpgrade]);
+  }, [ripple.loading, ripple.data?.stale, current, secondHop, locked, openSupply, createPaneFromTemplate, truncated.length, openUpgrade]);
 
+  const windowMeta = () => [["window", `${ripple.data?.from} to ${ripple.data?.to}`]];
+  const bodyHeight = Math.max(3, height - tabRows);
   return <Box width={width} height={height} flexDirection="column" overflow="hidden">
+    {strip}
     {!holdings.length ? <EmptyState title="Add tickers to a portfolio or watchlist, or name them in pane settings." />
-      : <PaneStatusBody subject="earnings ripple" loading={ripple.loading && !ripple.data} error={!ripple.data ? ripple.error : null}
-        empty={!!ripple.data && !rows.length} emptyTitle={`No disclosed customer or supplier of these holdings reports in the next ${RIPPLE_DAYS} days.`}>
-        <DataTableView<RippleRow> focused={focused} columns={COLUMNS} items={rows} rootWidth={width} rootHeight={height}
-          getItemKey={(row) => row.id} emptyStateTitle="No reports." sortColumnId={null} sortDirection="asc"
-          selection={{ kind: "id", selectedId: selected?.id ?? null, getId: (row) => row.id, onChange: setSelectedId }}
-          onActivate={openSupply}
-          getExportMetadata={() => [["window", `${ripple.data?.from} to ${ripple.data?.to}`], ["revenue share", "percent of the seller's revenue, as its filing discloses"]]}
-          renderCell={renderCell} />
+      : secondHop && locked ? <Box paddingX={1} paddingTop={1}><EmptyState title="Companies two hops away need Gloom Pro."
+        actions={<UpgradeLabel text="Upgrade for two-hop supply chains" onPress={openUpgrade} role="ripple-upgrade" />} /></Box>
+      : <PaneStatusBody subject={secondHop ? "two-hop supply chains" : "earnings ripple"} loading={ripple.loading && (!ripple.data || (secondHop && !second))}
+        error={!ripple.data ? ripple.error : null}
+        empty={secondHop ? !!second && !secondRows.length : !!ripple.data && !rows.length}
+        emptyTitle={secondHop ? `No company two disclosed hops from these holdings reports in the next ${RIPPLE_DAYS} days.`
+          : `No disclosed customer or supplier of these holdings reports in the next ${RIPPLE_DAYS} days.`}>
+        {secondHop
+          ? <DataTableView<SecondHopRow> focused={focused} columns={SECOND_HOP_COLUMNS} items={secondRows} rootWidth={width} rootHeight={bodyHeight}
+            getItemKey={(row) => row.id} emptyStateTitle="No reports." sortColumnId={null} sortDirection="asc"
+            selection={{ kind: "id", selectedId: selectedSecond?.id ?? null, getId: (row) => row.id, onChange: setSelectedSecondId }}
+            onActivate={openSupply}
+            getExportMetadata={() => [...windowMeta(), ["share per hop", "percent of the reporting company's revenue unless another basis is named, holding to via, then via to the company"]]}
+            renderCell={renderSecondHopCell} />
+          : <DataTableView<RippleRow> focused={focused} columns={COLUMNS} items={rows} rootWidth={width} rootHeight={bodyHeight}
+            getItemKey={(row) => row.id} emptyStateTitle="No reports." sortColumnId={null} sortDirection="asc"
+            selection={{ kind: "id", selectedId: selected?.id ?? null, getId: (row) => row.id, onChange: setSelectedId }}
+            onActivate={openSupply}
+            getExportMetadata={() => [...windowMeta(), ["revenue share", "percent of the seller's revenue, as its filing discloses"]]}
+            renderCell={renderCell} />}
       </PaneStatusBody>}
   </Box>;
 }
