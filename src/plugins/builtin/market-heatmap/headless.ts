@@ -3,6 +3,13 @@ import { formatCompact, formatPercentRaw } from "../../../utils/format";
 import { MARKET_HEATMAP_REQUEST_COUNT, MARKET_HEATMAP_UNIVERSES, fetchMarketHeatmap, type MarketHeatmapUniverseId } from "./data";
 import { heatmapMove, summarizeHeatmapGroups, type HeatmapGroupBy, type HeatmapGroupSummary } from "./model";
 
+/**
+ * A few names always lack a move (foreign listings and new tickers the snapshot
+ * has no change for). They are listed in a notice and in `metadata.noMove`; the
+ * report is incomplete only when so many lack one that the groups mislead.
+ */
+const MIN_MOVE_COVERAGE = 0.9;
+
 const percent = (value: unknown) => typeof value === "number" ? formatPercentRaw(value) : "—";
 const share = (value: unknown) => typeof value === "number" ? `${value.toFixed(1)}%` : "—";
 const dollars = (value: unknown) => typeof value === "number" && value > 0 ? `$${formatCompact(value)}` : "—";
@@ -24,6 +31,12 @@ function columns(universe: MarketHeatmapUniverseId, groupBy: HeatmapGroupBy, fla
     { key: "bestSymbol", header: "Best", format: (value, row) => member(value, row.bestMove) },
     { key: "worstSymbol", header: "Worst", format: (value, row) => member(value, row.worstMove) },
   ];
+}
+
+function noMoveNotice(symbols: readonly string[], names: number): string {
+  const shown = symbols.slice(0, 8).join(", ");
+  const rest = symbols.length > 8 ? ` and ${symbols.length - 8} more` : "";
+  return `${symbols.length} of ${names} names have no move yet and count toward size only: ${shown}${rest}.`;
 }
 
 function projectRow(summary: HeatmapGroupSummary, groupBy: HeatmapGroupBy, whole = false) {
@@ -94,12 +107,13 @@ export const marketHeatmapHeadless: HeadlessPaneDefinition<"rows"> = {
     ctx.signal.throwIfAborted();
     const { grouping, groups, board } = summarizeHeatmapGroups(result.assets, groupBy);
     const flat = grouping === "flat";
-    const withoutMove = result.assets.filter((asset) => heatmapMove(asset) == null).map((asset) => asset.symbol);
+    const noMove = result.assets.filter((asset) => heatmapMove(asset) == null).map((asset) => asset.symbol);
+    const covered = result.assets.length > 0 && board.moved / board.names >= MIN_MOVE_COVERAGE;
     return {
       columns: columns(universe, groupBy, flat),
       rows: groups.map((summary) => projectRow(summary, groupBy, flat)),
-      complete: !result.stale && result.assets.length > 0 && withoutMove.length === 0,
-      unavailableSymbols: withoutMove,
+      complete: !result.stale && covered,
+      unavailableSymbols: covered ? [] : noMove,
       metadata: {
         universe,
         groupBy: flat ? null : groupBy,
@@ -108,6 +122,8 @@ export const marketHeatmapHeadless: HeadlessPaneDefinition<"rows"> = {
         session: result.session ?? null,
         regularSessionDate: result.regularSessionDate ?? null,
         names: result.assets.length,
+        noMove,
+        ...(noMove.length > 0 ? { notices: [noMoveNotice(noMove, result.assets.length)] } : {}),
         board: projectRow(board, groupBy, true),
         unit: "move and sharePercent in percent; size in USD",
         weighting: universe === "us-etf"
