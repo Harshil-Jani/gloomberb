@@ -14,12 +14,13 @@ import {
   parsePaneFunctionArgs,
   type ParsedPaneFunctionArgs,
 } from "./options";
-import { resolvePaneFunction, type ResolvedPaneFunction } from "./resolver";
+import { applyListingArgument, resolvePaneFunction, type ResolvedPaneFunction } from "./resolver";
 import { buildFunctionReport } from "./report";
 import { defaultScreenshotPath, renderDesktopShot } from "./screenshot";
 import {
   buildPaneCatalogEntries,
 } from "./catalog";
+import { accessGateStatus, incompleteReportGateMessage } from "./access-gate";
 import { withPersistedCloudSession } from "./cloud-session";
 
 async function withPaneRuntime<T>(
@@ -33,11 +34,11 @@ async function withPaneRuntime<T>(
   }) => Promise<T>,
   settings: { strictHeadlessOptions?: boolean } = {},
 ): Promise<T> {
-  const parsed = parsePaneFunctionArgs(args, ctx.cliOptions);
   return withMarketData(ctx, async (market) => {
     const context: MarketContext = ctx.cliOptions.refresh ? { ...market, refresh: true } : market;
     const registry = await createPaneCatalog(context, ctx.plugins);
     try {
+      const parsed = await applyListingArgument(registry, context, parsePaneFunctionArgs(args, ctx.cliOptions));
       const resolved = await resolvePaneFunction(registry, context, parsed, settings);
       return await run({ parsed, context, registry, resolved });
     } finally {
@@ -65,6 +66,8 @@ export async function runPaneFunction(args: string[], ctx: CliCommandContext) {
         const unavailable = report.data.unavailableSymbols.length > 0
           ? ` Missing data for ${report.data.unavailableSymbols.join(", ")}.`
           : "";
+        const gated = incompleteReportGateMessage(resolved.token, report.data.errors);
+        if (gated) throw new Error(gated);
         throw new Error(
           `${resolved.token} did not produce a complete bot-safe report.${unavailable}`,
         );
@@ -110,7 +113,7 @@ export async function runPaneScreenshot(args: string[], ctx: CliCommandContext) 
       ctx.printResult({ data: result }, {
         text: (data) => {
           const issues = [
-            data.empty ? "empty" : null,
+            data.render.accessGate && (data.empty || !data.usable) ? accessGateStatus(data.render.accessGate) : data.empty ? "empty" : null,
             data.complete ? null : "incomplete",
             data.semanticMismatch ? "does not match the data" : null,
             data.usable ? null : "not usable",

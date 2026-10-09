@@ -246,6 +246,7 @@ export function serializeHeadlessPaneResult(
 ): Record<string, unknown> {
   const common = {
     ...(result.errors ? { errors: result.errors } : {}),
+    ...(result.notes?.length ? { notes: result.notes } : {}),
     ...(result.metadata ? { metadata: result.metadata } : {}),
   };
   switch (definition.shape) {
@@ -416,9 +417,21 @@ function renderSeries(result: HeadlessSeriesResult): string[] {
   return lines;
 }
 
-function reportTitle(definition: HeadlessPaneDefinition, args: HeadlessPaneLoadArgs, fallback: string): string {
-  if (typeof definition.describe === "function") return definition.describe(args);
+function reportTitle(
+  definition: HeadlessPaneDefinition,
+  args: HeadlessPaneLoadArgs,
+  result: HeadlessPaneResult,
+  fallback: string,
+): string {
+  if (typeof definition.describe === "function") return definition.describe(args, result);
   return definition.describe ?? fallback;
+}
+
+/** One message stays on the label's line; several each get a line of their own, so none runs into the next. */
+function renderMessages(label: string, messages: readonly string[]): string[] {
+  return messages.length === 1
+    ? [cliStyles.warning(`${label}: ${messages[0]}`)]
+    : [cliStyles.warning(`${label}:`), ...messages.map((message) => `  ${message}`)];
 }
 
 /**
@@ -433,7 +446,7 @@ export function renderHeadlessPaneText(
   fallbackTitle: string,
   freshness: ReportFreshness = deriveHeadlessFreshness(definition, result),
 ): string {
-  const lines = [cliStyles.bold(reportTitle(definition, args, fallbackTitle)), ""];
+  const lines = [cliStyles.bold(reportTitle(definition, args, result, fallbackTitle)), ""];
   const notices = result.metadata?.notices;
   if (Array.isArray(notices)) {
     const textNotices = [...new Set(notices.filter((notice): notice is string => typeof notice === "string" && notice.trim().length > 0))];
@@ -462,7 +475,8 @@ export function renderHeadlessPaneText(
       return _exhaustive;
     }
   }
-  if (result.errors?.length) lines.push("", cliStyles.warning(`Errors: ${result.errors.join(" ")}`));
+  if (result.notes?.length) lines.push("", ...renderMessages("Notes", result.notes));
+  if (result.errors?.length) lines.push("", ...renderMessages("Errors", result.errors));
   return [lines.join("\n").trimEnd(), "", cliStyles.muted(formatFreshnessLine(freshness))].join("\n");
 }
 

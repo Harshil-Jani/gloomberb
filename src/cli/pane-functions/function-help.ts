@@ -696,10 +696,10 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     bloomberg: ["FXC"],
   },
   PERP: {
-    summary: "Perpetual funding, open interest and premiums across crypto and stock, index, commodity and FX contracts. Per-market History and Evidence. Pro history with a latest-value free preview.",
+    summary: "Perpetual funding, open interest and premiums across venues, for crypto and stock, index, commodity and FX contracts: a board, rankings, one asset across venues, and a market's History and Evidence.",
     usage: ["PERP", "PERP BTC", "PERP TSLA"],
-    keys: [TABS, SEARCH, OPEN_SOURCE, key("a", "lert"), key("e", "vidence"), key("d", "es"), key("f", "a"), key("g", "raph")],
-    data: { free: "Latest market values", pro: "Observed funding, open interest and stored history; source timestamps retained" },
+    keys: [TABS, OPEN, SEARCH, key("e", "vidence"), key("a", "lert")],
+    data: { free: "A fixed preview and any one market's latest values", pro: "Every market, full rankings and stored history; source timestamps retained" },
     bloomberg: [],
   },
   CRYP: {
@@ -717,7 +717,7 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     bloomberg: ["GLCO"],
   },
   CTM: {
-    summary: "A futures root's listed contracts as a curve against a week and a month ago, with roll yield, contango or backwardation, and each contract's price, open interest and volume. Takes a FUT root, VX or a CME crypto root (BTC, ETH, SOL, XRP).",
+    summary: "A futures root's listed contracts as a curve against a week and a month ago, with roll yield, contango or backwardation, and each contract's price, open interest and volume. Takes a FUT root, VX or a CME crypto root (BTC, ETH, SOL, XRP), which also shows each contract's premium to spot and annualised basis against the USD pair quote.",
     usage: ["CTM GC", "CTM BTC"],
     keys: [key("d", "ate"), key("c", "urrent"), STEP],
     data: same("Delayed, usually 10 minutes; VIX at settlement"),
@@ -960,10 +960,10 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     bloomberg: [],
   },
   HDS: {
-    summary: "Institutional holders as a table (value, shares, change, percent held) or as an ownership treemap.",
-    usage: ["HDS NVDA"],
-    keys: [TABS, key("o", "pen 13F")],
-    data: same("Quarterly, as 13Fs are filed"),
+    summary: "Institutional holders as a table (value, shares, change, percent held) or as an ownership treemap, and the 13D/G tab: 13D and 13G beneficial owners over 5%, activists and passive stakes, with percent of class, its change and each filer's 13F move.",
+    usage: ["HDS NVDA", "HDS CAR"],
+    keys: [TABS, OPEN, key("o", "pen 13F or filing")],
+    data: same("13F quarterly as filed; 13D and 13G as filed"),
     bloomberg: ["HDS"],
   },
   "13F": {

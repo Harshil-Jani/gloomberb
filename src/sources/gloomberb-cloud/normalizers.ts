@@ -36,6 +36,24 @@ function cloudInternalProviderId(providerMeta?: CloudProviderMeta): string | nul
   return upstream ? `${GLOOMBERB_CLOUD_PROVIDER_ID}:${upstream}` : null;
 }
 
+/**
+ * A previous close is a price from inside the trailing 52 weeks, so it cannot
+ * sit far below the 52-week low. The service has sent 0.000205 as the
+ * Shanghai Composite's close (52-week low 3,741), which drew a +1.86e9% move.
+ * Today's price plays no part, so a real gap of any size still shows; two
+ * orders of magnitude leave room for a 52-week low that lags a crash or a split.
+ */
+const IMPOSSIBLE_CLOSE_FACTOR = 100;
+
+function isImpossiblePreviousClose(
+  previousClose: number | null | undefined,
+  low52w: number | null | undefined,
+): boolean {
+  return typeof previousClose === "number" && Number.isFinite(previousClose) && previousClose > 0
+    && typeof low52w === "number" && Number.isFinite(low52w) && low52w > 0
+    && previousClose * IMPOSSIBLE_CLOSE_FACTOR < low52w;
+}
+
 export function mapQuote(
   quote: CloudQuotePayload,
   providerMeta?: CloudProviderMeta,
@@ -50,10 +68,11 @@ export function mapQuote(
     quote.fullExchangeName ??
     listingExchangeName;
   const internalProviderId = cloudInternalProviderId(providerMeta);
-  const change = typeof quote.change === "number" && Number.isFinite(quote.change)
+  const impossibleClose = isImpossiblePreviousClose(quote.previousClose, quote.low52w);
+  const change = !impossibleClose && typeof quote.change === "number" && Number.isFinite(quote.change)
     ? quote.change / divisor
     : Number.NaN;
-  const changePercent = typeof quote.changePercent === "number" && Number.isFinite(quote.changePercent)
+  const changePercent = !impossibleClose && typeof quote.changePercent === "number" && Number.isFinite(quote.changePercent)
     ? quote.changePercent
     : Number.NaN;
   // A generic future (VX1, TY1) reads in points or 32nds, not dollars.
@@ -70,8 +89,13 @@ export function mapQuote(
     price: normalizePriceValueByDivisor(quote.price, divisor) ?? quote.price,
     change,
     changePercent,
-    previousClose: normalizePriceValueByDivisor(quote.previousClose, divisor),
+    previousClose: impossibleClose ? undefined : normalizePriceValueByDivisor(quote.previousClose, divisor),
     regularClose: normalizePriceValueByDivisor(quote.regularClose, divisor),
+    // JSON carries an unavailable move as null; the percent is unitless.
+    regularChange: normalizePriceValueByDivisor(quote.regularChange ?? undefined, divisor),
+    regularChangePercent: typeof quote.regularChangePercent === "number" && Number.isFinite(quote.regularChangePercent)
+      ? quote.regularChangePercent
+      : undefined,
     high52w: normalizePriceValueByDivisor(quote.high52w, divisor),
     low52w: normalizePriceValueByDivisor(quote.low52w, divisor),
     bid: normalizePriceValueByDivisor(quote.bid, divisor),

@@ -161,7 +161,14 @@ interface HeadlessPaneResultBase {
   symbols?: string[];
   /** Missing inputs must remain visible even when other inputs returned rows. */
   unavailableSymbols?: string[];
+  /** Failures: a source that did not answer, or a value that could not be computed. */
   errors?: string[];
+  /**
+   * Caveats about a report that did load: what it leaves out, what it assumes,
+   * how a value was marked. One sentence each. They never make a report fail;
+   * `complete: false` says when the report does not cover what was asked.
+   */
+  notes?: string[];
   metadata?: Record<string, unknown>;
   /** What this load knows about its data's source and age; overrides the definition's `freshness`. */
   freshness?: HeadlessPaneFreshness;
@@ -247,7 +254,11 @@ export interface HeadlessPaneDefinition<Shape extends HeadlessPaneShape = Headle
   /** What is true of every load: its source, and whether it is a feed. */
   freshness?: HeadlessPaneFreshness;
   columns?: HeadlessPaneColumn[];
-  describe?: string | ((args: HeadlessPaneLoadArgs) => string);
+  /**
+   * The report title. A report passes the loaded result, so a title can name
+   * what the load resolved (the view an `auto` query became, a fund's name).
+   */
+  describe?: string | ((args: HeadlessPaneLoadArgs, result?: HeadlessPaneResult) => string);
   load(
     args: HeadlessPaneLoadArgs,
     ctx: HeadlessPaneContext,

@@ -35,6 +35,9 @@ export function barResolutionFromDates(dates: readonly (string | number | Date)[
 /** Company filings read from EDGAR. Old filings are not stale; there is no schedule to miss. */
 export const SEC_FILINGS: HeadlessPaneFreshness = { source: "SEC EDGAR", status: "not-a-feed", basis: "filed data", oldest: null };
 
+/** Places and listings that change only when someone edits them: venues, ports, pipelines. */
+export const REFERENCE_DATA: HeadlessPaneFreshness = { status: "not-a-feed", basis: "reference data", oldest: null };
+
 /** Company fundamentals, estimates and calendars: reported figures, not a feed. */
 export const REPORTED_DATA: HeadlessPaneFreshness = { status: "not-a-feed", basis: "reported data" };
 
