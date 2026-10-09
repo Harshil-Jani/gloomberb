@@ -46,6 +46,8 @@ interface PortfolioRiskHolding {
   priceAsOf: string | null;
   /** "close" when no current quote arrived and the latest completed close marks the holding. */
   markSource?: "quote" | "close" | null;
+  /** The listing currency its closes were converted from at daily FX closes; null for a USD listing. */
+  convertedFrom: string | null;
   historyAsOf: string | null;
   returns: DatedReturn[];
   error: string | null;
@@ -71,6 +73,8 @@ export interface RiskCoverage {
   holdings: number;
   /** Holdings that qualify for the basket. */
   covered: number;
+  /** Covered holdings whose returns were converted to USD from their listing currency. */
+  converted: number;
   unvalued: number;
   minimumShare: number;
   /** The basket views estimate only when qualifying holdings reach the minimum share. */
@@ -223,13 +227,18 @@ const coveragePercent = (share: number) => Math.floor(share * 100);
 const holdingCount = (count: number) => `${count} holding${count === 1 ? "" : "s"}`;
 const shareText = (share: number) =>
   share < 0.001 ? "under 0.1%" : `${(share * 100).toFixed(1)}%`;
-/** "covers 78% of market value · 9 holdings left out", or null when nothing is left out. */
+/**
+ * "covers 78% of market value · 9 holdings left out · 2 converted from local
+ * currency", or null when every holding is in the basket in its own USD listing.
+ */
 export function riskCoverageText(coverage: RiskCoverage | undefined): string | null {
-  if (!coverage?.leftOut.length) return null;
+  if (!coverage) return null;
+  const converted = coverage.converted ? `${holdingCount(coverage.converted)} converted from local currency` : null;
+  if (!coverage.leftOut.length) return converted;
   const covers = coverage.share == null
     ? "covers an unknown share of market value"
     : `covers ${coverage.unvalued ? "at most " : ""}${coveragePercent(coverage.share)}% of market value`;
-  return `${covers} · ${holdingCount(coverage.leftOut.length)} left out`;
+  return [covers, `${holdingCount(coverage.leftOut.length)} left out`, ...(converted ? [converted] : [])].join(" · ");
 }
 /** One notice per left-out holding, largest first, after a lead line. */
 export function riskCoverageNotices(coverage: RiskCoverage | undefined): string[] {
@@ -321,10 +330,13 @@ export function buildPortfolioRisk(
         ? { price: quote.price, currency: quote.currency, stale: !!quote.stale }
         : null;
     const quantity = signedQuantity(lots);
+    // A converted listing is marked and returned in USD; its own currency is what the holding records.
+    const convertedFrom = history?.converted?.currency ?? null;
     const listingCurrency =
       quote?.currency ?? close?.currency ?? history?.listing?.currency ?? ticker.metadata.currency;
+    const foreign = !convertedFrom && listingCurrency !== "USD";
     const error =
-      syntheticPositionUnsupportedReason(ticker, listingCurrency, portfolio.id) ??
+      syntheticPositionUnsupportedReason(ticker, "USD", portfolio.id) ??
       (lots.some((row) => !Number.isFinite(row.shares))
         ? "Invalid position quantity"
         : null) ??
@@ -332,9 +344,13 @@ export function buildPortfolioRisk(
         ? "Historical account-currency FX is required"
         : null) ??
       (ticker.metadata.currency &&
-      mark?.currency &&
-      ticker.metadata.currency !== mark.currency
+      (convertedFrom ?? mark?.currency) &&
+      ticker.metadata.currency !== (convertedFrom ?? mark?.currency)
         ? "Holding and quote currencies differ"
+        : null) ??
+      // A foreign listing that did not convert says why: no pair, stale or gapped FX.
+      (foreign
+        ? (history?.error ?? syntheticPositionUnsupportedReason(ticker, listingCurrency, portfolio.id))
         : null) ??
       history?.error ??
       (!history ? "Daily history unavailable" : null);
@@ -376,6 +392,7 @@ export function buildPortfolioRisk(
           : outsideValue(ticker, portfolio, quote ?? history?.listing ?? null, rates),
       priceAsOf: priceDate,
       markSource: close ? "close" : quote ? "quote" : null,
+      convertedFrom,
       historyAsOf: history?.asOf ?? null,
       returns,
       error,
@@ -395,6 +412,7 @@ export function buildPortfolioRisk(
     share,
     holdings: holdings.length,
     covered: qualifying.length,
+    converted: qualifying.filter((row) => row.convertedFrom != null).length,
     unvalued: holdings.length - valued.length,
     minimumShare: RISK_MIN_COVERAGE,
     sufficient,
@@ -416,12 +434,19 @@ export function buildPortfolioRisk(
     holding.weight =
       book?.rows.find((row) => row.id === holding.id)?.weight ?? null;
   const closeMarked = members.filter((row) => row.markSource === "close").length;
+  const converted = members.filter((row) => row.convertedFrom != null).length;
   const held = new Set(holdings.map((row) => row.id));
   const warnings = [
     ...market.warnings,
     ...(closeMarked
       ? [
           `${closeMarked} holding${closeMarked === 1 ? "" : "s"} had no current quote; weighted at the latest completed close.`,
+        ]
+      : []),
+    // Daily closes pair by date, so a market that closes before or after the US session is not synchronous with it.
+    ...(converted
+      ? [
+          "Converted holdings are matched to the US close of the same date; where their market closes at another time, correlations and betas to US holdings read lower than they are.",
         ]
       : []),
     // A held instrument's failure is its left-out reason; factor proxies report here.
@@ -561,7 +586,7 @@ export function buildPortfolioRisk(
       asOf: row.priceAsOf,
       detail: row.leftOut
         ? row.leftOut
-        : `${row.quantity} shares; ${formatNumber(row.value ?? undefined)} ${row.currency}${row.markSource === "close" ? ` at ${row.priceAsOf} close` : ""}; history ${row.historyAsOf}`,
+        : `${row.quantity} shares; ${formatNumber(row.value ?? undefined)} ${row.currency}${row.markSource === "close" ? ` at ${row.priceAsOf} close` : ""}${row.convertedFrom ? ` from ${row.convertedFrom} at daily FX` : ""}; history ${row.historyAsOf}`,
       ...(row.leftOut ? { leftOut: row.leftOut } : {}),
     })),
     correlation: correlation.map((row) => ({

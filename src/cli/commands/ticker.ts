@@ -49,6 +49,9 @@ import {
 } from "../helpers";
 import { NotesFiles } from "../../plugins/builtin/notes/files";
 import { isUsEquityTicker } from "../../utils/sec";
+import { canonicalExchange, exchangeLabel, isKnownExchangeCode } from "../../utils/exchanges";
+import { ListingArgError, listingIdentity, listingVenues, resolveCliListing, type CliListing } from "../listing-arg";
+import { isDepositaryReceipt } from "../../utils/depositary-receipt";
 
 const NEWS_ITEM_LIMIT = 5;
 const SEC_FILING_LIMIT = 5;
@@ -57,6 +60,8 @@ const MAX_PROSE_WIDTH = 100;
 const METADATA_SEPARATOR = "  ·  ";
 
 interface TickerCommandDependencies {
+  /** `--exchange`: the listing, for a symbol that trades in several places. */
+  exchange?: string;
   initMarketData?: () => Promise<MarketContext>;
   fail?: (message: string, details?: string) => never;
   printResult?: CliCommandContext["printResult"];
@@ -237,6 +242,7 @@ function enterpriseValueCurrency(
 function fundamentalsMetrics(
   quote: TickerFinancials["quote"],
   fundamentals: TickerFinancials["fundamentals"],
+  profile: TickerFinancials["profile"],
   marketCapText: string,
   priceReturns: { return1Y?: number | null; return3Y?: number | null },
   enterpriseValueText = formatReportedMoney(fundamentals?.enterpriseValue, enterpriseValueCurrency(quote, fundamentals)),
@@ -260,7 +266,13 @@ function fundamentalsMetrics(
     ["Last Quarter Growth", fundamentals?.lastQuarterGrowth != null ? colorBySign(formatPercent(fundamentals.lastQuarterGrowth), fundamentals.lastQuarterGrowth) : "—"],
     ["1Y Return", priceReturns.return1Y != null ? colorBySign(formatPercent(priceReturns.return1Y), priceReturns.return1Y) : "—"],
     ["3Y Return", priceReturns.return3Y != null ? colorBySign(formatPercent(priceReturns.return3Y), priceReturns.return3Y) : "—"],
-    ["Shares Outstanding", formatCompact(fundamentals?.sharesOutstanding)],
+    // A receipt's count is its ordinary shares expressed in receipts, as its market cap is.
+    [
+      "Shares Outstanding",
+      fundamentals?.sharesOutstanding != null && isDepositaryReceipt({ ...quote, description: profile?.description })
+        ? `${formatCompact(fundamentals.sharesOutstanding)} (ADR equivalent)`
+        : formatCompact(fundamentals?.sharesOutstanding),
+    ],
   ];
 }
 
@@ -268,7 +280,7 @@ const VALUATION_METRICS = new Set(["Market Cap", "Enterprise Value", "P/E (TTM)"
 
 /** Text for `gloomberb fundamentals` and `gloomberb valuation`: the ticker report's fundamentals without the rest. */
 export function renderFundamentalsReport(
-  financials: TickerFinancials & { symbol: string },
+  financials: TickerFinancials & { symbol: string; exchange?: string },
   view: "fundamentals" | "valuation",
 ): string {
   const quote = financials.quote;
@@ -278,11 +290,12 @@ export function renderFundamentalsReport(
   const marketCapText = capitalization
     ? `${formatCompact(capitalization.value)} ${capitalization.currency}`
     : "—";
-  const metrics = fundamentalsMetrics(quote, fundamentals, marketCapText, computeTickerPriceReturns(financials));
+  const metrics = fundamentalsMetrics(quote, fundamentals, profile, marketCapText, computeTickerPriceReturns(financials));
   const symbol = quote?.symbol ?? financials.symbol;
   const name = quote?.name && quote.name !== symbol ? ` ${cliStyles.bold(quote.name)}` : "";
   const lines = [`${cliStyles.accent(symbol)}${name}`];
   const profileParts = [
+    financials.exchange ? exchangeLabel(financials.exchange) : undefined,
     profile?.sector ? `Sector ${profile.sector}` : undefined,
     profile?.industry ? `Industry ${profile.industry}` : undefined,
   ].filter((part): part is string => !!part);
@@ -298,8 +311,21 @@ export function renderFundamentalsReport(
   return lines.join("\n");
 }
 
+/** "Euronext Paris (EPA)": the venue the report is for, named in full when the app knows it. */
+function listingVenueLabel(
+  listingExchange: string | undefined,
+  quote: TickerFinancials["quote"],
+  financials: TickerFinancials,
+  tickerFile: TickerRecord | null,
+): string {
+  const exchangeName = quote?.exchangeName ?? financials.quoteMetadata?.listingExchangeName ?? tickerFile?.metadata.exchange;
+  const venue = canonicalExchange(listingExchange || quote?.listingExchangeName || exchangeName);
+  return isKnownExchangeCode(venue) ? exchangeLabel(venue) : exchangeShortName(exchangeName, quote?.fullExchangeName);
+}
+
 export async function buildTickerReport({
   symbol,
+  listingExchange,
   tickerFile,
   financials,
   config,
@@ -309,6 +335,8 @@ export async function buildTickerReport({
   recentSecFilings = [],
 }: {
   symbol: string;
+  /** The exchange the command named, as a canonical code. */
+  listingExchange?: string;
   tickerFile: TickerRecord | null;
   financials: TickerFinancials;
   config: AppConfig;
@@ -331,7 +359,7 @@ export async function buildTickerReport({
   if (!quote) lines.push(cliStyles.muted("Quote unavailable."));
 
   const summaryParts = [
-    exchangeShortName(quote?.exchangeName ?? financials.quoteMetadata?.listingExchangeName ?? tickerFile?.metadata.exchange, quote?.fullExchangeName) || undefined,
+    listingVenueLabel(listingExchange, quote, financials, tickerFile) || undefined,
     (quote?.currency || financials.quoteMetadata?.currency || tickerFile?.metadata.currency)
       ? `Currency ${quote?.currency || financials.quoteMetadata?.currency || tickerFile?.metadata.currency}` : undefined,
     quote?.marketState ? marketStateLabel(quote.marketState) : undefined,
@@ -415,7 +443,7 @@ export async function buildTickerReport({
     ]);
   }
 
-  appendMetricSection(lines, "Fundamentals", fundamentalsMetrics(quote, fundamentals, marketCapText, priceReturns, enterpriseValueText));
+  appendMetricSection(lines, "Fundamentals", fundamentalsMetrics(quote, fundamentals, profile, marketCapText, priceReturns, enterpriseValueText));
 
   if (capitalization?.provenance.kind === "fundamentals") {
     lines.push(cliStyles.muted(`Market cap: ${describeFundamentalMarketCap(capitalization.provenance)}.`));
@@ -473,6 +501,7 @@ export async function buildTickerReport({
 
 function buildTickerStructuredData({
   symbol,
+  listing,
   tickerFile,
   financials,
   config,
@@ -481,6 +510,7 @@ function buildTickerStructuredData({
   recentSecFilings,
 }: {
   symbol: string;
+  listing: CliListing;
   tickerFile: TickerRecord | null;
   financials: TickerFinancials;
   config: AppConfig;
@@ -490,8 +520,10 @@ function buildTickerStructuredData({
 }) {
   const quote = financials.quote;
   const priceReturns = computeTickerPriceReturns(financials, tickerFile?.metadata.assetCategory);
+  const identity = listingIdentity(listing, quote);
   return {
     symbol,
+    listing: { symbol: identity.symbol, exchange: identity.exchange || null, name: identity.name },
     quote: quote ? {
       symbol: quote.symbol,
       instrumentType: quote.instrumentType,
@@ -555,18 +587,31 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
   const initMarketDataFn = dependencies.initMarketData ?? initMarketData;
   const failCommand = dependencies.fail ?? fail;
   await withMarketData(initMarketDataFn, async ({ config, store, dataProvider, dataDir }) => {
-    const normalized = symbol.trim().toUpperCase();
-    const tickerFile = await store.loadTicker(normalized);
-    const exchange = tickerFile?.metadata.exchange ?? "";
+    let listing: CliListing;
+    try {
+      listing = await resolveCliListing(symbol, dependencies.exchange, { store, dataProvider });
+    } catch (error) {
+      if (error instanceof ListingArgError) failCommand(error.message, error.details);
+      throw error;
+    }
+    // A named listing goes by its key (SAN:EPA); a bare symbol by its saved listing, as before.
+    const normalized = listing.key;
+    const tickerFile = listing.saved;
+    const { symbol: requestSymbol, exchange } = listing.request;
     const toBase = createBaseConverter(dataProvider, config.baseCurrency);
 
     let financials: TickerFinancials | null = null;
     try {
-      financials = await dataProvider.getTickerFinancials(normalized, exchange);
+      financials = await dataProvider.getTickerFinancials(requestSymbol, exchange);
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // A known exchange the symbol is not listed on: say where it is.
+      const venues = listing.exchange ? await listingVenues(listing.symbol, { store, dataProvider }).catch(() => []) : [];
       failCommand(
         `Failed to fetch data for ${normalized}.`,
-        error instanceof Error ? error.message : String(error),
+        venues.length > 0 && !venues.some((venue) => venue.exchange === listing.exchange)
+          ? `${reason}\n${listing.symbol} trades on: ${venues.map((venue) => venue.exchange).join(", ")}.`
+          : reason,
       );
     }
 
@@ -589,19 +634,23 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
     const quote = resolvedFinancials.quote;
 
     const notesFiles = new NotesFiles(dataDir);
+    const listingName = listingIdentity(listing, quote).name;
     const [notesResult, newsResult, secFilingsResult] = await Promise.allSettled([
-      notesFiles.load(normalized),
+      notesFiles.load(tickerFile?.metadata.ticker ?? normalized),
       dataProvider.getNews({
         feed: "ticker",
         // Still set for news plugins that read the deprecated scope.
         scope: "ticker",
-        ticker: normalized,
+        ticker: requestSymbol,
         exchange: exchange || quote?.exchangeName || "",
         tickerTier: "primary",
         limit: NEWS_ITEM_LIMIT,
       }),
+      // Outside the US the lookup checks the SEC registrant against the listing's company,
+      // and refuses another company's filings.
       shouldFetchSecFilings(tickerFile, resolvedFinancials) && dataProvider.getSecFilings
-        ? dataProvider.getSecFilings(normalized, SEC_FILING_LIMIT, exchange || quote?.exchangeName || "")
+        ? dataProvider.getSecFilings(requestSymbol, SEC_FILING_LIMIT, exchange || quote?.exchangeName || "",
+          listingName ? { listingName } : undefined)
         : Promise.resolve([]),
     ]);
 
@@ -614,6 +663,7 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
         warnings: quote ? undefined : ["Quote unavailable."],
         data: buildTickerStructuredData({
           symbol: normalized,
+          listing,
           tickerFile,
           financials: resolvedFinancials,
           config,
@@ -627,6 +677,7 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
 
     console.log(await buildTickerReport({
         symbol: normalized,
+        listingExchange: listing.exchange,
         tickerFile,
         financials: resolvedFinancials,
         config,

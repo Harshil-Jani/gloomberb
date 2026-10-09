@@ -30,13 +30,16 @@ import {
 } from "./format";
 import {
   buildColumns,
+  hasHolderChanges,
   buildRows,
   DEFAULT_SORT,
+  nextViewMode,
   sortRows,
   VIEW_TABS,
 } from "./table-model";
 import { loadHolderData } from "./client";
 import { HoldersTreemap } from "./treemap";
+import { BeneficialOwnersView } from "./beneficial-view";
 import type { HolderColumn, HolderColumnId, HolderRow, SortPreference, ViewMode } from "./types";
 import { loadHolder13FMatches, type Holder13FMatch } from "./thirteenf-match";
 import { useSampledValue, useTickerQuoteStream } from "../../../state/hooks/live-ticker-financials";
@@ -77,7 +80,9 @@ export function HoldersView({ focused, width, height }: { focused: boolean; widt
   const marketCap = useSampledValue(liveMarketCap, HOLDER_MARKET_CAP_SAMPLE_MS, `${symbol ?? ""}:${currency}`);
   const rows = useMemo(() => buildRows(data), [data]);
   const sortedRows = useMemo(() => sortRows(rows, sortPreference, marketCap), [marketCap, rows, sortPreference]);
-  const columns = useMemo(() => buildColumns(width), [width]);
+  // Change columns only when the source reports a change; otherwise they read "-" on every row.
+  const showChange = useMemo(() => hasHolderChanges(rows), [rows]);
+  const columns = useMemo(() => buildColumns(width, showChange), [showChange, width]);
   const selectedIdx = selectedId
     ? sortedRows.findIndex((row) => row.id === selectedId)
     : -1;
@@ -145,7 +150,7 @@ export function HoldersView({ focused, width, height }: { focused: boolean; widt
   }, [setSortPreference]);
 
   const toggleView = useCallback(() => {
-    setViewMode((current) => current === "table" ? "chart" : "table");
+    setViewMode(nextViewMode);
   }, [setViewMode]);
 
   const refresh = useCallback(() => {
@@ -250,7 +255,9 @@ export function HoldersView({ focused, width, height }: { focused: boolean; widt
     }
   }, [currency, fundMatches, marketCap]);
 
+  // The 13D/G tab registers its own footer.
   usePaneFooter("holders", () => {
+    if (viewMode === "13dg") return null;
     return {
       info: [
         ...(data?.asOf ? [{ id: "as-of", parts: [{ text: data.asOf, tone: "value" as const }] }] : []),
@@ -264,7 +271,7 @@ export function HoldersView({ focused, width, height }: { focused: boolean; widt
         ...(selectedFundMatch ? [{ id: "fund", key: "o", label: "pen 13F", onPress: () => openFundDetail(selectedRow) }] : []),
       ],
     };
-  }, [data, error, fundMatching, loading, openFundDetail, selectedFundMatch, selectedRow]);
+  }, [data, error, fundMatching, loading, openFundDetail, selectedFundMatch, selectedRow, viewMode]);
 
   const selectView = useCallback((value: string) => setViewMode(value as ViewMode), [setViewMode]);
   // As a research tab, h/l move between research tabs; `s` switches the view.
@@ -315,6 +322,16 @@ export function HoldersView({ focused, width, height }: { focused: boolean; widt
           renderCell={renderCell}
           selectedTextOverridesCellColor
           emptyStateTitle={statusTitle ?? "No holders available"}
+        />
+      ) : viewMode === "13dg" ? (
+        <BeneficialOwnersView
+          focused={focused}
+          width={width}
+          symbol={symbol ?? null}
+          holderRows={rows}
+          fundMatches={fundMatches}
+          onCycleView={toggleView}
+          onRefreshHolders={refresh}
         />
       ) : (
         <HoldersTreemap
