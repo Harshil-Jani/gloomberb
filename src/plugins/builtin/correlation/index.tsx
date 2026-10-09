@@ -264,13 +264,13 @@ function CorrelationMatrixPane({ focused, width, height }: PaneProps) {
   }, []);
 
   const headerBg = colors.panel;
-  const rowHeaderWidth = Math.max(
-    ROW_HEADER_WIDTH,
-    Math.min(12, Math.max(0, ...symbols.map((symbol) => displaySymbol(symbol).length)) + 2),
-  );
+  const labelWidth = Math.max(0, ...symbols.map((symbol) => displaySymbol(symbol).length));
+  const rowHeaderWidth = Math.max(ROW_HEADER_WIDTH, Math.min(12, labelWidth + 2));
+  // A map series label (SUEZ.TANKER) is wider than a ticker's: columns keep room for it and the matrix scrolls instead.
+  const minCellWidth = Math.max(MIN_MATRIX_CELL_WIDTH, labelWidth + 2);
   const cellCount = Math.max(1, symbols.length);
-  const availableCellWidth = Math.floor((Math.max(width - rowHeaderWidth - 4, cellCount * MIN_MATRIX_CELL_WIDTH)) / cellCount);
-  const cellWidth = Math.max(MIN_MATRIX_CELL_WIDTH, Math.min(MATRIX_CELL_WIDTH, availableCellWidth));
+  const availableCellWidth = Math.floor((Math.max(width - rowHeaderWidth - 4, cellCount * minCellWidth)) / cellCount);
+  const cellWidth = Math.max(minCellWidth, Math.min(MATRIX_CELL_WIDTH, availableCellWidth));
   // Rows are exactly as wide as the matrix (after the one-cell inset), so the
   // zebra and hover bands stop at the last column instead of running on.
   const matrixRowWidth = 1 + rowHeaderWidth + symbols.length * cellWidth;
