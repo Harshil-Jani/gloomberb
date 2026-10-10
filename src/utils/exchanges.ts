@@ -146,6 +146,11 @@ export const CANONICAL_EXCHANGE_ALIASES: Record<string, string> = {
   BOURSA: "KUWAIT",
   "BOURSA KUWAIT": "KUWAIT",
   CCC: "CCC",
+  // The currency venue: EURUSD:CCY and EURUSD:FX are the pair EURUSD=X. Pairs
+  // saved from an older search answer are on PHYSICAL CURRENCY.
+  CCY: "CCY",
+  FX: "CCY",
+  "PHYSICAL CURRENCY": "CCY",
 };
 
 const PUBLIC_EXCHANGE_ALIASES: Record<string, string> = {
