@@ -66,6 +66,13 @@ Chart controls: select ranges and intervals above the plot; click a legend entry
 
 The latest month is a return to date until December closes the year: the Returns table shows it untinted and marks its year with `*`, and it stays out of the month's average, median and up share. Those statistics cover completed months in the lookback only; a month with few years of history has few observations, and the headless `count` says how many. The Overlay tab draws each year's return since its prior year-end at each month-end on one January-to-December axis. The average path is the mean of the completed years at each month-end every one of them reached; the running year is drawn but left out of it.
 
+The Weekdays tab reads daily bars instead: every session of the last five years, the daily history served everywhere, so it has no lookback, and the footer gives the first and last session counted. It has a row for each weekday that held a session and one for each turn-of-month session (a month's last and the next month's first three); the figures above the table pool those four against every other session.
+
+- **Sessions.** A return runs from the previous session's close, so a Monday after a holiday Friday runs from Thursday. A bar is filed under its session date: its label, or the venue's local date for a bar stamped at the open or at local midnight. A session still trading when the history was fetched stays out until it closes; a coin's session is a UTC day.
+- **Weekends.** A venue that traded on a Saturday or Sunday gets a row for that day, and a Sunday-to-Thursday venue's week starts on Sunday. A row of fewer than 20 sessions, such as a few special Saturday sessions, is shown untinted.
+- **Turn of month.** A session's place in its month is known only once the month before is in the history, and the latest session could still be its month's last, so the first partial month and the latest session count toward their weekday but not the turn-of-month split.
+- **Weekly bars.** When most sessions are more than four days apart the bars are weekly or coarser, and the tab shows nothing rather than file a week's move under one day.
+
 ## Earnings ripple
 
 `RIPL` lists the companies that report earnings in the next 30 days and that one of your holdings is tied to: its customers, and its suppliers. With no tickers it checks every US listing in your portfolios and watchlists (up to 60); `RIPL CRUS QRVO` checks the named ones.

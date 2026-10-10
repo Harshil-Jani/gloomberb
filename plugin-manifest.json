@@ -1254,7 +1254,7 @@
           {
             "code": "SEAS",
             "name": "Seasonality",
-            "description": "Monthly returns by year, each month's average and hit rate, and every year's path on one calendar."
+            "description": "Monthly returns by year, each month's average and hit rate, every year's path on one calendar, and returns by weekday and turn of month."
           },
           {
             "code": "MDAY",
