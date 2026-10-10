@@ -54,7 +54,13 @@ import {
   type ResolvedRegistryPaneQuickSetting,
   type ResolvedRegistryPaneSettings,
 } from "./pane-settings";
-import { RegistryResumeStateListeners, createPluginPaneSettingsState, createPluginResumeState } from "./plugin-state";
+import {
+  RegistryResumeStateListeners,
+  bindPluginContextNamespaces,
+  createPluginPaneSettingsState,
+  createPluginResumeState,
+  type NamespacedPluginContext,
+} from "./plugin-state";
 import { createPluginSetupCommand, isPluginConfigured } from "./setup-command";
 import {
   bindSharedRegistry,
@@ -76,6 +82,12 @@ interface PluginRegistryOptions {
 }
 
 export type { WindowEditMode } from "./host-actions";
+
+/** A switched-off plugin, named for a "Turn on" offer. */
+export interface DisabledPluginOwner {
+  id: string;
+  name: string;
+}
 export {
   getSharedMarketData,
   getSharedRegistry,
@@ -167,6 +179,7 @@ export class PluginRegistry implements PluginRuntimeAccess {
     bindSharedRegistry(this, marketData);
     this.capabilities = new CapabilityRegistry({
       isPluginEnabled: (pluginId) => !this.getConfig().disabledPlugins.includes(pluginId),
+      pluginName: (pluginId) => this.plugins.get(pluginId)?.name,
       isCapabilityEnabled: (capability, pluginId) => {
         const disabledSources = this.getConfig().disabledSources ?? [];
         return !disabledSources.includes(capability.sourceId ?? capability.id) && !this.getConfig().disabledPlugins.includes(pluginId);
@@ -407,6 +420,33 @@ export class PluginRegistry implements PluginRuntimeAccess {
     return this.contributions.paneTemplatesMap.owners.get(templateId);
   }
 
+  /**
+   * The plugin that owns this pane type when it is switched off. A pane of a
+   * switched-off plugin stays hidden, so callers offer to turn it on instead
+   * of adding one.
+   */
+  getDisabledPaneOwner(
+    paneType: string,
+    disabledPlugins: readonly string[] = this.getConfig().disabledPlugins,
+  ): DisabledPluginOwner | null {
+    return this.disabledOwner(this.getPanePluginId(paneType), disabledPlugins);
+  }
+
+  /** The same for a template: its own plugin, or the one owning the pane it opens. */
+  getDisabledPaneTemplateOwner(
+    templateId: string,
+    disabledPlugins: readonly string[] = this.getConfig().disabledPlugins,
+  ): DisabledPluginOwner | null {
+    const paneType = this.paneTemplates.get(templateId)?.paneId;
+    return this.disabledOwner(this.getPaneTemplatePluginId(templateId), disabledPlugins)
+      ?? (paneType ? this.getDisabledPaneOwner(paneType, disabledPlugins) : null);
+  }
+
+  private disabledOwner(pluginId: string | undefined, disabledPlugins: readonly string[]): DisabledPluginOwner | null {
+    if (!pluginId || !disabledPlugins.includes(pluginId)) return null;
+    return { id: pluginId, name: this.plugins.get(pluginId)?.name ?? pluginId };
+  }
+
   getBrokerPluginId(brokerType: string): string | undefined {
     return this.contributions.brokersMap.owners.get(brokerType);
   }
@@ -429,10 +469,42 @@ export class PluginRegistry implements PluginRuntimeAccess {
     }
   }
 
+  /**
+   * The state parts of a plugin's context. `namespaceKey` is the plugin's id,
+   * or the namespace a composed module keeps; both resolve the way a render
+   * context's id does.
+   */
+  private createNamespacedContext(namespaceKey: string): NamespacedPluginContext {
+    const stateId = this.stateNamespace(namespaceKey);
+    return {
+      persistence: createPluginPersistence(
+        this.persistence.pluginState,
+        this.persistence.resources,
+        `plugin:${stateId}`,
+        stateId,
+      ),
+      resume: createPluginResumeState({
+        pluginId: stateId,
+        getResumeState: (key, version) => this.getResumeState(namespaceKey, key, version),
+        setResumeState: (key, value, version) => this.setResumeState(namespaceKey, key, value, version),
+        deleteResumeState: (key) => this.deleteResumeState(namespaceKey, key),
+        getPaneRuntimeState: (paneId) => this.getPaneRuntimeState(paneId),
+        updatePaneRuntimeState: (paneId, patch) => this.updatePaneRuntimeState(paneId, patch),
+      }),
+      teamState: createPluginTeamState(stateId),
+      configState: {
+        get: (key) => this.getConfigState(namespaceKey, key),
+        set: (key, value) => this.setConfigState(namespaceKey, key, value),
+        delete: (key) => this.deleteConfigState(namespaceKey, key),
+        keys: () => this.getConfigStateKeys(namespaceKey),
+      },
+    };
+  }
+
   private createContext(pluginId: string): GloomPluginContext {
     const contributions = this.contributions;
     const items = contributions.getOrCreatePluginItems(pluginId);
-    return {
+    return bindPluginContextNamespaces({
       registerPane: (pane) => contributions.registerPane(pluginId, pane),
       registerPaneTemplate: (template) => contributions.registerPaneTemplate(pluginId, template, true),
       registerCommand: (command) => contributions.registerCommand(pluginId, command),
@@ -468,33 +540,13 @@ export class PluginRegistry implements PluginRuntimeAccess {
       marketData: this.marketData,
       connectionHealth: this.connectionHealth,
       tickerRepository: this.tickerRepository,
-      persistence: createPluginPersistence(
-        this.persistence.pluginState,
-        this.persistence.resources,
-        `plugin:${this.stateNamespace(pluginId)}`,
-        this.stateNamespace(pluginId),
-      ),
+      ...this.createNamespacedContext(pluginId),
       log: debugLog.createLogger(pluginId),
-      resume: createPluginResumeState({
-        pluginId: this.stateNamespace(pluginId),
-        getResumeState: (key, version) => this.getResumeState(pluginId, key, version),
-        setResumeState: (key, value, version) => this.setResumeState(pluginId, key, value, version),
-        deleteResumeState: (key) => this.deleteResumeState(pluginId, key),
-        getPaneRuntimeState: (paneId) => this.getPaneRuntimeState(paneId),
-        updatePaneRuntimeState: (paneId, patch) => this.updatePaneRuntimeState(paneId, patch),
-      }),
-      teamState: createPluginTeamState(this.stateNamespace(pluginId)),
       paneSettings: createPluginPaneSettingsState({
         getLayout: () => this.getLayout(),
         updateLayout: (layout) => this.updateLayout(layout),
         resolvePaneTarget: (paneId) => this.resolvePaneTarget(paneId),
       }),
-      configState: {
-        get: (key) => this.getConfigState(pluginId, key),
-        set: (key, value) => this.setConfigState(pluginId, key, value),
-        delete: (key) => this.deleteConfigState(pluginId, key),
-        keys: () => this.getConfigStateKeys(pluginId),
-      },
       createBrokerInstance: (brokerType, label, values) => this.createBrokerInstance(brokerType, label, values),
       updateBrokerInstance: this.updateBrokerInstance,
       syncBrokerInstance: this.syncBrokerInstance,
@@ -519,7 +571,7 @@ export class PluginRegistry implements PluginRuntimeAccess {
       // Every plugin event is also a host event; TypeScript cannot see that through the generic key.
       emit: (event, payload) => this.events.emit(event, payload as HostEvents[typeof event]),
       notify: (notification) => this.notify(notification),
-    };
+    }, (stateId) => this.createNamespacedContext(stateId));
   }
 
   private registryLog = debugLog.createLogger("registry");
