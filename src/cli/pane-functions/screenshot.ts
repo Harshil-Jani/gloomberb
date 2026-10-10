@@ -1,4 +1,5 @@
 import { fetchTape } from "../../plugins/builtin/time-sales/client";
+import { isOptionsUnavailableError } from "../../market-data/options-alternatives";
 import type { TapeCapture } from "../../plugins/builtin/time-sales/snapshot-client";
 import { apiClient } from "../../api-client";
 import { snapshotInstrumentKey, type SnapshotMarketData } from "../../market-data/snapshot-provider";
@@ -583,7 +584,9 @@ export async function buildDesktopShotPayload(
       ?? data.quote?.listingExchangeName
       ?? data.quote?.exchangeName
       ?? "";
-    const fiveYearsDaily = resolved.pane.id === "realized-vol" || resolved.pane.id === "iv-history" || resolved.pane.id === "macro-day";
+    const fiveYearsDaily = resolved.pane.id === "realized-vol" || resolved.pane.id === "iv-history" || resolved.pane.id === "macro-day"
+      // KELLY's History tab reads monthly returns off five years of daily closes.
+      || resolved.pane.id === "kelly-sizer";
     if (fiveYearsDaily || resolved.pane.id === "iv-screen" || resolved.pane.id === "short-watch"
       || resolved.pane.id === "backtest" || resolved.pane.id === OPTIONS_PANE_ID) {
       // Generic 5Y snapshots can contain weekly bars. The snapshot provider
@@ -624,9 +627,13 @@ export async function buildDesktopShotPayload(
       tapeSnapshots.push([entry.instrument.symbol, exchange, await fetchTape(entry.instrument.symbol, exchange)]);
     }
     if (includeOptionsChains && context.dataProvider.getOptionsChain) {
+      // A future with no chain of its own is the pane's to explain (the listed alternative), not a failed shot.
       const chain = await context.dataProvider.getOptionsChain(entry.instrument.symbol, exchange, undefined,
-        context.refresh ? { cacheMode: "refresh" } : undefined);
-      optionsChains.push([symbol, chain]);
+        context.refresh ? { cacheMode: "refresh" } : undefined).catch((error: unknown) => {
+        if (isOptionsUnavailableError(error)) return null;
+        throw error;
+      });
+      if (chain) optionsChains.push([symbol, chain]);
     }
   }
   layout.instances[0] = shotInstance;
