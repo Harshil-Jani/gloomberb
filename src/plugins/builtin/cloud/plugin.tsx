@@ -21,6 +21,10 @@ import { registerTrialOfferCommand, TrialOfferStatusWidget } from "./trial-offer
 import { CloudVerificationStatusWidget } from "./verification-status-widget";
 import { createPublicPaneShare } from "../shared/public-pane";
 import { teamModule } from "./team/module";
+import { registerMcpConnectSection } from "./mcp-connect/sections";
+import { TerminalControlSection } from "./terminal-relay/connect-section";
+import { terminalRelayGrants } from "./terminal-relay/grants";
+import { TerminalRelayStatusWidget } from "./terminal-relay/indicator";
 import { thesisModule } from "./thesis/module";
 
 function createCloudDataModule(): PluginModule {
@@ -97,6 +101,34 @@ const askgModule: PluginModule = {
   }],
 };
 
+/**
+ * Remote control from the Gloom Cloud MCP: which assistants were approved
+ * live with the profile, and the status chip shows one at work. The relay
+ * itself is mounted by the app (terminal-relay/host.tsx) and stays off while
+ * this plugin is.
+ */
+let removeTerminalControlSection: (() => void) | null = null;
+
+const terminalRelayModule: PluginModule = {
+  slots: {
+    "status:widget": () => <TerminalRelayStatusWidget />,
+  },
+  setup(ctx) {
+    terminalRelayGrants.attach(ctx.persistence);
+    removeTerminalControlSection?.();
+    removeTerminalControlSection = registerMcpConnectSection({
+      id: "terminal-control",
+      order: 10,
+      Component: TerminalControlSection,
+    });
+  },
+  dispose() {
+    removeTerminalControlSection?.();
+    removeTerminalControlSection = null;
+    terminalRelayGrants.detach();
+  },
+};
+
 const congressTradesModule: PluginModule = {
   panes: [{
     id: CONGRESS_TRADES_PANE_ID,
@@ -143,6 +175,7 @@ export function createGloomberbCloudPlugin(extraModules: readonly PluginModule[]
       accountManagementModule,
       cloudAccountModule,
       askgModule,
+      terminalRelayModule,
       ...extraModules,
       congressTradesModule,
       cloudTweetsModule,
