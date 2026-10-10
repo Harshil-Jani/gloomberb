@@ -51,13 +51,31 @@ const BUILTIN_PLUGIN_OWNER_ALIASES: Record<string, string> = {
  * while its switch belongs to the successor that holds the module now.
  */
 const BUILTIN_DISABLED_PLUGIN_ALIASES: Record<string, string> = {
+  "chart-composer": "ticker-core",
+  "company-research": "ticker-core",
+  "comparison-chart": "ticker-core",
   correlation: "quant",
   "crypto-board": "crypto",
+  "dividend-yield": "ticker-core",
   "earnings-calendar": "earnings",
   "earnings-calls": "earnings",
+  executives: "ticker-core",
+  "filing-events": "filings",
   "fx-matrix": "global-markets",
+  holders: "ownership",
+  insider: "ownership",
+  jobs: "alt-data",
   "market-movers": "screeners",
+  options: "options-volatility",
+  research: "ticker-core",
+  "risk-factors": "filings",
+  sec: "filings",
   sectors: "global-markets",
+  "short-interest": "ownership",
+  "short-volume": "ownership",
+  "social-mentions": "alt-data",
+  thirteenf: "ownership",
+  "ticker-detail": "ticker-core",
   "world-indices": "global-markets",
   // `macro-tv` keeps meaning all of Macro: TV left for its own repository, so
   // no successor holds it, and turning it off was turning Macro off.
@@ -74,18 +92,14 @@ const BUILTIN_DISABLED_PLUGIN_ALIASES: Record<string, string> = {
 const BUILTIN_PLUGIN_GROUPS: Readonly<Record<string, readonly string[]>> = {
   macro: ["rates-macro", "credit", "earnings"],
   "market-overview": ["global-markets", "screeners", "futures-commodities", "crypto", "alt-data", "quant"],
+  // Shares Credit & Bonds and Earnings with Macro, and Alt Data and Quant with
+  // Market Overview: each holds modules from both.
+  "ticker-research": ["ticker-core", "options-volatility", "ownership", "filings", "alt-data", "quant", "credit", "earnings"],
 };
-
-let pluginGroups = BUILTIN_PLUGIN_GROUPS;
-
-/** Pins the group table for a test; pass null to restore the real one. */
-export function setBuiltinPluginGroupsForTests(groups: Readonly<Record<string, readonly string[]>> | null): void {
-  pluginGroups = groups ?? BUILTIN_PLUGIN_GROUPS;
-}
 
 /** The built-ins a retired group id stands for, or null when the id is not a group. */
 export function builtinPluginGroupMembers(pluginId: string): readonly string[] | null {
-  return Object.prototype.hasOwnProperty.call(pluginGroups, pluginId) ? pluginGroups[pluginId]! : null;
+  return Object.prototype.hasOwnProperty.call(BUILTIN_PLUGIN_GROUPS, pluginId) ? BUILTIN_PLUGIN_GROUPS[pluginId]! : null;
 }
 
 /** The one built-in that cannot be disabled; its legacy module ids normalize to it. */
@@ -153,7 +167,7 @@ export function decodeBuiltinDisabledPluginIds(pluginIds: readonly string[]): st
  */
 export function encodeBuiltinDisabledPluginIds(pluginIds: readonly string[]): string[] {
   const disabled = new Set(pluginIds);
-  const fullyOff = Object.entries(pluginGroups)
+  const fullyOff = Object.entries(BUILTIN_PLUGIN_GROUPS)
     .filter(([, members]) => members.length > 0 && members.every((member) => disabled.has(member)));
   if (fullyOff.length === 0) return [...disabled];
   const groupAt = new Map<string, string[]>();
