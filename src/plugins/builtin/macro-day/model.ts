@@ -1,6 +1,6 @@
 import type { PricePoint } from "../../../types/financials";
 import { zonedDateTimeParts } from "../../../utils/zoned-date-time";
-import { MACRO_EVENT_KINDS, MACRO_RELEASE_BASIS, macroReleases, type MacroEventKind, type MacroRelease } from "./releases";
+import { MACRO_EVENT_KINDS, type MacroEventKind, type MacroRelease } from "./releases";
 
 const DAY_MS = 86_400_000;
 /** Longest calendar gap between two closes that is still one session apart: Thursday to Monday over a Friday holiday. */
@@ -71,10 +71,11 @@ function stats(moves: number[], normalAbs: number | null): MacroDayStats {
 export function projectMacroDays(history: readonly PricePoint[], options: {
   symbol: string;
   lookbackYears: number;
-  releases?: readonly MacroRelease[];
-  coveredThrough?: string;
+  releases: readonly MacroRelease[];
+  /** The release list's last covered day. */
+  coveredThrough: string;
 }): MacroDayModel {
-  const coveredThrough = options.coveredThrough ?? MACRO_RELEASE_BASIS.coveredThrough;
+  const { coveredThrough } = options;
   const byDate = new Map<string, number>();
   for (const point of history) {
     const time = new Date(point.date).getTime();
@@ -90,7 +91,11 @@ export function projectMacroDays(history: readonly PricePoint[], options: {
   // Sessions after the published lists end may be unlisted release days, so they are left out of both sides.
   const end = last < coveredThrough ? last : coveredThrough;
   const startYear = Number(end.slice(0, 4)) - Math.max(1, options.lookbackYears);
-  const start = `${startYear}${end.slice(4)}`;
+  const nominalStart = `${startYear}${end.slice(4)}`;
+  // The history can begin after the nominal start (daily bars reach back five years from today, the list's end is older).
+  // The first bar has no close before it, so the window opens there: a release before it falls outside the stated start.
+  const firstSession = sessions[0]!;
+  const start = firstSession > nominalStart ? firstSession : nominalStart;
   /** Session date -> close-to-close move from the session before, when the two are one session apart. */
   const moves = new Map<string, number>();
   for (let index = 1; index < sessions.length; index++) {
@@ -101,7 +106,7 @@ export function projectMacroDays(history: readonly PricePoint[], options: {
 
   const reactionSessions = new Set<string>();
   const found: Omit<MacroDayEvent, "multiple">[] = [];
-  for (const release of options.releases ?? macroReleases()) {
+  for (const release of options.releases) {
     if (release.date <= start || release.date > end || !isWeekday(release.date)) continue;
     const at = sessions.findIndex((date) => date >= release.date);
     if (at < 1) continue;

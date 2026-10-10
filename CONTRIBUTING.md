@@ -6,7 +6,7 @@ Bug reports and pull requests are welcome. Please follow the [code of conduct](C
 
 ## Running locally
 
-Requires [Bun](https://bun.sh).
+Requires [Bun](https://bun.sh) 1.3.11, the version CI runs (`packageManager` in `package.json`). Install it with `curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.11"`, and recheck a test that fails only on another version against 1.3.11 before chasing it.
 
 ```bash
 git clone https://github.com/gloom-sh/gloomberb.git
@@ -77,8 +77,21 @@ Some changes need one more check:
 | Web app, share page or Worker code | `bun run web:audit` and `bun run cloudflare:dry-run` |
 | Build scripts or the terminal entry point | `bun run build` |
 | Tables, rendering, or market data stores | `bun run benchmark:tui:compare --base <main checkout>` and `bun run benchmark:tui:memory` (need tmux); the Performance workflow runs both on every PR |
+| Pane chrome, docking, the DOM renderer or the desktop view | `bun run check:pane-chrome` and `bun run benchmark:pane-drag:compare --base <main checkout>`; see [Pane chrome checks](#pane-chrome-checks) |
 
 Try UI changes in the app as well. [`.agents/skills/tui-testing/SKILL.md`](.agents/skills/tui-testing/SKILL.md) shows how to drive the terminal app from tmux; give it a throwaway `GLOOMBERB_HOME`.
+
+### Pane chrome checks
+
+Unit tests press a pane's header with synthetic events, which is how v0.16.1 shipped panes that only moved from the grip and the title. `scripts/pane-chrome` drives the real desktop shell in headless Chrome with real pointer input instead, over a fixed layout of stand-in panes (`fixture.tsx`) with no network, and checks where each pane ends up: drags by the grip, the title and the bare header bar for docked, tabbed, failed, floating and fullscreen panes, tab select and reorder, the resize corner, a dock divider, and a popped-out window's title bar and caption buttons (the native window bridge is a recorder).
+
+The Pane chrome workflow runs these pointer checks on pull requests that touch the paths listed under `pull_request` in `.github/workflows/pane-chrome.yml`, and on pushes to `main` that touch them; a failed step fails the pull request. The Performance workflow's Pane drag frame budget job compares a pane drag against the base branch for the same paths and for `performance.yml` itself: its Pane drag scope job reads the list (`scripts/pane-chrome/scope.ts`) and skips the budget in seconds for any other change.
+
+- `bun run check:pane-chrome` runs every step once; `--only <text>` picks steps by name, `--repeat <n>` runs them again, `--root <checkout>` checks another checkout's sources. A failed step saves a screenshot under `~/.cache/gloomberb-pane-chrome/failures`.
+- `bun run benchmark:pane-drag:compare --base <main checkout>` compares main-thread time per frame and React commits while dragging a docked and a floating pane, and reports animation frames and estimated missed 60 Hz frames (requestAnimationFrame timing, not frames a GPU presented).
+- The first run downloads the pinned Chrome for Testing headless shell (`browser.ts`); `CHROME_PATH` uses another Chrome instead.
+- To add a case, add a step to `checks.ts` that starts from a fixture scenario, moves the pointer with `drag` or `click`, and checks the result in the page (where a pane is, what is selected), not which handler ran. A new kind of pane or layout goes in `fixture.tsx`.
+- Not covered: GPU compositing (the runner has none) and the native macOS WebKit view; the desktop window move is checked up to the bridge message.
 
 ## Tests
 
@@ -106,7 +119,9 @@ Tests run on `bun test` and sit next to the code they cover as `*.test.ts` or `*
 
 ### Host imports
 
-Built-in code under `src/` imports the host by relative path (`../../../ui`, `../../../components`, `../../../public/react`, `../../../theme/colors`). The `gloomberb/*` specifiers are the external-plugin API: Bun on Linux resolves them as a package self-reference, so typecheck and tests pass, but the Windows desktop bundle cannot resolve them and the Windows verify workflow on `main` fails.
+Built-in code under `src/` imports the host by relative path (`../../../ui`, `../../../components`, `../../../public/react`, `../../../theme/colors`). The `gloomberb/*` specifiers are the external-plugin API: Bun on Linux resolves them as a package self-reference, so typecheck and tests pass, but the Windows desktop bundle cannot resolve them and the Windows verify workflow on `main` fails. `src/architecture/import-boundaries.test.ts` fails on a `gloomberb` or `gloomberb/*` import in built-in code.
+
+Core code outside `src/plugins/builtin/` should not import a specific built-in plugin. `src/architecture/core-builtin-boundary.test.ts` checks runtime sources, including type imports and dynamic imports, against `src/architecture/core-builtin-allowlist.json` and fails on new or stale file/plugin pairs. Move shared code to `src/<area>/` or `src/plugins/builtin/shared`; run `bun scripts/update-core-builtin-allowlist.ts` after removing an edge so the allowlist shrinks. If a new edge is necessary, regenerate the allowlist and explain why in the PR.
 
 ### One component for every renderer
 
@@ -128,7 +143,7 @@ Basic UI must use the shared kit: actions, selectable and expandable rows, field
 
 ### Built-in plugins
 
-Only independently owned, registered product areas implement `GloomPlugin`. Larger built-ins may compose internal `PluginModule` objects for panes, commands, capabilities and lifecycle code, but those modules have no identity, toggle, version or persistence namespace of their own, and smaller built-ins declare their contributions directly. `PluginModule` is an internal organization tool, not a second plugin API: external plugins export one `GloomPlugin`.
+Only independently owned, registered product areas implement `GloomPlugin`. Larger built-ins may compose internal `PluginModule` objects for panes, commands, capabilities and lifecycle code, but those modules have no identity, toggle or version of their own, and smaller built-ins declare their contributions directly. A module persists under its plugin's state namespace, unless it moved from another plugin: its entry then keeps the namespace it had (`{ module, stateId }`), so its users keep their pane state, settings and caches. `PluginModule` is an internal organization tool, not a second plugin API: external plugins export one `GloomPlugin`.
 
 ## Pull requests
 

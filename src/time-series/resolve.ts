@@ -80,6 +80,7 @@ import { getPricePointTimestamp, isPriceHistoryStaleForCurrentWindow } from "../
 import { latestSessionStart, latestTradingSessionOpen, listingTimeZone, priorSessionClose } from "../market-data/market/trading-sessions";
 import { futuresGenericCaption, futuresGenericListing, futuresGenericPriceBasis } from "../utils/futures-generic";
 import { isOhlcSeriesStyle } from "./spec";
+import { SERIES_COLORS } from "../theme/series-colors";
 import type {
   ChartResolutionResult,
   ChartSeriesSpec,
@@ -87,20 +88,6 @@ import type {
   ResolvedSeries,
   TimeSeriesPoint,
 } from "./types";
-
-/** Colours for series told apart by name (compared tickers, markets). */
-export const SERIES_COLORS = [
-  "#4dabf7",
-  "#63e6be",
-  "#f6c85f",
-  "#b197fc",
-  "#ff8787",
-  "#ffa94d",
-  "#74c0fc",
-  "#e599f7",
-  "#8ce99a",
-  "#ffd43b",
-] as const;
 
 export interface ChartResolveSources {
   dataProvider: DataProvider | null;
@@ -1647,7 +1634,7 @@ async function resolveChartSpecPass(
       || (request.bounds.end !== null && now() - (request.bounds.end + 1) < 60 * 60_000);
     const staleCurrent = (value: LoadedPriceHistory) => currentWindow() && !!value.session
       && isPriceHistoryStaleForCurrentWindow(value.points, now(), {
-        exchange: source.instrument.exchange, session: value.session,
+        symbol: source.instrument.symbol, exchange: source.instrument.exchange, session: value.session,
         ...(value.resolution ? { intervalMs: CHART_RESOLUTION_STEP_MS[value.resolution] } : {}),
       });
     if (staleCurrent(loaded)) {

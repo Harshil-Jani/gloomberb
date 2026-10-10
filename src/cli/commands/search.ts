@@ -13,6 +13,7 @@ import { initMarketData, withMarketData } from "../context";
 import { fail } from "../errors";
 import type { MarketContext } from "../types";
 import type { CliCommandContext } from "../../types/plugin";
+import { indexRootFor, indexRootTryLine } from "../index-roots";
 
 interface SearchCommandDependencies {
   initMarketData?: () => Promise<MarketContext>;
@@ -52,6 +53,11 @@ export async function searchCandidatesForCli({
   }
 }
 
+/** "Saved", or the broker a row came from; never the data service's internal id. */
+function searchSourceLabel(candidate: TickerSearchCandidate): string {
+  return candidate.kind === "ticker" ? "Saved" : candidate.result?.brokerLabel || "";
+}
+
 function resolveSearchName(candidate: TickerSearchCandidate): string {
   return candidate.detail.split(" | ")[0] || candidate.detail || "—";
 }
@@ -70,12 +76,20 @@ function searchCandidateRows(candidates: TickerSearchCandidate[]) {
       || candidate.result?.brokerContract?.secType
       || candidate.ticker?.metadata.assetCategory
       || "",
-    source: candidate.kind === "ticker"
-      ? "Saved"
-      : candidate.result?.brokerLabel || candidate.result?.providerId || "Provider",
+    source: searchSourceLabel(candidate),
     providerId: candidate.result?.providerId ?? "",
     saved: candidate.kind === "ticker",
   }));
+}
+
+/**
+ * "^VIX  Cboe Volatility Index (try: gloomberb quote ^VIX)" for a bare index root, whose
+ * search finds funds named after the index but not the index, unless it does list it.
+ */
+function indexRootNote(query: string, candidates: TickerSearchCandidate[]): string | null {
+  const root = indexRootFor(query);
+  if (!root || candidates.some((candidate) => candidate.label.toUpperCase() === root.symbol)) return null;
+  return indexRootTryLine(root);
 }
 
 export function buildSearchReport({
@@ -86,6 +100,8 @@ export function buildSearchReport({
   candidates: TickerSearchCandidate[];
 }): string {
   const lines = [renderSection(`Search: ${query}`)];
+  const indexNote = indexRootNote(query, candidates);
+  if (indexNote) lines.push("", indexNote);
 
   if (candidates.length === 0) {
     lines.push(cliStyles.muted("No matches found."));
@@ -93,6 +109,8 @@ export function buildSearchReport({
   }
 
   const categories = Array.from(new Set(candidates.map((candidate) => candidate.category)));
+  // Where a row came from, only when one is saved or from a broker.
+  const showSource = candidates.some((candidate) => searchSourceLabel(candidate));
   for (const category of categories) {
     const categoryRows = candidates.filter((candidate) => candidate.category === category);
     lines.push("");
@@ -103,7 +121,7 @@ export function buildSearchReport({
         { header: "Name" },
         { header: "Exchange" },
         { header: "Type" },
-        { header: "Source" },
+        ...(showSource ? [{ header: "Source" }] : []),
       ],
       categoryRows.map((candidate) => [
         candidate.label,
@@ -117,9 +135,7 @@ export function buildSearchReport({
           || candidate.result?.brokerContract?.secType
           || candidate.ticker?.metadata.assetCategory
           || "—",
-        candidate.kind === "ticker"
-          ? "Saved"
-          : candidate.result?.brokerLabel || candidate.result?.providerId || "Provider",
+        ...(showSource ? [searchSourceLabel(candidate) || "—"] : []),
       ]),
     ));
   }
@@ -144,7 +160,12 @@ export async function search(query: string, dependencies: SearchCommandDependenc
     });
 
     if (dependencies.printResult) {
-      dependencies.printResult({ data: searchCandidateRows(candidates), metadata: { query: trimmedQuery } }, {
+      const indexNote = indexRootNote(trimmedQuery, candidates);
+      dependencies.printResult({
+        data: searchCandidateRows(candidates),
+        metadata: { query: trimmedQuery },
+        warnings: indexNote ? [indexNote] : undefined,
+      }, {
         columns: [
           { key: "category", header: "Category" },
           { key: "symbol", header: "Symbol" },

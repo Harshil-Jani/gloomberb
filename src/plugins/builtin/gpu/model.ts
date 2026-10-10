@@ -1,6 +1,6 @@
 import type { GpuBasis, GpuBoardRow, GpuEvent, GpuObservation } from "../../../api-client/gpu";
 import { staticSeries } from "../../../components/chart/static/series";
-import { SERIES_COLORS } from "../../../time-series/resolve";
+import { SERIES_COLORS } from "../../../theme/series-colors";
 import type { ResolvedSeries } from "../../../time-series/types";
 import type { PricePoint } from "../../../types/financials";
 
@@ -32,16 +32,25 @@ const PROVIDER_NAMES: Record<string, string> = {
   scaleway: "Scaleway", horizon: "Horizon", verda: "Verda", latitude: "Latitude", imwt: "IMWT",
 };
 
+/**
+ * The provider-class rows are chain-linked list indexes, not raw medians. Servers that predate the
+ * rename still send "list median"; both strings read as the index.
+ */
+const LIST_INDEX_PROVIDER = /^(Hyperscaler|Neocloud) list (?:index|median)$/;
+
 /** Cloud operators are the product being compared. The data collection intermediary stays invisible. */
 export function gpuSource(row: Pick<GpuObservation, "source" | "provider" | "skuKey">): string {
+  const listIndex = LIST_INDEX_PROVIDER.exec(row.provider);
+  if (listIndex) return `${listIndex[1]} list index`;
   if (row.source === "vast" || row.source === "vast-ai") return "Marketplace ask median";
   if (row.source === "akash") return "Decentralized ask median";
   if (row.source === "runpod") return /community/i.test(`${row.provider} ${row.skuKey}`) ? "Community cloud asks" : "Secure cloud asks";
   return PROVIDER_NAMES[row.provider.toLowerCase()] ?? row.provider;
 }
 
-/** A source inside its basis section: the section already says list or ask, so a median drops the word. */
-export const gpuShortSource = (row: Pick<GpuObservation, "source" | "provider" | "skuKey">) => gpuSource(row).replace(/ (?:list|ask) median$/, " median");
+/** A source inside its basis section: the section already says list or ask, so an index or median drops the word. */
+export const gpuShortSource = (row: Pick<GpuObservation, "source" | "provider" | "skuKey">) =>
+  gpuSource(row).replace(/ list index$/, " index").replace(/ ask median$/, " median");
 
 export function gpuTime(value: string | null | undefined, compact = false): string {
   if (!value) return "-";
@@ -73,7 +82,7 @@ export function gpuBasisColor(basis: GpuBasis): string {
 export const gpuVariant = (row: Pick<GpuObservation, "formFactor" | "memoryGb">): string[] =>
   [row.formFactor, row.memoryGb ? `${row.memoryGb}GB` : null].filter((part): part is string => !!part);
 
-/** Medians lead their section: provider-class medians and the marketplace offer medians. */
+/** Indexes and medians lead their section: the provider-class list indexes and the marketplace offer medians. */
 export const gpuHeadline = (row: Pick<GpuObservation, "providerClass" | "source">) =>
   !row.source.startsWith("ref-") && (row.providerClass === "aggregate" || row.source === "vast" || row.source === "vast-ai" || row.source === "akash");
 
@@ -151,7 +160,7 @@ export function gpuPriceLadder(rows: readonly GpuBoardRow[], model: string): Gpu
 }
 
 /** Round dollar ticks for a price axis: one, two or five times a power of ten, four to six of them. */
-export function gpuAxisTicks(low: number, high: number): number[] {
+function gpuAxisTicks(low: number, high: number): number[] {
   if (!(high > low)) return [low];
   const raw = (high - low) / 5;
   const power = 10 ** Math.floor(Math.log10(raw));
@@ -159,6 +168,32 @@ export function gpuAxisTicks(low: number, high: number): number[] {
   const ticks: number[] = [];
   for (let tick = Math.floor(low / step) * step; tick <= high + step * 0.999; tick += step) ticks.push(Math.round(tick * 1000) / 1000);
   return ticks;
+}
+
+export interface GpuAxisLabel { value: number; text: string; ratio: number; start: number }
+
+/**
+ * Labels for a price axis `cells` wide over `low`..`high`: each centred on its
+ * tick's own value, on the linear scale the bands and markers use (`ratio`, and
+ * `start`, the first cell on the terminal), with the decimals the tick step
+ * needs so neighbours never read alike ($2.0 $2.1 $2.2, $2.05 $2.10). A label
+ * that would touch its neighbour or run past the room beside the axis is left
+ * out, never moved off its value.
+ */
+export function gpuAxisLabels(low: number, high: number, cells: number, room: { left: number; right: number } = { left: 0, right: 0 }): GpuAxisLabel[] {
+  const ticks = gpuAxisTicks(low, high).filter((tick) => tick >= low && tick <= high);
+  const digits = [0, 1, 2, 3].find((places) => ticks.every((tick) => Math.abs(Number(tick.toFixed(places)) - tick) < 1e-9)) ?? 3;
+  const labels: GpuAxisLabel[] = [];
+  for (const value of ticks) {
+    const text = `$${value.toFixed(digits)}`;
+    const ratio = high > low ? (value - low) / (high - low) : 0.5;
+    // The cell a track draws this value in, so the label's middle sits on the marker's cell.
+    const start = Math.round(ratio * (cells - 1)) - Math.floor(text.length / 2);
+    const previous = labels.at(-1);
+    if (start < -room.left || start + text.length > cells + room.right || (previous && start <= previous.start + previous.text.length)) continue;
+    labels.push({ value, text, ratio, start });
+  }
+  return labels;
 }
 
 /** Published notices use their effective date; observed changes use the dated evidence. */
@@ -294,7 +329,7 @@ export function gpuEquityRows(rows: readonly GpuBoardRow[], selectedModel: strin
     const aggregates = candidates.filter((row) => row.providerClass === "aggregate").sort((a, b) =>
       Number(b.formFactor === "SXM") - Number(a.formFactor === "SXM") || (b.stats?.n ?? 0) - (a.stats?.n ?? 0) || (b.memoryGb ?? 0) - (a.memoryGb ?? 0));
     const reference = "provider" in equity ? candidates.find((row) => gpuSource(row) === equity.provider)
-      : aggregates.find((row) => row.provider === "Neocloud list median") ?? aggregates[0];
+      : aggregates.find((row) => row.provider.startsWith("Neocloud")) ?? aggregates[0];
     return { ...equity, gpuModel: model, reference: reference ?? null };
   });
 }

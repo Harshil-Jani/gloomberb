@@ -221,6 +221,8 @@ An external plugin is a directory in `~/.gloomberb/plugins/`:
 
 Plugin IDs must not reuse current or retired built-in IDs. Retired module IDs remain reserved so saved configuration can be migrated safely to their current owning plugin.
 
+`ticker-research`, `macro` and `market-overview` are retired too: each now names the group of built-ins it was split into. In `disabledPlugins` the old id stands for all of its successors, and `gloomberb plugin enable|disable <id>` switches them together.
+
 A plugin that changes its id keeps the state its users already have by declaring the old one as `stateId`:
 
 ```typescript
@@ -387,6 +389,8 @@ A pane with `headless` automatically gets:
 - strict option validation for `fn`, including allowed enum values and numeric bounds
 
 The definition is the only structured report contract. Optional `discovery` metadata supplies semantic aliases, a stable capability ID, limitations, and screenshot readiness; the catalog derives argument cardinality and options directly. No central pane capability map or report switch is needed.
+
+A pane without `headless` still answers `fn` and `shot` as a rendered view, read from the drawn pane. Every `--key value` becomes the pane setting of that key. To document and check the settings that matter, list them in the `PaneDef`'s `reportOptions` (the option schema above, plus `placeholder` for the value's name in the catalog, an `example` such as `--currencies USD,ZAR,NGN`, `normalize(value)`, which returns the setting or throws an `Error` naming what is wrong, and `settingKey` when the flag is named differently from the setting it sets). `reportNotices(settings)` returns lines the report prints above its table, such as what the default view leaves out; `--json` carries them in `data.metadata.notices`. FXC's `--currencies` is the example.
 
 ### Definition contract
 
@@ -566,7 +570,26 @@ setup(ctx) {
 }
 ```
 
-The command bar debounces each provider separately, aborts the request through `signal` as soon as the query moves on, and memoizes answers for as long as the bar is open. Provider rows are added below what the command bar already resolved, so a slow, failing, or empty provider never disturbs the local matches — return an empty array rather than an error row. Rows are capped at two extra lines and truncated to the panel width, and `emphasis` is styled by the theme, so never put markup in `text`.
+The command bar debounces each provider separately, aborts the request through `signal` as soon as the query moves on, and memoizes answers for as long as the bar is open. Provider rows are added below what the command bar already resolved, so a slow, failing, or empty provider never disturbs the local matches: return an empty array rather than an error row. Rows are capped at two extra lines and truncated to the panel width, and `emphasis` is styled by the theme, so never put markup in `text`. `badge` is a short tag left of the label (six characters at most) and `name` is drawn muted after it, such as a person's full name after their @username.
+
+Once a code claims the text (`CHAT gen`, `SEC AAPL`), providers stay quiet. A provider that has more to say after a code lists it in `shortcuts` and is then asked with the whole text; its rows sit below the code's own.
+
+When the rows come from what the plugin already holds in memory, such as the chat's own conversations, answer with `match` as well:
+
+```typescript
+ctx.registerCommandBarSearchProvider({
+  id: "my-plugin:boards",
+  category: "Boards",
+  minQueryLength: 0,
+  match: (query) => findBoards(query).map(toRow),
+  // Older versions of the app only know provide.
+  provide: async (query) => findBoards(query).map(toRow),
+});
+```
+
+The bar calls `match` instead of `provide`, as it renders and on every keystroke, so its rows land with the text that found them: no debounce, no Searching row, no memo. Keep it cheap: no request and nothing awaited. Its rows are ranked as one block among the bar's own matches, at the place of the block's best row and in the order `match` gave, and with `minQueryLength: 0` the empty bar shows them under Suggested, so return only a few there.
+
+Rows a command builds with `buildResults` take the same `badge` and `name`.
 
 The returned function withdraws the provider; otherwise it is removed with the plugin.
 
@@ -1050,6 +1073,8 @@ function LivePricesPane() {
 
 Quick settings currently support toggle fields with the `zap` icon. Unknown keys and non-toggle fields are ignored.
 
+A setting that only applies to some of what the pane shows can say where with `visible(context)`, which gets the same context as `settings`: the control is left out of the header and the pane menu where it returns false, and the field stays in the settings dialog.
+
 ### Events
 
 Subscribe to and emit app events:
@@ -1198,7 +1223,7 @@ Choose the existing control that owns the interaction you need:
 
 [The component exports](src/components/index.ts) are the complete public surface, including the entire basic UI kit. Built-in and external panes must use these components for basic UI. Shared components own appearance, theme updates, focus, keyboard/mouse behavior, disabled state, and automation semantics. A pane supplies its data and domain behavior.
 
-Use `Box` and `ScrollBox` to arrange content. Custom chart surfaces, order-book visualizations, rich inline ticker content, and specialized editors can use lower-level primitives. Do not recreate a button with a clickable `Box`, a section heading with styled `Text`, or a field with raw `Input`. Add a missing repeated pattern to the kit and migrate the callers together. Keep domain calculations and formatting with the pane.
+Use `Box` and `ScrollBox` to arrange content. A `ScrollBox` scrolls vertically unless it says `scrollY={false}`, and the focused pane's arrow keys, PageUp, PageDown, Home and End move it. Custom chart surfaces, order-book visualizations, rich inline ticker content, and specialized editors can use lower-level primitives. Do not recreate a button with a clickable `Box`, a section heading with styled `Text`, or a field with raw `Input`. Add a missing repeated pattern to the kit and migrate the callers together. Keep domain calculations and formatting with the pane.
 
 `Button` supports a compact layout and a separate `displayLabel` for short/icon actions; `label` remains the full accessible and automation name. Use `stopPropagation` for actions nested inside a row. `ActionRow` owns an expandable row's interaction and disclosure affordance. `SelectButton` opens the kit menu on the desktop and a choice dialog in the terminal; a `SelectControl` ref can open it without knowing the renderer.
 
@@ -1212,7 +1237,7 @@ Table header labels are uppercased by the kit; `SectionHeading` titles use title
 
 A pane that computes an answer from inputs (a calculator, a sizer) puts its mode switches in a `QueryBar` (inline filters) and its inputs in a `FieldGrid`: one aligned sheet of label, value and unit cells. The pane owns which field is active; while one is being edited the grid walks its cells with Tab and leaves on Esc. Icon-only actions use `IconButton` with a name from the shared icon set; never draw an SVG or glyph button yourself.
 
-Every menu, dropdown and pop-up list uses `MenuPopover` (or `Menu` inside a `Popover`): filter menus, select fields, multi-selects, suggestions and the pane menu share one look and keyboard model. There is no other floating surface; extend these rather than positioning an absolute box.
+Every menu, dropdown and pop-up list uses `MenuPopover` (or `Menu` inside a `Popover`): filter menus, select fields, multi-selects, suggestions and the pane menu share one look and keyboard model. There is no other floating surface; extend these rather than positioning an absolute box. A card that opens beside something on the page, such as a name under the pointer, passes that element's `Box` ref as the `Popover`'s `anchor` (below it, above it when there is no room, `boundary="pane"` to stay inside the pane) and keeps itself open with `onPointerEnter` and `onPointerLeave`.
 
 `PaneStatusBody` replaces the body only when the caller passes a loading, error, or empty state. Preserve existing data during refresh by passing `loading={loading && !data}` and `error={!data ? error : null}`. Use `Notice` for inline refresh errors. It supports centered states, custom loading labels, and retry `actions`:
 
@@ -1497,7 +1522,7 @@ export default {
 Every pane has to work with no mouse, in the terminal and on the desktop. Most of it comes from the kit, as long as the pane uses it:
 
 - **Footer hints are key bindings.** `usePaneFooter("my-pane", () => ({ hints: [{ id: "add", key: "a", label: "dd", onPress: add }] }), [add])` both draws `[a]dd` and binds `a` while the pane is focused and no field owns the keyboard. A pane does not bind a hinted key a second time. If it must (the key does something slightly different in one mode), its handler calls `event.preventDefault()` when it acts, or the footer fires the hint again. Keys use the keybinding grammar: `a`, `!`, `/`, `Enter`, `Ctrl+S`.
-- **The pane menu lists everything.** `.`, `Shift+F10` or the Menu key (and the `...` button) open the focused pane's menu: every enabled footer hint with its key, then entries the pane's kit controls add, the zap quick settings as toggles, then Settings, Fullscreen, Float, Lock, Close and the window actions. Give a hint a `title` when its key is not the first letter of the action (`{ key: "x", label: "port all", title: "Export All" }`); otherwise the menu reads `[a]dd` as "Add".
+- **The pane menu lists everything.** `.`, `Shift+F10` or the Menu key (and the `...` button) open the focused pane's menu: every enabled footer hint with its key, then entries the pane's kit controls add, the zap quick settings as toggles, then Settings, Fullscreen, Move to New Layout (or Move Back), Float, Lock, Close and the window actions. Give a hint a `title` when its key is not the first letter of the action (`{ key: "x", label: "port all", title: "Export All" }`); otherwise the menu reads `[a]dd` as "Add".
 - **Actions without a key** go in the pane menu with `usePaneMenuItems(id, () => items, deps)`. The items follow `PaneFooterScope` like hints, so an inactive tab's items drop out.
 - **Kit controls register themselves.** A focused `DataTableView` whose headers sort (it has `onHeaderClick`) offers "Sort by…" and "Reverse Sort" (`isColumnSortable` leaves out a column its header click ignores; `onSortChange` makes Reverse Sort flip a header that also cycles through unsorted), and moves its cursor on `Home`/`End`/`PageUp`/`PageDown`. A `QueryBar` binds `/` to its search and lists every filter, the view and "Clear Filters". A focused `Tabs` strip lists New/Close/Move Tab for the handlers it has. The first kit `Button` in an `EmptyState` or `PaneStatusBody` `actions` answers `Enter` and shows it; every action there is in the pane menu.
 - An inline action that has to stay a body button (a Retry beside a failure) goes in `ButtonActionScope`, which gives its first kit `Button` Enter and lists every one in the pane menu. Links and ticker badges in a detail go in `PaneLinkMenu`, which lists each as "Open …" in the pane menu.

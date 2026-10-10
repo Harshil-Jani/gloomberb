@@ -9,6 +9,7 @@ import { cleanTickerInput } from "./options";
 import { parsePublicTickerKey, publicTickerKey } from "../../utils/exchanges";
 import type { ResolvedPaneFunction } from "./resolver";
 import { toMarketDataContext } from "../../market-data/selectors";
+import { quoteMetadataFromQuote } from "../../market-data/quotes/metadata";
 import { loadSeasonalityHistory, SEASONALITY_HISTORY_RESOLUTION } from "../../plugins/builtin/seasonality/client";
 import type { InstrumentRef } from "../../market-data/request-types";
 import { CORRELATION_HISTORY_RESOLUTION, loadCorrelationHistory } from "../../plugins/builtin/correlation/history";
@@ -22,6 +23,26 @@ const SHOT_PRICE_HISTORY_RANGE = "5Y" as const;
 const FINANCIAL_ANALYSIS_PANE_ID = "financial-analysis";
 const FINANCIAL_ANALYSIS_TEMPLATE_ID = "financial-analysis-pane";
 
+async function loadStoredShotTicker(context: MarketContext, symbol: string): Promise<TickerRecord | null> {
+  const normalized = cleanTickerInput(symbol);
+  const { symbol: bare } = parsePublicTickerKey(normalized);
+  return await context.store.loadTicker(normalized)
+    ?? (bare !== normalized ? await context.store.loadTicker(bare) : null);
+}
+
+/**
+ * A holding the pane can value without a quote: some position carries the
+ * broker's own mark or market value. An option contract no quote covers stays
+ * at that mark in the pane, so a failed quote lookup for it is not an error.
+ */
+export async function loadBrokerMarkedHolding(context: MarketContext, symbol: string): Promise<TickerRecord | null> {
+  const ticker = await loadStoredShotTicker(context, symbol);
+  const marked = ticker?.metadata.positions.some(({ shares, markPrice, marketValue }) => (
+    shares !== 0 && (Number.isFinite(markPrice) || Number.isFinite(marketValue))
+  ));
+  return marked ? ticker : null;
+}
+
 export async function fetchTickerFinancials(
   context: MarketContext,
   symbol: string,
@@ -32,8 +53,7 @@ export async function fetchTickerFinancials(
 }> {
   const normalized = cleanTickerInput(symbol);
   const instrument = parsePublicTickerKey(normalized);
-  const tickerFile = await context.store.loadTicker(normalized)
-    ?? (instrument.symbol !== normalized ? await context.store.loadTicker(instrument.symbol) : null);
+  const tickerFile = await loadStoredShotTicker(context, symbol);
   const exchange = instrument.exchange ?? tickerFile?.metadata.exchange ?? "";
   const financials = await context.dataProvider.getTickerFinancials(instrument.symbol, exchange);
   return { tickerFile, financials, instrument: { symbol: instrument.symbol, ...(exchange ? { exchange } : {}) } };
@@ -145,14 +165,25 @@ export function isFinancialAnalysisFunction(resolved: ResolvedPaneFunction): boo
     && resolved.instance.settings?.lockedTabId === "financials";
 }
 
-export function createFallbackTicker(symbol: string, financials: TickerFinancials | null, context: MarketContext): TickerRecord {
+/**
+ * The ticker a shot shows for a symbol that is not saved. Without a usable
+ * quote (a thin US listing after the close), the listing comes from the quote
+ * metadata kept when the quote was dropped, or else from asking the source
+ * for it, so the pane still knows a US stock from a listing abroad. What no
+ * source knows stays empty rather than guessed from the base currency.
+ */
+export async function createFallbackTicker(symbol: string, financials: TickerFinancials | null, context: MarketContext): Promise<TickerRecord> {
   const instrument = parsePublicTickerKey(symbol);
   const quote = financials?.quote;
+  const known = quote ? quoteMetadataFromQuote(quote) : financials?.quoteMetadata;
+  const listing = instrument.exchange || known?.listingExchangeName
+    ? known
+    : await context.dataProvider.getQuoteMetadata?.(instrument.symbol, "").catch(() => null) ?? known;
   return {
     metadata: {
       ticker: instrument.symbol,
-      exchange: instrument.exchange ?? quote?.listingExchangeName ?? quote?.exchangeName ?? "",
-      currency: quote?.currency ?? context.config.baseCurrency,
+      exchange: instrument.exchange ?? listing?.listingExchangeName ?? "",
+      currency: listing?.currency ?? "",
       name: quote?.name ?? instrument.symbol,
       portfolios: [],
       watchlists: [],
@@ -185,5 +216,7 @@ export function collectShotSymbols(resolved: ResolvedPaneFunction, rawArg: strin
   if (resolved.capability.id === "security-relationship" && symbols.length === 1) {
     symbols = [...symbols, "SPY"];
   }
-  return [...new Set(symbols.map(cleanTickerInput).filter(Boolean))];
+  // Entries a ticker list keeps as typed (CORR's GEO:HORMUZ) are not tickers to fetch.
+  const keep = resolved.template?.shortcut?.keepArgToken;
+  return [...new Set(symbols.filter((symbol) => !keep?.(symbol)).map(cleanTickerInput).filter(Boolean))];
 }

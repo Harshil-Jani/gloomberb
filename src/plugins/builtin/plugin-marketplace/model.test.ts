@@ -66,6 +66,18 @@ describe("mergeCatalog", () => {
     expect(entry?.section).toBe("builtin");
   });
 
+  // The feed is built from the published catalog and can trail this build. A
+  // row for Macro would toggle an id that is now only an alias for three plugins.
+  test("drops a built-in this build split, which an older feed still lists", () => {
+    const entries = mergeCatalog({
+      registry: [registryPlugin({ id: "macro", bundled: true, tier: "official" })],
+      installed: [installedPlugin({ id: "credit", source: "builtin" })],
+      target: "tui",
+    });
+
+    expect(entries.map((entry) => entry.id)).toEqual(["credit"]);
+  });
+
   test("takes enabled state and version from the local catalog, not the registry", () => {
     const [entry] = mergeCatalog({
       registry: [registryPlugin({ id: "hackernews", ref: "v0.3.0" })],
@@ -395,7 +407,7 @@ describe("statusOf", () => {
 });
 
 describe("sortEntries and buildRows", () => {
-  test("groups installed, then available, then built in, with headers", () => {
+  test("groups built in, then installed, then available, with headers", () => {
     const entries = mergeCatalog({
       registry: [
         registryPlugin({ id: "popular-uninstalled", tier: "official", stars: 5000 }),
@@ -407,9 +419,9 @@ describe("sortEntries and buildRows", () => {
     });
 
     const sorted = sortEntries(entries);
-    expect(sorted.map((entry) => entry.id)).toEqual(["quiet-installed", "popular-uninstalled", "cloud"]);
+    expect(sorted.map((entry) => entry.id)).toEqual(["cloud", "quiet-installed", "popular-uninstalled"]);
     expect(buildRows(sorted).map((row) => (row.type === "header" ? `#${row.section}:${row.count}` : row.entry.id)))
-      .toEqual(["#installed:1", "quiet-installed", "#available:1", "popular-uninstalled", "#builtin:1", "cloud"]);
+      .toEqual(["#builtin:1", "cloud", "#installed:1", "quiet-installed", "#available:1", "popular-uninstalled"]);
   });
 
   test("keeps the curated order inside a section: featured, tier, stars", () => {

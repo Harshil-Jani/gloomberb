@@ -2,9 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { paneSchemas as chartSchemas } from "../../plugins/builtin/chart-composer/headless-schema";
 import { paneSchemas as correlationSchemas } from "../../plugins/builtin/correlation/headless-schema";
 import { paneSchemas as researchSchemas } from "../../plugins/builtin/research/headless-schema";
+import { optionsPositioningHeadless } from "../../plugins/builtin/options-positioning/headless";
+import { optionsScenarioHeadless } from "../../plugins/builtin/options-scenario/headless";
 import { thirteenFHeadless } from "../../plugins/builtin/thirteenf/headless";
+import { volSurfaceHeadless } from "../../plugins/builtin/vol-surface/headless";
 import { paneSchemas as tickerSchemas } from "../../plugins/builtin/ticker-detail/headless-schema";
 import type { HeadlessPaneDefinition } from "../../types/headless";
+import { getLoadablePlugins } from "../../plugins/catalog";
+import { createDefaultConfig } from "../../types/config";
+import type { MarketContext } from "../types";
 import { parseCliGlobalArgs } from "../options";
 import {
   capabilityPluginState,
@@ -12,7 +18,8 @@ import {
   isDataPaneForDomFallback,
   normalizeCapabilityOptions,
 } from "./capabilities";
-import { filterPaneCatalogEntries, renderPaneCatalogReport } from "./catalog";
+import { buildPaneCatalogEntries, filterPaneCatalogEntries, renderPaneCatalogReport, type PaneCatalogEntry } from "./catalog";
+import { createPaneCatalog } from "./discovery";
 import { parsePaneFunctionArgs } from "./options";
 
 const dummyPane = {
@@ -102,6 +109,23 @@ describe("pane function capabilities", () => {
     expect(isDataPaneForDomFallback(helpPane)).toBe(false);
   });
 
+  test("every expiry option takes a date or Unix seconds and names both forms when it cannot read one", () => {
+    const options: Array<[string, HeadlessPaneDefinition, string, string | number]> = [
+      ["vol-surface", volSurfaceHeadless, "expiration", 1799971200],
+      ["options-scenario", optionsScenarioHeadless, "expiration", 1799971200],
+      ["options-positioning", optionsPositioningHeadless("strikes"), "expiry", "2027-01-15"],
+    ];
+    for (const [id, headless, key, read] of options) {
+      const capability = getPaneFunctionCapability({ id, paneId: dummyPane.id, label: id, description: id, headless }, dummyPane);
+      expect(normalizeCapabilityOptions(capability, { [key]: "2027-01-15" })[key]).toBe(read);
+      expect(normalizeCapabilityOptions(capability, { [key]: "1799971200" })[key]).toBe(read);
+      for (const bad of ["2027-02-30", "15/01/2027", "1799971200000"]) {
+        expect(() => normalizeCapabilityOptions(capability, { [key]: bad }))
+          .toThrow(`Invalid --${key} "${bad}". Use YYYY-MM-DD (2028-01-21) or Unix seconds (1832025600).`);
+      }
+    }
+  });
+
   test("rejects financial statement options on a price comparison", () => {
     const capability = capabilityFor("comparison-chart-pane");
     expect(() => normalizeCapabilityOptions(capability, {
@@ -184,6 +208,48 @@ describe("pane catalog search", () => {
     ], "cash flow comparison");
 
     expect(matches.map(({ token }) => token)).toEqual(["GF", "CMP"]);
+  });
+
+  test("a phrase carried whole by a name or keyword ranks first, then one in a description, then each word somewhere", () => {
+    const entry = (token: string, description: string, keywords: string[], options: PaneCatalogEntry["capability"]["options"] = []) => ({
+      token,
+      label: token,
+      description,
+      paneId: token.toLowerCase(),
+      paneName: token,
+      shortcut: token,
+      aliases: [],
+      keywords,
+      defaultSettings: {},
+      capability: { ...capabilityFor(`${token.toLowerCase()}-pane`), aliases: keywords, options },
+    });
+    const word = (key: string, description: string) => ({ key, type: "string" as const, description });
+    const matches = filterPaneCatalogEntries([
+      // Alphabetical order puts the weakest matches first: only ranking can reorder them.
+      entry("AAA", "Money market curves.", [], [word("rate", "Policy rate"), word("funding", "Funding source")]),
+      entry("BBB", "Short rates against funding.", ["funding"]),
+      entry("CCC", "Daily funding rate by venue.", ["venues"]),
+      entry("PERP", "Perpetual funding.", ["perp", "funding rate", "open interest"]),
+      entry("ZZZ", "Unrelated.", ["rate"]),
+    ], "funding rate");
+
+    const order = matches.map(({ token }) => token);
+    expect(order.slice(0, 2)).toEqual(["PERP", "CCC"]);
+    expect(order.slice(2, 4).sort()).toEqual(["AAA", "BBB"]);
+    expect(order[4]).toBe("ZZZ");
+  });
+
+  test("hedging searches put OSA first among the built-in functions", async () => {
+    const context = { config: createDefaultConfig("/tmp/capabilities-test") } as MarketContext;
+    const registry = await createPaneCatalog(context, getLoadablePlugins());
+    try {
+      const entries = await buildPaneCatalogEntries(registry, context);
+      for (const query of ["collar", "hedge", "hedging", "protective put", "put spread"]) {
+        expect(filterPaneCatalogEntries(entries, query)[0]?.token, query).toBe("OSA");
+      }
+    } finally {
+      registry.destroy();
+    }
   });
 
   test("an alias opens its function even when other functions contain the same letters", () => {

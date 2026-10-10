@@ -60,7 +60,8 @@ export interface DataTableSectionHeader {
   expanded?: boolean;
 }
 
-export type DataTableScrollAlign = "nearest" | "center";
+/** Where `scrollToIndex` puts its row: the nearest edge, the middle, or the top of the viewport. */
+export type DataTableScrollAlign = "nearest" | "center" | "start";
 
 interface DataTableRowState {
   selected: boolean;
@@ -146,6 +147,12 @@ export interface DataTableProps<
   freezeFirstColumn?: boolean;
   /** Append export-only source records after the displayed table. */
   getExportMetadata?: () => readonly (readonly unknown[])[];
+  /**
+   * A rendered-view report (`gloomberb fn`) reads every row, not only those
+   * the viewport shows. For a bounded table a reader needs whole, such as an
+   * option chain's strike window; leave it off for long or paged lists.
+   */
+  reportEveryRow?: boolean;
   scrollToIndex?: number | null;
   scrollToIndexAlign?: DataTableScrollAlign;
   scrollToIndexVersion?: number;

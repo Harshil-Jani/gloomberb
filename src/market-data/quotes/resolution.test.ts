@@ -571,6 +571,33 @@ test("live after-hours prices never inherit the daily loss as their session retu
   }
 });
 
+test("the last session's move travels with its close and is never carried from another observation", () => {
+  const now = Date.parse("2026-10-09T12:01:00Z");
+  const base = { symbol: "SPCX", providerId: "gloomberb-cloud", dataSource: "delayed" as const, marketState: "PRE" as const,
+    price: 166.95, currency: "USD", previousClose: 160.57, change: 6.38, changePercent: 3.9733,
+    changeSessionDate: "2026-10-09", listingExchangeName: "NASDAQ", lastUpdated: now };
+  const snapshot = normalizeQuoteContribution({ ...base, regularClose: 160.57, regularCloseSessionDate: "2026-10-08",
+    regularChange: -7.03, regularChangePercent: -4.1945 })!;
+  expect(resolveCanonicalQuote({ cloud: snapshot }, now).quote).toMatchObject({
+    regularClose: 160.57, regularChange: -7.03, regularChangePercent: -4.1945 });
+
+  // A frame that leaves the close out takes its move with it; the old one is not kept next to a new price.
+  const bare = mergeQuoteContribution(snapshot, { ...base, price: 167 });
+  expect([bare.regularClose, bare.regularChange, bare.regularChangePercent]).toEqual([undefined, undefined, undefined]);
+  // A new close arrives with its own move, or none.
+  const newer = mergeQuoteContribution(snapshot, { ...base, regularClose: 170, regularCloseSessionDate: "2026-10-09" });
+  expect([newer.regularClose, newer.regularChange, newer.regularChangePercent]).toEqual([170, undefined, undefined]);
+  // A move reported without a close does not reach the canonical quote.
+  expect(resolveCanonicalQuote({ cloud: { ...snapshot, regularClose: undefined } }, now).quote)
+    .toMatchObject({ regularChange: undefined, regularChangePercent: undefined });
+
+  // Another price provider's quote gets neither the close nor its move.
+  const live = { symbol: "SPCX", providerId: "ibkr", dataSource: "live" as const, price: 167, currency: "USD",
+    change: 6.43, changePercent: 4, lastUpdated: now + 1000 };
+  expect(resolveCanonicalQuote({ cloud: snapshot, ibkr: live }, now + 1000).quote).toMatchObject({
+    price: 167, regularClose: undefined, regularChange: undefined, regularChangePercent: undefined });
+});
+
 test("a different price provider cannot inherit a closing-price anchor", () => {
   const now = Date.parse("2026-09-10T20:30:00Z");
   const result = resolveCanonicalQuote({
@@ -591,6 +618,27 @@ test("canonical quote preserves unavailable day changes while retaining zero and
   expect(missing.changePercent).toBeNaN();
   expect(resolveCanonicalQuote({ quote: { ...base, change: 0, changePercent: 0 } }).quote).toMatchObject({ change: 0, changePercent: 0 });
   expect(resolveCanonicalQuote({ quote: { ...base, previousClose: 10 } }).quote).toMatchObject({ change: 2, changePercent: 20 });
+});
+
+test("crypto stays open when the tape omits the session or copies an equity close", () => {
+  const now = Date.parse("2026-10-09T14:45:00Z");
+  const tape = {
+    symbol: "BTC-USD", providerId: "gloomberb-cloud", dataSource: "live" as const,
+    instrumentType: "CRYPTOCURRENCY", listingExchangeName: "CCC",
+    price: 83000, currency: "USD", change: 1, changePercent: 1, lastUpdated: now,
+  };
+  expect(normalizeQuoteContribution(tape)).toMatchObject({ marketState: "REGULAR", sessionConfidence: "derived" });
+  expect(normalizeQuoteContribution({ ...tape, marketState: "CLOSED", sessionConfidence: "explicit" }))
+    .toMatchObject({ marketState: "REGULAR", sessionConfidence: "derived" });
+  expect(normalizeQuoteContribution({ ...tape, symbol: "ETH-USD", marketState: "REGULAR", sessionConfidence: "explicit" }))
+    .toMatchObject({ marketState: "REGULAR", sessionConfidence: "explicit" });
+  expect(normalizeQuoteContribution({
+    ...tape, symbol: "MAGS", instrumentType: undefined, listingExchangeName: "CBOE",
+  })?.marketState).toBeUndefined();
+  expect(normalizeQuoteContribution({
+    ...tape, symbol: "EURUSD=X", instrumentType: "CURRENCY", listingExchangeName: "CCY", marketState: "CLOSED",
+  })?.marketState).toBe("CLOSED");
+  expect(resolveTickerFinancialsQuoteState(null, tape)?.quote?.marketState).toBe("REGULAR");
 });
 
 test("a current live price outranks a delayed one stamped later, but a stale live price does not", () => {

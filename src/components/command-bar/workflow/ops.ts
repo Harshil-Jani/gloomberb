@@ -8,6 +8,7 @@ import { scopedBrokerContractIdentityKey } from "../../../utils/instrument-ident
 import { tickerSelectionFromSearchResult } from "../../../tickers/selection";
 import { tickerInstrumentLabel } from "../../../tickers/instrument-label";
 import type { PluginRegistry } from "../../../plugins/registry";
+import { PluginOffError } from "../../../plugins/plugin-off";
 import { formatTickerListInput } from "../../../tickers/list";
 import { PANE_LOCK_SETTING_KEY, setPaneLocked, updatePaneInstance, setPaneSettings } from "../../../pane-settings";
 import { TICKER_RESEARCH_PANE_ID } from "../../../types/config";
@@ -252,7 +253,7 @@ async function resolvePaneTemplateOptions(
     const rawInput = resolvedOptions?.arg ?? resolvedOptions?.values?.tickers ?? "";
     const symbols = !String(rawInput).trim() && template.shortcut?.openWithoutArg
       ? []
-      : await resolveTickerListInput(rawInput, baseContext.activeCollectionId, deps);
+      : await resolveTickerListInput(rawInput, baseContext.activeCollectionId, deps, template.shortcut?.keepArgToken);
     resolvedOptions = {
       ...resolvedOptions,
       arg: rawInput,
@@ -291,9 +292,10 @@ export async function createPaneTemplateOrThrow(
 
   const state = deps.getState();
   const pluginId = deps.pluginRegistry.getPaneTemplatePluginId(templateId);
-  if (pluginId && state.config.disabledPlugins.includes(pluginId)) {
-    throw new Error("Enable this plugin before creating its pane.");
-  }
+  // The template's plugin, or the plugin of the pane it opens (CHOKE opens a
+  // chart): a pane of a switched-off plugin would be added hidden.
+  const disabledOwner = deps.pluginRegistry.getDisabledPaneTemplateOwner(templateId, state.config.disabledPlugins);
+  if (disabledOwner) throw new PluginOffError(disabledOwner, getPaneTemplateDisplayLabel(template));
 
   const { context, resolvedOptions } = await resolvePaneTemplateOptions(template, options, deps);
 

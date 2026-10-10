@@ -14,6 +14,7 @@ import type { LayoutConfig } from "../../../../types/config";
 import { isPaneLockedInLayout } from "../../../../pane-settings";
 import type { RendererHost } from "../../../../ui";
 import { capturePaneScreenshotPngBase64 } from "../../../../utils/dom-screenshot";
+import { fireAndForget } from "../../../../utils/fire-and-forget";
 import {
   exportPaneTableCsv,
   hasPaneTableExporter,
@@ -160,7 +161,7 @@ export function useShellPaneActions({
   const popOutFocusedPane = useCallback(() => {
     if (!focusedPaneId || desktopWindowBridge?.kind !== "main" || !desktopWindowBridge.popOutPane) return false;
     if (!isPaneInLayout(visibleLayout, focusedPaneId)) return false;
-    void desktopWindowBridge.popOutPane(focusedPaneId);
+    fireAndForget(desktopWindowBridge.popOutPane(focusedPaneId), "desktop.popOutPane");
     return true;
   }, [desktopWindowBridge, focusedPaneId, visibleLayout]);
 
@@ -171,7 +172,8 @@ export function useShellPaneActions({
       paneTypes: pluginRegistry.panes,
       apply: persistLayout,
       notify: pluginRegistry.notify,
-      onRevert: () => pluginRegistry.updateLayout(visibleLayout),
+      // Back through the shell's save, which puts hidden panes back too.
+      onRevert: () => persistLayout(visibleLayout),
     });
     return true;
   }, [contentHeight, persistLayout, pluginRegistry, visibleLayout, width]);

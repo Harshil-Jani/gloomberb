@@ -8,9 +8,10 @@ import type {
   HeadlessSeriesResult,
   HeadlessSnapshotResult,
 } from "../../types/plugin";
-import { formatUtcTime, parseReportTime, type ReportTime } from "../../utils/utc-time";
+import { localTimeSuffix, parseReportTime, type ReportTime } from "../../utils/utc-time";
 import { isRecord } from "../../utils/guards";
 import { latestRegularSessionClose } from "../../market-data/market/freshness";
+import { reportMarketSession, type ReportMarket, type SessionObservation } from "./market-session";
 
 /**
  * The four states of docs/usage.md#how-current-a-report-is, plus `unreported`
@@ -27,7 +28,10 @@ export interface ReportFreshness {
   /** Oldest observation, when it is more than a day older than `asOf`. */
   oldest?: string;
   status: ReportFreshnessStatus;
+  /** How far the data is held back; the most of its rows when they differ... */
   delayMinutes?: number;
+  /** ...and the least, only when it is less. */
+  minDelayMinutes?: number;
   /** How old the stale data is: the newest observation, or the oldest stale row when only some are. */
   ageMinutes?: number;
   /** When only some rows are stale: how many, of the rows that say whether they are... */
@@ -36,6 +40,17 @@ export interface ReportFreshness {
   /** ...and what the rest are. */
   feed?: "live" | "delayed";
   basis?: string;
+  /** Set when the dates are the start of a period: the status line then reads `Sep 2026 (monthly)`. */
+  periodicity?: "monthly" | "quarterly" | "annual";
+  /** The local date of the session close `asOf` is, when the newest observation is its venue's latest close. */
+  asOfClose?: string;
+  /**
+   * Whose trading day the dated as-of (`asOfClose`, or a date-only `asOf`) is,
+   * when one market's calendar dates it: `US`, or a venue code such as `ASX`.
+   */
+  tradingDayMarket?: string;
+  /** Where the venues of a quote report stand now, from their session calendars. */
+  market?: ReportMarket;
   /** When this report was built. */
   retrievedAt: string;
 }
@@ -59,11 +74,14 @@ interface FeedSignals {
   live: boolean;
   delayed: boolean;
   delayMinutes?: number;
+  minDelayMinutes?: number;
   /** A record-wide stale flag (metadata), read only when no row says whether it is stale. */
   stale: boolean;
   /** Rows and series that carry a `stale` flag, and the times of those that are stale. */
   flagged: number;
   staleTimes: Array<ReportTime | null>;
+  /** Rows that name the venue whose sessions they follow (`sessionExchange`), with their time. */
+  sessions: SessionObservation[];
 }
 
 interface Observations {
@@ -74,7 +92,7 @@ interface Observations {
 }
 
 function emptySignals(): FeedSignals {
-  return { live: false, delayed: false, stale: false, flagged: 0, staleTimes: [] };
+  return { live: false, delayed: false, stale: false, flagged: 0, staleTimes: [], sessions: [] };
 }
 
 function readFeedSignals(record: Record<string, unknown>, signals: FeedSignals): void {
@@ -84,7 +102,19 @@ function readFeedSignals(record: Record<string, unknown>, signals: FeedSignals):
   if (typeof delay === "number" && Number.isFinite(delay) && delay > 0) {
     signals.delayed = true;
     signals.delayMinutes = Math.max(signals.delayMinutes ?? 0, delay);
+    signals.minDelayMinutes = Math.min(signals.minDelayMinutes ?? delay, delay);
   }
+}
+
+/** A quote row's venue and reported session, so the report can say whether its market is open. */
+function readSession(record: Record<string, unknown>, time: ReportTime | null, signals: FeedSignals): void {
+  const exchange = record.sessionExchange;
+  if (typeof exchange !== "string" || !exchange.trim()) return;
+  signals.sessions.push({
+    exchange,
+    ...(typeof record.marketState === "string" ? { marketState: record.marketState } : {}),
+    time,
+  });
 }
 
 /** A row's or series' own stale flag; worst of across them, counted so a partly stale board says how much. */
@@ -147,6 +177,7 @@ function collect(
     const time = observedTime(row, now, rowKeys)
       ?? (observedKey ? null : observedTime(row, now, UPDATE_KEYS));
     if (!ignoreStaleFlags) readUnitStale(row, time, signals);
+    readSession(row, time, signals);
     if (time) observations.units.push(time);
   }
   if (definition.shape === "series") {
@@ -247,6 +278,7 @@ function resolveFreshness({ declared, signals, observations, now }: FreshnessInp
 
   let status: ReportFreshnessStatus;
   let delayMinutes: number | undefined;
+  let minDelayMinutes: number | undefined;
   let staleAt: ReportTime | null = null;
   let partial: { staleCount: number; observationCount: number; feed?: "live" | "delayed" } | null = null;
   if (declared.status === "not-a-feed") {
@@ -288,8 +320,18 @@ function resolveFreshness({ declared, signals, observations, now }: FreshnessInp
       status = feed ?? "unreported";
     }
     // A partly stale board still says how far its fresh rows are held back.
-    if (status === "delayed" || partial?.feed === "delayed") delayMinutes = declared.delayMinutes ?? signals.delayMinutes;
+    if (status === "delayed" || partial?.feed === "delayed") {
+      delayMinutes = declared.delayMinutes ?? signals.delayMinutes;
+      if (declared.delayMinutes == null && signals.minDelayMinutes != null && delayMinutes != null && signals.minDelayMinutes < delayMinutes) {
+        minDelayMinutes = signals.minDelayMinutes;
+      }
+    }
   }
+  const { market, closeDate, closeMarket } = reportMarketSession(signals.sessions, now);
+  // The close wording dates the newest observation, so only when that is what `asOf` is.
+  const asOfClose = closeDate && asOf && !declaredAsOf ? closeDate : null;
+  const tradingDayMarket = asOfClose ? closeMarket
+    : asOf?.dateOnly ? declared.tradingDayMarket?.trim() || null : null;
 
   return {
     source: declared.source?.trim() || DEFAULT_REPORT_SOURCE,
@@ -297,9 +339,14 @@ function resolveFreshness({ declared, signals, observations, now }: FreshnessInp
     ...(asOf && oldestTime && asOf.time - oldestTime.time > OLDEST_GAP_MS ? { oldest: isoTime(oldestTime) } : {}),
     status,
     ...(delayMinutes != null && delayMinutes > 0 ? { delayMinutes } : {}),
+    ...(minDelayMinutes != null && minDelayMinutes > 0 ? { minDelayMinutes } : {}),
     ...(status === "stale" && staleAt ? { ageMinutes: Math.max(0, Math.floor((now - staleAt.time) / 60_000)) } : {}),
     ...(partial ?? {}),
     ...(status === "not-a-feed" && declared.basis ? { basis: declared.basis } : {}),
+    ...(declared.periodicity && asOf?.dateOnly ? { periodicity: declared.periodicity } : {}),
+    ...(asOfClose ? { asOfClose } : {}),
+    ...(tradingDayMarket ? { tradingDayMarket } : {}),
+    ...(market ? { market } : {}),
     retrievedAt: new Date(now).toISOString(),
   };
 }
@@ -322,14 +369,20 @@ export function deriveHeadlessFreshness(
 /**
  * A rendered view has no structured data: the source is the pane's
  * declaration, the times are the cells that carry an instant, and the state
- * is what the pane's own footer says, or not reported.
+ * is what the pane's own footer says, or not reported. A pane that dates its
+ * figures itself publishes `observed` records, read as a headless report's
+ * rows are: quote or rate times, feed, delay, stale flags and venue sessions.
  */
 export function deriveRenderedFreshness(
   declared: HeadlessPaneFreshness | undefined,
-  input: { footerText: string; cellTimes: unknown[] },
+  input: { footerText: string; cellTimes: unknown[]; observed?: readonly Record<string, unknown>[] },
   now = Date.now(),
 ): ReportFreshness {
-  const signals = emptySignals();
+  const merged = mergeDeclarations(declared);
+  const observed = input.observed?.length
+    ? collect({ shape: "rows" }, { rows: input.observed as HeadlessPaneRow[] }, now, merged)
+    : null;
+  const signals = observed?.signals ?? emptySignals();
   const footer = input.footerText;
   const delayed = /\b(\d+)\s*(?:m|min|minutes?)\s+delayed\b/i.exec(footer);
   if (delayed) {
@@ -344,12 +397,92 @@ export function deriveRenderedFreshness(
     .map((value) => parseReportTime(value))
     .filter((time): time is ReportTime => time != null && time.time <= now + FUTURE_TOLERANCE_MS);
   return resolveFreshness({
-    declared: mergeDeclarations(declared),
+    declared: merged,
     signals,
     // Rendered rows are often a history (a news list, a filing feed), so only the newest is cited.
-    observations: { units: [], extra: units },
+    observations: { units: observed?.observations.units ?? [], extra: [...(observed?.observations.extra ?? []), ...units] },
     now,
   });
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+const MINUTES_PER_DAY = 24 * 60;
+const DAY_MS = 24 * 60 * 60_000;
+/** A reopen further ahead than this reads with its date, not just its weekday. */
+const WEEKDAY_ONLY_MS = 6 * DAY_MS;
+
+/**
+ * `Fri 9 Oct 2026` for a `YYYY-MM-DD` date. Always with its year: a report
+ * read later, or pasted somewhere, still says which day it means.
+ */
+function dayText(date: string): string {
+  const day = new Date(`${date.slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(day.getTime())) return date;
+  return `${WEEKDAYS[day.getUTCDay()]} ${day.getUTCDate()} ${MONTHS[day.getUTCMonth()]} ${day.getUTCFullYear()}`;
+}
+
+/**
+ * `US trading day Fri 9 Oct 2026`: a date names whose day it is when one
+ * market's calendar dates it, so a reader a day ahead of New York does not take
+ * the US Friday for their own. Never shifted to the reader's zone.
+ */
+function tradingDayText(date: string, market: string | undefined): string {
+  return market ? `${market} trading day ${dayText(date)}` : dayText(date);
+}
+
+/** `Sep 2026`, `Q2 2026` or `2026` for the period a date starts. */
+function periodText(date: string, periodicity: NonNullable<ReportFreshness["periodicity"]>): string {
+  const day = new Date(`${date.slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(day.getTime())) return date;
+  const year = day.getUTCFullYear();
+  const month = day.getUTCMonth();
+  return periodicity === "monthly" ? `${MONTHS[month]} ${year}`
+    : periodicity === "quarterly" ? `Q${Math.floor(month / 3) + 1} ${year}`
+      : `${year}`;
+}
+
+/** The period a FRED series frequency ("Monthly", "Quarterly") publishes in; null for daily and weekly series, whose dates are days. */
+export function periodicityOf(frequency: string | null | undefined): ReportFreshness["periodicity"] | null {
+  const word = frequency?.trim().toLowerCase() ?? "";
+  return word.startsWith("monthly") ? "monthly" : word.startsWith("quarterly") ? "quarterly" : word.startsWith("annual") ? "annual" : null;
+}
+
+/**
+ * `Fri 9 Oct 2026 23:59 UTC`, or `Fri 9 Oct 2026` for a date. With `local`, the
+ * reader's own time follows when they set a zone: `(Sat 10 Oct 08:59 Asia/Tokyo)`.
+ */
+function timeText(value: string, local: boolean): string {
+  const time = parseReportTime(value);
+  if (!time) return value;
+  const iso = new Date(time.time).toISOString();
+  if (time.dateOnly) return dayText(iso);
+  return `${dayText(iso)} ${iso.slice(11, 16)} UTC${local ? localTimeSuffix(time.time) : ""}`;
+}
+
+/**
+ * How long a delay is, in the unit it is stated in: `15 min`, `12 h`, `3 days`.
+ * A delay under two hours that is not a whole hour stays in minutes.
+ */
+export function delayLength(minutes: number): string {
+  const whole = Math.max(0, Math.round(minutes));
+  if (whole >= 2 * MINUTES_PER_DAY && whole % MINUTES_PER_DAY === 0) return `${whole / MINUTES_PER_DAY} days`;
+  if (whole >= 60 && whole % 60 === 0) return `${whole / 60} h`;
+  if (whole < 120) return `${whole} min`;
+  return `${Math.round(whole / 60)} h`;
+}
+
+/** `15 min delayed`, `15-20 min delayed` across venues, or `delayed` when the feed does not say. */
+function delayedText(freshness: Pick<ReportFreshness, "delayMinutes" | "minDelayMinutes">): string {
+  const most = freshness.delayMinutes;
+  if (!most) return "delayed";
+  const least = freshness.minDelayMinutes;
+  if (least && least < most) {
+    const [low, lowUnit] = delayLength(least).split(" ");
+    const [high, highUnit] = delayLength(most).split(" ");
+    return lowUnit === highUnit ? `${low}-${high} ${highUnit} delayed` : `up to ${delayLength(most)} delayed`;
+  }
+  return `${delayLength(most)} delayed`;
 }
 
 function ageText(minutes: number): string {
@@ -359,27 +492,25 @@ function ageText(minutes: number): string {
   return `${Math.floor(hours / 24)} days`;
 }
 
-function delayedText(minutes: number | undefined): string {
-  return minutes ? `Delayed ${minutes} min` : "Delayed";
-}
-
-function statusText(freshness: ReportFreshness): string {
+/** `short` counts stale rows without their total (`2 stale`), for a narrow capture. */
+function statusText(freshness: ReportFreshness, short = false): string {
   switch (freshness.status) {
     case "live":
-      return "Live";
+      return "live";
     case "delayed":
-      return delayedText(freshness.delayMinutes);
+      return delayedText(freshness);
     case "stale": {
       if (freshness.staleCount != null && freshness.observationCount != null) {
-        const rest = freshness.feed === "live" ? "Live" : freshness.feed === "delayed" ? delayedText(freshness.delayMinutes) : null;
-        return `${rest ? `${rest}, ` : ""}${freshness.staleCount} of ${freshness.observationCount} stale`;
+        const rest = freshness.feed === "live" ? "live" : freshness.feed === "delayed" ? delayedText(freshness) : null;
+        const count = short ? `${freshness.staleCount}` : `${freshness.staleCount} of ${freshness.observationCount}`;
+        return `${rest ? `${rest}, ` : ""}${count} stale`;
       }
-      return freshness.ageMinutes != null ? `Stale (${ageText(freshness.ageMinutes)} old)` : "Stale";
+      return freshness.ageMinutes != null ? `stale (${ageText(freshness.ageMinutes)} old)` : "stale";
     }
     case "not-a-feed":
-      return freshness.basis ? `Not a live feed (${freshness.basis})` : "Not a live feed";
+      return freshness.basis ? `not a live feed (${freshness.basis})` : "not a live feed";
     case "unreported":
-      return "Status not reported";
+      return "status not reported";
     default: {
       const _exhaustive: never = freshness.status;
       return _exhaustive;
@@ -388,13 +519,114 @@ function statusText(freshness: ReportFreshness): string {
 }
 
 /**
- * The one line every `fn` text report ends with:
- * `Source: Gloom Cloud | As of 2026-10-09 00:08 UTC | Delayed 10 min`.
+ * The dated as-of: a session close, a UTC time, a date, or when the report was
+ * retrieved; with the oldest observation unless `short`.
+ */
+function asOfText(freshness: ReportFreshness, short: boolean, local: boolean): string {
+  if (!freshness.asOf) return `retrieved ${timeText(freshness.retrievedAt, local)}`;
+  const market = freshness.tradingDayMarket;
+  const period = freshness.periodicity;
+  const asOf = period ? `${periodText(freshness.asOf, period)} (${period})`
+    : freshness.asOfClose
+      ? `${tradingDayText(freshness.asOfClose, market)} close`
+      : parseReportTime(freshness.asOf)?.dateOnly ? tradingDayText(freshness.asOf, market) : timeText(freshness.asOf, local);
+  const oldest = freshness.oldest && (period ? periodText(freshness.oldest, period) : dayText(freshness.oldest));
+  return oldest && !short ? `${asOf} (oldest ${oldest})` : asOf;
+}
+
+/**
+ * When the first venue opens again: its UTC time when that is later the same
+ * UTC day, else its weekday at the venue (`Mon`), with the date a week out.
+ */
+function reopenText(market: ReportMarket, now: number, local: boolean): string | null {
+  if (!market.reopensAt || !market.reopensOn) return null;
+  const at = Date.parse(market.reopensAt);
+  if (!Number.isFinite(at)) return null;
+  const iso = new Date(at).toISOString();
+  if (iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10)) return `${iso.slice(11, 16)} UTC${local ? localTimeSuffix(at) : ""}`;
+  return at - now > WEEKDAY_ONLY_MS ? dayText(market.reopensOn) : WEEKDAYS[new Date(`${market.reopensOn}T00:00:00Z`).getUTCDay()]!;
+}
+
+/** `markets closed until Mon`; `short` is the compact form a narrow capture falls back to (`reopens Mon`). */
+function marketText(market: ReportMarket, now: number, short: boolean, local: boolean): string {
+  const reopen = reopenText(market, now, local);
+  switch (market.state) {
+    case "open":
+      return short ? "open" : "markets open";
+    case "after-hours":
+      return "after hours";
+    case "pre-market":
+      return reopen ? `pre-market, opens ${reopen}` : "pre-market";
+    case "closed":
+      if (short) return reopen ? `reopens ${reopen}` : "closed";
+      return reopen ? `markets closed until ${reopen}` : "markets closed";
+    default: {
+      const _exhaustive: never = market.state;
+      return _exhaustive;
+    }
+  }
+}
+
+interface StatusLineDetail {
+  /** Leave out the oldest observation. */
+  asOf?: "short";
+  /** Count stale rows without their total. */
+  status?: "short";
+  /** `reopens Mon` for `markets closed until Mon`; `none` leaves the market out. */
+  market?: "short" | "none";
+  /** Leave out the reader's local time beside UTC times. */
+  local?: "none";
+}
+
+/**
+ * The parts of a report's status line: the dated as-of, how current the data
+ * is (`15 min delayed`, `live`), and where its markets stand, when known.
+ */
+function statusLineParts(freshness: ReportFreshness, detail: StatusLineDetail = {}): string[] {
+  const now = Date.parse(freshness.retrievedAt);
+  const local = detail.local !== "none";
+  return [
+    asOfText(freshness, detail.asOf === "short", local),
+    statusText(freshness, detail.status === "short"),
+    ...(freshness.market && detail.market !== "none" ? [marketText(freshness.market, now, detail.market === "short", local)] : []),
+  ];
+}
+
+function capitalize(text: string): string {
+  return text ? `${text[0]!.toUpperCase()}${text.slice(1)}` : text;
+}
+
+/**
+ * The plain status line of a report or capture, without its source:
+ * `Fri 9 Oct close · 15 min delayed · markets closed until Mon`.
+ */
+export function formatStatusLine(freshness: ReportFreshness): string {
+  return capitalize(statusLineParts(freshness).join(" · "));
+}
+
+/**
+ * The status line from longest to shortest, for a capture to take the first
+ * that fits its width. The date and the delay stay to the last; the market
+ * part shortens, then the reader's local time, the oldest observation and the
+ * stale total go, then the market part.
+ */
+export function statusLineVariants(freshness: ReportFreshness): string[] {
+  const details: StatusLineDetail[] = [
+    {},
+    { market: "short" },
+    { market: "short", local: "none" },
+    { asOf: "short", market: "short", local: "none" },
+    { asOf: "short", status: "short", market: "short", local: "none" },
+    { asOf: "short", status: "short", market: "none", local: "none" },
+  ];
+  return [...new Set(details.map((detail) => capitalize(statusLineParts(freshness, detail).join(" · "))))];
+}
+
+/**
+ * The one line every text report ends with, its source then its status line:
+ * `Source: Gloom Cloud · Fri 9 Oct close · 15 min delayed · markets closed until Mon`.
  * Without a dated observation it says when the report was retrieved instead.
  */
 export function formatFreshnessLine(freshness: ReportFreshness): string {
-  const time = freshness.asOf
-    ? `As of ${formatUtcTime(freshness.asOf)}${freshness.oldest ? ` (oldest ${freshness.oldest.slice(0, 10)})` : ""}`
-    : `Retrieved ${formatUtcTime(freshness.retrievedAt)}`;
-  return [`Source: ${freshness.source}`, time, statusText(freshness)].join(" | ");
+  return [`Source: ${freshness.source}`, ...statusLineParts(freshness)].join(" · ");
 }

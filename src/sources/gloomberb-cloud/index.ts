@@ -39,11 +39,13 @@ import { normalizeNewsFeed } from "../../news/news-model";
 import { resolveCurrencyUnit } from "../../utils/currency-units";
 import { canonicalExchange, canonicalTickerKey, parsePublicTickerKey } from "../../utils/exchanges";
 import { normalizePriceHistory, priceHistoryIntervalMs, reachesLatestSettledSession } from "../../utils/price-history";
-import { createProviderMiss } from "../provider-errors";
+import { createProviderMiss, providerMissReason } from "../provider-errors";
+import { assertSecRegistrantMatches } from "../sec-registrant";
+import { nonUsSecListingVenue } from "../../utils/sec";
 import { publicListingTarget } from "../listing-target";
 import { canonicalHistoryInterval, HistoryRetentionError, parseHistoryRecoveryCandidate, parseHistoryRetention, type HistoryRetention } from "../history-retention";
 import { getRouterEntityKey } from "../provider-router/cache";
-import { tickerHasListingSuffix } from "../listing-symbols";
+import { hongKongListingCode, tickerHasListingSuffix } from "../listing-symbols";
 import { parseSecAcceptanceTime } from "../sec-edgar/acceptance-time";
 import { hasMalformedIntradayHistory } from "../../time-series/history-quality";
 import {
@@ -55,6 +57,7 @@ import {
   formatCloudDateTime,
   isEmptyCloudStatus,
   mapBatchError,
+  NOT_FOUND_REASON,
   mapCloudFinancials,
   mapOptionsChain,
   mapPricePoint,
@@ -122,7 +125,7 @@ async function withCloudFallback<T>(load: () => Promise<T>, message: string): Pr
     return await load();
   } catch (error) {
     if (isCloudProviderMiss(error)) {
-      throw createProviderMiss(message);
+      throw createProviderMiss(message, providerMissReason(error));
     }
     throw error;
   }
@@ -195,7 +198,7 @@ function mapCloudPriceHistory(
       `Cloud chart data is unavailable for ${ticker}`,
     ).map((point) => mapPricePoint(point, divisor, exchange)),
   );
-  if (stale && !reachesLatestSettledSession(points, Date.now(), { exchange, intervalMs: priceHistoryIntervalMs(interval) })) {
+  if (stale && !reachesLatestSettledSession(points, Date.now(), { symbol: ticker, exchange, intervalMs: priceHistoryIntervalMs(interval) })) {
     throw createProviderMiss(`Cloud chart data is stale for ${ticker}`);
   }
   if (
@@ -235,7 +238,7 @@ function cloudHistoryResolution(interval: string): ManualChartResolution | null 
 }
 
 function quoteTargetKey(symbol: string, exchange?: string): string {
-  const target = publicListingTarget(symbol, exchange);
+  const target = cloudInstrumentTarget(symbol, exchange);
   const base = target.exchange && tickerHasListingSuffix(target.symbol) ? target.symbol.slice(0, target.symbol.indexOf(".")) : target.symbol;
   return canonicalTickerKey(base, target.exchange);
 }
@@ -249,7 +252,14 @@ function cloudResponseTargetKey(key: string, requested: Set<string>): string | u
     ? symbol : undefined;
 }
 
-const cloudInstrumentTarget = publicListingTarget;
+/**
+ * The listing as Gloom Cloud knows it. A Hong Kong code goes out with its four
+ * digits: Cloud has no 700 or 5 on HKEX, only 0700 and 0005.
+ */
+function cloudInstrumentTarget(symbol: string, exchange?: string) {
+  const target = publicListingTarget(symbol, exchange);
+  return target.exchange ? { ...target, symbol: hongKongListingCode(target.symbol, target.exchange) } : target;
+}
 
 function cloudHistoryRecovery(
   context: MarketDataRequestContext | undefined,
@@ -321,7 +331,7 @@ function unwrapRequiredCloudResponse<T>(response: CloudMarketResponse<T>, messag
     return response.data;
   }
   if (isEmptyCloudStatus(response.status)) {
-    throw createProviderMiss(response.reasonCode ?? message);
+    throw createProviderMiss(response.reasonCode ?? message, response.message, { notFound: response.reasonCode === NOT_FOUND_REASON });
   }
   throw new Error(response.reasonCode ?? message);
 }
@@ -402,13 +412,14 @@ export class GloomberbCloudProvider implements AssetDataProvider {
     return withCloudFallback(
       async () => {
         const response = await apiClient.getCloudQuote(target.symbol, target.exchange);
-        if (isStaleCloudResponse(response)) {
-          throw createProviderMiss(`Cloud quotes are stale for ${ticker}`);
-        }
-        return retainRequestedQuoteSymbol(mapQuote(
+        const quote = retainRequestedQuoteSymbol(mapQuote(
           unwrapRequiredCloudResponse(response, `Cloud quotes are unavailable for ${ticker}`),
           response.providerMeta,
         ), ticker);
+        // A stale answer is the last price the service has. It stays flagged, so
+        // no freshness check passes it and only a request with no current quote
+        // from any source falls back to it.
+        return isStaleCloudResponse(response) ? { ...quote, stale: true } : quote;
       },
       `Cloud quotes are unavailable for ${ticker}`,
     );
@@ -486,11 +497,30 @@ export class GloomberbCloudProvider implements AssetDataProvider {
     );
   }
 
-  async getSecFilings(ticker: string, count = 15): Promise<SecFilingItem[]> {
-    return withCloudFallback(async () => {
-      const response = await apiClient.getCloudSecFilings({ ticker, limit: count, offset: 0 });
+  async getSecFilings(ticker: string, count = 15, exchange?: string, context?: MarketDataRequestContext): Promise<SecFilingItem[]> {
+    const venue = nonUsSecListingVenue(ticker, exchange);
+    const name = venue ? context?.listingName?.trim() || await this.listingName(ticker, venue) || undefined : undefined;
+    const filings = await withCloudFallback(async () => {
+      const response = await apiClient.getCloudSecFilings({ ticker, exchange, name, limit: count, offset: 0 });
       return response.filings.map(mapCloudSecFiling);
     }, `Cloud SEC filings are unavailable for ${ticker}`);
+    if (!venue || filings.length === 0) return filings;
+    const symbol = parsePublicTickerKey(ticker).symbol;
+    // Without the listing's company the filings cannot be told apart from another company's.
+    if (!name) throw createProviderMiss(`SEC filings for ${symbol} could not be matched to its ${venue} listing`);
+    assertSecRegistrantMatches(filings, { symbol, exchange: venue, name });
+    return filings;
+  }
+
+  /** The company a listing belongs to, from its own quote; null when the quote prices another venue. */
+  private async listingName(ticker: string, venue: string): Promise<string | null> {
+    try {
+      const quote = await this.getQuote(ticker, venue);
+      const quoteVenue = canonicalExchange(quote.listingExchangeName || quote.exchangeName);
+      return quoteVenue === venue ? quote.name?.trim() || null : null;
+    } catch {
+      return null;
+    }
   }
 
   async getSecFilingDocuments(filing: SecFilingItem): Promise<SecFilingDocument[]> {

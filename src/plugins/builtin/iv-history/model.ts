@@ -31,12 +31,16 @@ export interface IvHistoryModel {
   status: IvHistoryPayload["status"];
   iv30: DatedValue[];
   iv90: DatedValue[];
+  /** Trade-close one-year IV; it starts later than IV30 and has gaps where long-dated series did not trade. */
+  iv365: DatedValue[];
   /** Same-session quote captures, drawn as points over the trade-close line. */
   quoteIv30: DatedValue[];
   hv: DatedValue[];
   spread: DatedValue[];
   stats: IvStatRow[];
   since: string | null;
+  /** Where the 1Y series starts and how deep it is, when that differs from the rest or leaves it unranked. */
+  oneYearNote: string | null;
   asOf: string | null;
   warnings: string[];
 }
@@ -76,7 +80,7 @@ function seriesStat(id: string, label: string, unit: IvStatUnit, points: readonl
     percentile: midrankPercentile(window, value), samples: window.length };
 }
 
-function byMethod(series: readonly IvPoint[], method: IvMethod, field: "iv30" | "iv90") {
+function byMethod(series: readonly IvPoint[], method: IvMethod, field: "iv30" | "iv90" | "iv365") {
   return series.filter((point) => point.method === method && point[field] != null)
     .map((point) => ({ date: utc(point.sessionDate), value: point[field] }))
     .sort((a, b) => a.date.getTime() - b.date.getTime());
@@ -119,12 +123,18 @@ export function projectIvHistory(
     value: stats?.value ?? null, date: stats?.date ?? null, method: stats?.method ?? null, low: stats?.low ?? null, high: stats?.high ?? null,
     rank: stats?.rank ?? null, percentile: stats?.percentile ?? null, samples: stats?.samples ?? 0 });
   const stats: IvStatRow[] = [fromServer("iv30", "IV 30d ATM", payload.stats.iv30)];
-  // A newer same-day quote capture is shown on its own row: its rank would mix methods.
+  // A newer quote capture is shown on its own row: its rank would mix methods.
   if (latest?.method === "quote-mid" && latest.iv30 != null && (!payload.stats.iv30 || latest.date > payload.stats.iv30.date)) {
-    stats.push({ id: "iv30-live", label: "IV 30d live", unit: "vol", value: latest.iv30, date: latest.date, method: "quote-mid",
+    stats.push({ id: "iv30-quote", label: "IV 30d quote", unit: "vol", value: latest.iv30, date: latest.date, method: "quote-mid",
       low: null, high: null, rank: null, percentile: null, samples: 0 });
   }
+  // IV1Y ranks trade closes only; until there is one, a stored quote gives its level, unranked.
+  const oneYear = payload.stats.iv365 ?? null;
   stats.push(fromServer("iv90", "IV 90d ATM", payload.stats.iv90),
+    !oneYear && latest?.iv365 != null
+      ? { id: "iv365", label: "IV 1Y ATM", unit: "vol", value: latest.iv365, date: latest.date, method: latest.method,
+        low: null, high: null, rank: null, percentile: null, samples: 0 }
+      : fromServer("iv365", "IV 1Y ATM", oneYear),
     seriesStat("hv", `HV ${window}`, "vol", rolling, "prices"),
     seriesStat("spread", `IV 30d - HV ${window}`, "points", spreadAll, "trade-close"),
     seriesStat("term", "IV 30d / 90d", "ratio", termAll, "trade-close"));
@@ -134,12 +144,19 @@ export function projectIvHistory(
   else if (payload.status === "unavailable" && !payload.warnings.length) warnings.push(`No listed options history found for ${payload.symbol}.`);
   if (!prices.length) warnings.push("Realized volatility unavailable: daily price history is missing.");
 
+  const tradeIv365 = byMethod(payload.series, "trade-close", "iv365");
+  const since = payload.coverage?.since ?? earliest;
+  const oneYearSince = payload.coverage?.iv365Since ?? (tradeIv365[0] ? day(tradeIv365[0].date) : null);
+  const oneYearNote = !oneYearSince ? (since ? "no IV1Y history yet" : null)
+    : oneYear?.percentile == null ? `IV1Y from ${oneYearSince}, ${tradeIv365.length} session${tradeIv365.length === 1 ? "" : "s"}`
+    : since && oneYearSince > since ? `IV1Y from ${oneYearSince}` : null;
+
   return {
     symbol: payload.symbol, status: payload.status,
-    iv30: visible(tradeIv30), iv90: visible(byMethod(payload.series, "trade-close", "iv90")),
+    iv30: visible(tradeIv30), iv90: visible(byMethod(payload.series, "trade-close", "iv90")), iv365: visible(tradeIv365),
     quoteIv30: visible(byMethod(payload.series, "quote-mid", "iv30")),
     hv, spread: visible(spreadAll), stats,
-    since: payload.coverage?.since ?? earliest, asOf: latestDate, warnings,
+    since, oneYearNote, asOf: latestDate, warnings,
   };
 }
 
@@ -152,21 +169,50 @@ export interface RichCheapRow {
   method: IvMethod | null;
   rank: number | null;
   percentile: number | null;
-  /** Session the rank belongs to (latest trade close). */
+  /** Trade close the rank is measured on: the newest trade-close session, which a newer quote reading can be ahead of. */
   rankDate: string | null;
   termSlope: number | null;
+  /** The latest reading's one-year IV, dated with IV30. */
+  iv1y: number | null;
+  /**
+   * IV1Y percentile on the close IVR and IVP are ranked on. Empty when the 1Y
+   * series has no reading that session, or there is no IV1Y beside it to describe.
+   */
+  iv1yPercentile: number | null;
   skew: number | null;
+  /** Session of the quote capture the skew comes from. */
+  skewDate: string | null;
   hv: number | null;
   ivHv: number | null;
   verdict: RichCheap;
 }
 
-/** The one reading date every screened row shares, shown once instead of per row. */
-export function sharedReading(rows: readonly RichCheapRow[]): { date: string; method: IvMethod | null } | null {
-  const dated = rows.filter((row) => row.date);
-  const first = dated[0];
-  return first && dated.every((row) => row.date === first.date && row.method === first.method)
-    ? { date: first.date!, method: first.method } : null;
+/**
+ * The dates the screened rows agree on, so each is said once instead of per
+ * row. The reading (IV30, term slope, IV/HV) and the rank (IVR, IVP) are dated
+ * apart: a quote reading can be a session ahead of the trade close its rank
+ * is measured on. A group the rows disagree on gets its own column.
+ */
+export interface RichCheapDates {
+  reading: { date: string; method: IvMethod } | null;
+  /** The trade close every ranked row is ranked on. */
+  rank: string | null;
+  /** Ranked rows are ranked on different closes. */
+  rankApart: boolean;
+  /** Some skew comes from a different session than its row's reading. */
+  skewApart: boolean;
+}
+export function richCheapDates(rows: readonly RichCheapRow[]): RichCheapDates {
+  const read = rows.filter((row) => row.date && row.method);
+  const ranked = rows.filter((row) => row.rankDate);
+  const first = read[0], firstRanked = ranked[0];
+  return {
+    reading: first && read.every((row) => row.date === first.date && row.method === first.method)
+      ? { date: first.date!, method: first.method! } : null,
+    rank: firstRanked && ranked.every((row) => row.rankDate === firstRanked.rankDate) ? firstRanked.rankDate : null,
+    rankApart: !!firstRanked && ranked.some((row) => row.rankDate !== firstRanked.rankDate),
+    skewApart: rows.some((row) => row.skew != null && row.skewDate !== row.date),
+  };
 }
 
 /** Rich or cheap against the symbol's own year: IV30 percentile at or above 80, or at or below 20. */
@@ -185,7 +231,9 @@ export function projectRichCheap(rows: readonly IvScreenRow[], hv: ReadonlyMap<s
       symbol: row.symbol, status: row.status, iv30, date: latest?.date ?? null, method: latest?.method ?? null,
       rank: row.iv30?.rank ?? null, percentile, rankDate: row.iv30?.date ?? null,
       termSlope: iv30 != null && latest?.iv90 != null ? iv30 - latest.iv90 : null,
-      skew: row.skew?.skew ?? null, hv: realized,
+      iv1y: latest?.iv365 ?? null,
+      iv1yPercentile: latest?.iv365 != null && row.iv365 && row.iv365.date === row.iv30?.date ? row.iv365.percentile : null,
+      skew: row.skew?.skew ?? null, skewDate: row.skew?.date ?? null, hv: realized,
       ivHv: iv30 != null && realized != null && realized > 0 ? iv30 / realized : null,
       verdict: verdictFor(percentile),
     };

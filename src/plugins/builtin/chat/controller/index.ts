@@ -57,6 +57,8 @@ import {
 } from "./notifications";
 import {
   CHAT_MESSAGE_EDIT_WINDOW_LABEL,
+  DISCORD_MESSAGE_EDIT_NOTICE,
+  isEditableOnGloom,
   isWithinChatMessageEditWindow,
 } from "../edit-window";
 import { ChatControllerRealtime } from "./realtime";
@@ -65,6 +67,7 @@ import { ChatControllerView } from "./view";
 import { ChatControllerMessageLoading } from "./message-loading";
 import { ChatControllerStorage } from "./storage";
 import { listUnreadInboxItems } from "../unread-inbox";
+import type { ChatConversationList } from "../conversations";
 import {
   applySignedOutChatControllerSession,
   createChatControllerSessionState,
@@ -74,6 +77,26 @@ import {
 
 const chatLog = debugLog.createLogger("chat-controller");
 const IMAGE_LINK_REFRESH_INTERVAL_MS = 60_000;
+
+function timeOf(value: string | undefined): number {
+  const time = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * The newest message held for a conversation, sent or received. A DM or group
+ * with nothing on this device yet counts from when it was started.
+ */
+function lastConversationActivity(channel: ChatChannel, state: ChannelRuntimeState | undefined): number {
+  const started = channel.kind === "direct" || channel.kind === "group"
+    ? timeOf(channel.created_at)
+    : Number.NEGATIVE_INFINITY;
+  return Math.max(
+    started,
+    timeOf(state?.messages.at(-1)?.createdAt),
+    timeOf(state?.pendingMessages.at(-1)?.createdAt),
+  );
+}
 
 export type { ChatControllerSnapshot } from "./state";
 
@@ -184,6 +207,27 @@ export class ChatController {
         messages: channel.messages,
       })),
     });
+  }
+
+  /**
+   * Every conversation the Chat sidebar lists, with its unread count and last
+   * activity, from what this device already holds; no request. Null until a
+   * verified account is signed in.
+   */
+  listConversations(): ChatConversationList | null {
+    const user = this.session.user;
+    if (!user?.emailVerified) return null;
+    return {
+      userId: user.id,
+      states: this.channelCatalog.getChannels().map((channel) => {
+        const state = this.storage.channelStates.get(channel.id);
+        return {
+          channel,
+          unreadCount: Math.max(0, state?.unreadCount ?? 0),
+          lastActivityAt: lastConversationActivity(channel, state),
+        };
+      }),
+    };
   }
 
   getChannels(): ChatChannel[] {
@@ -556,6 +600,10 @@ export class ChatController {
     if (!messageContent && !(latestOwnMessage?.id === messageId && latestOwnMessage.attachments?.length)) return false;
     if (!latestOwnMessage || latestOwnMessage.id !== messageId) {
       this.notifyFn({ body: "Only your latest sent message can be edited.", type: "error" });
+      return false;
+    }
+    if (!isEditableOnGloom(latestOwnMessage)) {
+      this.notifyFn({ body: DISCORD_MESSAGE_EDIT_NOTICE, type: "error" });
       return false;
     }
     if (!isWithinChatMessageEditWindow(latestOwnMessage)) {

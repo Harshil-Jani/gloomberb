@@ -14,13 +14,25 @@ import {
   parsePaneFunctionArgs,
   type ParsedPaneFunctionArgs,
 } from "./options";
-import { resolvePaneFunction, type ResolvedPaneFunction } from "./resolver";
+import { applyListingArgument, resolvePaneFunction, type ResolvedPaneFunction } from "./resolver";
 import { buildFunctionReport } from "./report";
-import { defaultScreenshotPath, renderDesktopShot } from "./screenshot";
+import { defaultScreenshotPath, renderDesktopShot, shotSizeWarnings } from "./screenshot";
 import {
   buildPaneCatalogEntries,
 } from "./catalog";
+import { accessGateStatus, incompleteReportGateMessage } from "./access-gate";
 import { withPersistedCloudSession } from "./cloud-session";
+import { loadForListing } from "../listing-arg";
+import { selectReportTables } from "../report-tables";
+import {
+  GLOSSARY,
+  glossaryRecord,
+  lookupGlossary,
+  renderGlossaryEntries,
+  renderGlossaryIndex,
+  renderReportGlossary,
+  reportGlossary,
+} from "../glossary";
 
 async function withPaneRuntime<T>(
   ctx: CliCommandContext,
@@ -31,13 +43,13 @@ async function withPaneRuntime<T>(
     registry: PaneFunctionCatalog;
     resolved: ResolvedPaneFunction;
   }) => Promise<T>,
-  settings: { strictHeadlessOptions?: boolean } = {},
+  settings: { strictHeadlessOptions?: boolean; tableSection?: boolean } = {},
 ): Promise<T> {
-  const parsed = parsePaneFunctionArgs(args, ctx.cliOptions);
   return withMarketData(ctx, async (market) => {
     const context: MarketContext = ctx.cliOptions.refresh ? { ...market, refresh: true } : market;
     const registry = await createPaneCatalog(context, ctx.plugins);
     try {
+      const parsed = await applyListingArgument(registry, context, parsePaneFunctionArgs(args, ctx.cliOptions));
       const resolved = await resolvePaneFunction(registry, context, parsed, settings);
       return await run({ parsed, context, registry, resolved });
     } finally {
@@ -57,22 +69,42 @@ export async function runPaneFunction(args: string[], ctx: CliCommandContext) {
           + `Use "gloomberb catalog ${resolved.token}" to inspect readiness.`,
         );
       }
+      const tabular = ctx.cliOptions.format === "csv" || ctx.cliOptions.format === "ndjson";
+      if (resolved.tableSection !== undefined && !tabular) {
+        throw new Error("--section picks one table of --csv or --ndjson output.");
+      }
+      if (resolved.tableSection === true) throw new Error("--section needs a section title or number.");
+      // A report that fails or comes back empty for an exchange the symbol is not listed on says so.
       const report = await withPersistedCloudSession(
         context,
-        () => buildFunctionReport(resolved, context, parsed.arg),
+        () => loadForListing(
+          parsed.listing ?? [],
+          context,
+          ctx,
+          () => buildFunctionReport(resolved, context, parsed.arg),
+          (built) => built.data.empty || !built.data.complete,
+        ),
       );
       if (parsed.requireBotSafe && (report.data.empty || !report.data.complete)) {
         const unavailable = report.data.unavailableSymbols.length > 0
           ? ` Missing data for ${report.data.unavailableSymbols.join(", ")}.`
           : "";
+        const gated = incompleteReportGateMessage(resolved.token, report.data.errors);
+        if (gated) throw new Error(gated);
         throw new Error(
           `${resolved.token} did not produce a complete bot-safe report.${unavailable}`,
         );
       }
-      ctx.printResult({ data: report.data }, {
-        text: () => report.text,
+      // --explain follows the report with the terms it shows; JSON lists them under `glossary`.
+      const glossary = parsed.explain ? reportGlossary(resolved.token, report.text) : null;
+      const data = glossary
+        ? { ...report.data, glossary: glossary.map(({ term, short, definition }) => ({ term, ...(short ? { short } : {}), definition })) }
+        : report.data;
+      ctx.printResult({ data }, {
+        text: () => glossary ? `${report.text}\n\n${renderReportGlossary(resolved.token, glossary)}` : report.text,
+        ...(tabular ? { tables: selectReportTables(report.tables, resolved.tableSection) } : {}),
       });
-    }, { strictHeadlessOptions: true });
+    }, { strictHeadlessOptions: true, tableSection: true });
   });
 }
 
@@ -100,6 +132,7 @@ export async function runPaneScreenshot(args: string[], ctx: CliCommandContext) 
         theme: parsed.theme,
         scale: parsed.scale,
         watermark: parsed.watermark,
+        statusLine: parsed.status !== false,
         options: parsed.options,
       });
       if (parsed.requireBotSafe && !result.usable) {
@@ -107,10 +140,12 @@ export async function runPaneScreenshot(args: string[], ctx: CliCommandContext) 
           `${resolved.token} did not produce a usable bot-safe screenshot: ${result.unusableReason ?? "unknown reason"}`,
         );
       }
-      ctx.printResult({ data: result }, {
+      // Text prints a warning on stderr, out of the way of piped output; JSON carries it in the envelope.
+      const warnings = shotSizeWarnings(parsed.clamped, parsed);
+      ctx.printResult({ data: result, ...(warnings.length > 0 ? { warnings } : {}) }, {
         text: (data) => {
           const issues = [
-            data.empty ? "empty" : null,
+            data.render.accessGate && (data.empty || !data.usable) ? accessGateStatus(data.render.accessGate) : data.empty ? "empty" : null,
             data.complete ? null : "incomplete",
             data.semanticMismatch ? "does not match the data" : null,
             data.usable ? null : "not usable",
@@ -119,7 +154,9 @@ export async function runPaneScreenshot(args: string[], ctx: CliCommandContext) 
             ["Rows", String(data.rowCount)],
             ["Status", issues.length > 0 ? cliStyles.warning(issues.join(", ")) : cliStyles.success("complete")],
           ];
+          if (data.render.statusLine) stats.push(["Status line", data.render.statusLine]);
           if (data.unusableReason) stats.push(["Reason", data.unusableReason]);
+          if (data.notices?.length) stats.push(["Notes", data.notices.join(" ")]);
           if (data.unavailableSymbols.length > 0) stats.push(["No data for", data.unavailableSymbols.join(", ")]);
           if (data.render.emptyStateMarkers.length > 0) stats.push(["Empty states", data.render.emptyStateMarkers.join(", ")]);
           if (data.render.missingExpectedText.length > 0) stats.push(["Missing text", data.render.missingExpectedText.join(", ")]);
@@ -130,9 +167,30 @@ export async function runPaneScreenshot(args: string[], ctx: CliCommandContext) 
   });
 }
 
+/** `catalog glossary [term]` and `catalog explain <term>`, which need no market data. */
+function runGlossary(term: string, ctx: CliCommandContext): void {
+  if (!term) {
+    ctx.printResult({ data: GLOSSARY.map(glossaryRecord) }, { text: renderGlossaryIndex });
+    return;
+  }
+  const { exact, partial } = lookupGlossary(term);
+  const entries = [...exact, ...partial];
+  if (entries.length === 0) {
+    ctx.fail(`No glossary entry for "${term}".`, "gloomberb catalog glossary lists every term.");
+  }
+  ctx.printResult({ data: entries.map(glossaryRecord) }, { text: () => renderGlossaryEntries(entries).join("\n") });
+}
+
+const GLOSSARY_ACTIONS = new Set(["glossary", "explain"]);
+
 export async function runPaneCatalog(args: string[], ctx: CliCommandContext) {
   await runPaneCliCommand(ctx, async () => {
     const parsed = parsePaneCatalogArgs(args);
+    const [action = "", ...term] = parsed.query.split(/\s+/);
+    if (GLOSSARY_ACTIONS.has(action.toLowerCase())) {
+      runGlossary(term.join(" "), ctx);
+      return;
+    }
     const effectiveParsed = {
       ...parsed,
       limit: ctx.cliOptions.limit ?? parsed.limit,
@@ -145,8 +203,10 @@ export async function runPaneCatalog(args: string[], ctx: CliCommandContext) {
           ? entries.filter((entry) => entry.capability.botSafe)
           : entries;
         const filtered = filterPaneCatalogEntries(botSafeEntries, parsed.query);
+        // A search also finds the terms it names; text only, the JSON stays a list of functions.
+        const glossary = lookupGlossary(parsed.query);
         ctx.printResult({ data: filtered.slice(0, effectiveParsed.limit) }, {
-          text: () => renderPaneCatalogReport(filtered, effectiveParsed),
+          text: () => renderPaneCatalogReport(filtered, effectiveParsed, glossary),
         });
       } finally {
         registry.destroy();

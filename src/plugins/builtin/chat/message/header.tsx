@@ -1,5 +1,8 @@
-import { Box, Text, useUiCapabilities } from "../../../../ui";
+import { useRef } from "react";
+import { Box, Text, useUiCapabilities, type BoxRenderable } from "../../../../ui";
 import { t } from "../../../../i18n";
+import { displayWidth } from "../../../../utils/format";
+import { chatAuthorName, isDiscordGhost } from "../ghost-user";
 import { Button } from "../../../../components/ui";
 import { MESSAGE_ACTION_WIDTH } from "../layout";
 import type { ChatMessageRenderState } from "./render-state";
@@ -81,31 +84,41 @@ export function ChatMessageHeader({
   /** The terminal sizes the author cell to its label. */
   fitAuthorWidth?: boolean;
 }) {
-  const authorLabel = msg.user.username ?? "anon";
+  const authorLabel = chatAuthorName(msg.user);
+  // A Discord ghost has no Gloom profile to open and no one to message.
+  const hasProfile = !isDiscordGhost(msg.user);
   const { nativeContextMenu } = useUiCapabilities();
+  // The card opens beside the name the pointer is on.
+  const nameRef = useRef<BoxRenderable | null>(null);
   return (
     <Box {...rowProps} flexDirection="row" height={1} paddingLeft={1}>
       <Box
-        width={fitAuthorWidth ? authorLabel.length : undefined}
+        ref={nameRef}
+        width={fitAuthorWidth ? displayWidth(authorLabel) : undefined}
         height={1}
-        onMouseOver={() => onUserHover(msg.user)}
-        onMouseMove={() => onUserHover(msg.user)}
-        onMouseOut={onUserHoverEnd}
-        data-gloom-context-menu-surface="true"
-        onMouseDown={(event: { button?: number; preventDefault?: () => void; stopPropagation?: () => void }) => {
-          event.preventDefault?.();
-          event.stopPropagation?.();
-          // A native menu opens on the right-click's contextmenu event instead.
-          if (event.button === 2 && nativeContextMenu === true) return;
-          onUserActivate?.(msg.user);
-        }}
-        onContextMenu={(event: { preventDefault?: () => void; stopPropagation?: () => void }) => onUserContextMenu?.(msg.user, event)}
-        style={{ cursor: "pointer" }}
+        {...(hasProfile
+          ? {
+            onMouseOver: () => onUserHover(msg.user, nameRef.current),
+            onMouseMove: () => onUserHover(msg.user, nameRef.current),
+            onMouseOut: onUserHoverEnd,
+            "data-gloom-context-menu-surface": "true",
+            onMouseDown: (event: { button?: number; preventDefault?: () => void; stopPropagation?: () => void }) => {
+              event.preventDefault?.();
+              event.stopPropagation?.();
+              // A native menu opens on the right-click's contextmenu event instead.
+              if (event.button === 2 && nativeContextMenu === true) return;
+              onUserActivate?.(msg.user, nameRef.current);
+            },
+            onContextMenu: (event: { preventDefault?: () => void; stopPropagation?: () => void }) => onUserContextMenu?.(msg.user, event, nameRef.current),
+            style: { cursor: "pointer" },
+          }
+          : {})}
       >
         <Text fg={state.authorColor} attributes={state.authorAttributes}>
           {authorLabel}
         </Text>
       </Box>
+      {msg.origin === "discord" && <Text fg={state.originTagColor}> Discord</Text>}
       <Text fg={state.headerStatusColor}> {state.headerStatus}</Text>
       {(state.showReplyAction || (state.showRetryAction && actionProps.retryMessage)) && <Text fg={state.headerStatusColor}> </Text>}
       <ChatMessageActions state={state} {...actionProps} />

@@ -9,6 +9,7 @@ import type {
 export type PaneFunctionReadiness = "ready" | "partial" | "live-dom" | "unsupported";
 type PaneFunctionScreenshotReadiness = PaneFunctionReadiness;
 type PaneFunctionTickerCardinality = "none" | "one" | "one-or-more" | "two-or-more" | "one-or-two";
+/** A headless option, or a rendered view's, which may name its value, show an example and check what is typed. */
 export type PaneFunctionOptionDef = HeadlessPaneOptionDef;
 export type NormalizedPaneFunctionOptions = Record<string, string | number | boolean>;
 
@@ -64,7 +65,7 @@ function fallbackCapability(
     limitations: [dataPane
       ? RENDERED_VIEW_LIMITATION
       : "This pane is an interactive surface and does not expose a data report."],
-    options: [],
+    options: [...(pane.reportOptions ?? [])],
   };
 }
 
@@ -134,6 +135,11 @@ function resolveOptionDef(
   ));
 }
 
+/** Whether the function has an option of its own under this name or an alias. */
+export function capabilityHasOption(capability: PaneFunctionCapability, key: string): boolean {
+  return resolveOptionDef(capability, key) !== undefined;
+}
+
 function normalizeEnumValue(option: PaneFunctionOptionDef, rawValue: string): string {
   const token = optionToken(rawValue);
   const match = option.values?.find((candidate) => (
@@ -154,6 +160,7 @@ function normalizeOptionValue(option: PaneFunctionOptionDef, rawValue: string | 
     throw new Error(`Invalid --${option.key} value "${rawValue}". Use true or false.`);
   }
   if (rawValue === true) throw new Error(`--${option.key} requires a value.`);
+  if (option.normalize) return option.normalize(rawValue);
   if (option.type === "enum") return normalizeEnumValue(option, rawValue);
   if (option.type === "integer") {
     const value = Number(rawValue);
@@ -175,7 +182,11 @@ export function normalizeCapabilityOptions(
   settings: { strict?: boolean } = {},
 ): NormalizedPaneFunctionOptions {
   if (!capability.botSafe) {
-    return Object.fromEntries(Object.entries(options).map(([key, value]) => [key, value]));
+    // A rendered view takes any pane setting; the options it declares are checked.
+    return Object.fromEntries(Object.entries(options).map(([key, value]) => {
+      const option = resolveOptionDef(capability, key);
+      return option ? [option.key, normalizeOptionValue(option, value)] : [key, value];
+    }));
   }
 
   const normalized: Record<string, string | number | boolean> = {};

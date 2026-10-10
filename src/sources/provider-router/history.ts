@@ -19,10 +19,11 @@ import { subtractTimeRange } from "../../time-series/date-window";
 import { clipPriceHistoryToRange } from "../../time-series/history-window";
 import { repairIsolatedIntradayOhlcOutliers } from "../../time-series/history-quality";
 import { canonicalExchange, parsePublicTickerKey, resolveExchangeTimeZone } from "../../utils/exchanges";
+import { isRoundTheClockCoin } from "../../utils/crypto-pair";
 import { zonedDateKey } from "../../utils/zoned-date-time";
 import { resolvePriceHistoryCurrencyUnit } from "../../utils/currency-units";
 import { calendarHistoryFetchState, calendarHistoryLastBarDate, dropLeadingPlaceholderBars, getPricePointTimestamp, hasUsablePriceHistory, preservePriceHistoryGaps, isPriceHistoryStaleForCurrentWindow, normalizePriceHistory, priceHistoryIntervalMs, type CalendarHistoryFetchState } from "../../utils/price-history";
-import { shouldLogProviderError } from "../provider-errors";
+import { noProviderError, noteProviderAnswer, noteProviderMiss, shouldLogProviderError, type ProviderMissNote } from "../provider-errors";
 import { HistoryCoverageError } from "../history-coverage";
 import {
   buildVariantKey,
@@ -65,6 +66,8 @@ interface HistoryAttempts {
   outcomes: Map<string, HistorySourceOutcome>;
   candidates: Map<string, HistoryRecoveryCandidate>;
   pending: Set<string>;
+  /** Whether every provider that failed said it found no listing for the symbol. */
+  misses: ProviderMissNote;
   coverageError?: HistoryCoverageError;
   retention?: HistoryRetention;
 }
@@ -104,6 +107,7 @@ function candidateForRequest(request: HistoryRequestDescriptor, sourceKey: strin
 
 function recordHistoryError(attempts: HistoryAttempts | undefined, request: HistoryRequestDescriptor, sourceKey: string, error: unknown): void {
   if (!attempts) return;
+  noteProviderMiss(attempts.misses, error);
   if (error instanceof InvalidHistoryResultError) {
     recordHistoryOutcome(attempts, sourceKey, "malformed");
   } else if (isHistoryRetentionError(error)) {
@@ -245,9 +249,9 @@ function normalizeRequestResult(value: PriceHistoryResult, request: HistoryReque
   };
 }
 
-function resultIsStale(value: PriceHistoryResult, exchange: string, intervalMs?: number | null): boolean {
+function resultIsStale(value: PriceHistoryResult, symbol: string, exchange: string, intervalMs?: number | null): boolean {
   return isPriceHistoryStaleForCurrentWindow(value.points, Date.now(), {
-    exchange, intervalMs: intervalMs ?? (value.resolution ? priceHistoryIntervalMs(value.resolution) : undefined), session: value.session,
+    symbol, exchange, intervalMs: intervalMs ?? (value.resolution ? priceHistoryIntervalMs(value.resolution) : undefined), session: value.session,
   });
 }
 
@@ -285,8 +289,13 @@ function calendarRecheckMarkerKey(request: HistoryRequestDescriptor) {
     variantKey: request.identity.variantKey, sourceKey: "router" };
 }
 
+interface HistoryRouteDeps extends ProviderRouterCoreDeps {
+  /** False in a short-lived process that must await refreshes of stale copies. */
+  revalidatesInBackground?(): boolean;
+}
+
 export class ProviderRouterHistoryRoutes {
-  constructor(private readonly deps: ProviderRouterCoreDeps) {}
+  constructor(private readonly deps: HistoryRouteDeps) {}
   private readonly historyRefreshInFlight = new Map<string, Promise<unknown>>();
   private readonly calendarRecheckAt = new Map<string, number>();
 
@@ -342,8 +351,8 @@ export class ProviderRouterHistoryRoutes {
       context,
       cachePolicyKey: intraday ? "priceHistoryIntraday" : "priceHistoryDaily",
       missingProviderError: `No history provider available for ${ticker}`,
-      isCachedValueStale: (value) => intraday && resultIsStale(value, exchange),
-      isFetchedValueStale: (value) => intraday && resultIsStale(value, exchange),
+      isCachedValueStale: (value) => intraday && resultIsStale(value, ticker, exchange),
+      isFetchedValueStale: (value) => intraday && resultIsStale(value, ticker, exchange),
       fetchBroker: async (candidate) => candidate.broker.getPriceHistory
         ? candidate.broker.getPriceHistory(
           ticker,
@@ -399,8 +408,8 @@ export class ProviderRouterHistoryRoutes {
       context,
       cachePolicyKey: intraday ? "priceHistoryIntraday" : "priceHistoryDaily",
       missingProviderError: `No resolution-aware history provider available for ${ticker}`,
-      isCachedValueStale: (value) => intraday && resultIsStale(value, exchange, intervalMs),
-      isFetchedValueStale: (value) => intraday && resultIsStale(value, exchange, intervalMs),
+      isCachedValueStale: (value) => intraday && resultIsStale(value, ticker, exchange, intervalMs),
+      isFetchedValueStale: (value) => intraday && resultIsStale(value, ticker, exchange, intervalMs),
       fetchBroker: async (candidate) => candidate.broker.getPriceHistoryForResolution
         ? candidate.broker.getPriceHistoryForResolution(
           ticker,
@@ -515,9 +524,9 @@ export class ProviderRouterHistoryRoutes {
       context,
       cachePolicyKey: intervalMs != null && intervalMs >= 24 * 60 * 60 * 1000 ? "priceHistoryDaily" : "priceHistoryIntraday",
       isCachedValueStale: (value) => currentWindowAtLookup
-        && resultIsStale(value, exchange, intervalMs),
+        && resultIsStale(value, ticker, exchange, intervalMs),
       isFetchedValueStale: (value) => isCurrentHistoryWindow(endDate)
-        && resultIsStale(value, exchange, intervalMs),
+        && resultIsStale(value, ticker, exchange, intervalMs),
       fetchBroker: async (candidate) => candidate.broker.getDetailedPriceHistory
         ? candidate.broker.getDetailedPriceHistory(
           ticker,
@@ -556,8 +565,9 @@ export class ProviderRouterHistoryRoutes {
       || hasRangeBarSize(record.value.points, request.requestedRange));
     // A background revalidation cannot correct bars from before a close in
     // time: a one-shot CLI exits first, and this caller keeps the old bars.
-    // Broader variants answer the same way. A current copy under another key
-    // (such as the refetch of this range) answers first. Next come copies
+    // That holds for daily bars and for intraday bars that stop short of the
+    // close. Broader variants answer the same way. A current copy under
+    // another key (such as the refetch of this range) answers first. Next come copies
     // fetched after the latest settled close that are behind, due a re-check
     // or not, the one reaching furthest first. A copy fetched before that close
     // answers only when no later copy exists: its latest bar may be the session
@@ -568,6 +578,7 @@ export class ProviderRouterHistoryRoutes {
     const now = Date.now();
     const fetchState = (record: { fetchedAt: number; value: PriceHistoryResult }, checkedAt?: number): CalendarHistoryFetchState => currentWindow
       ? calendarHistoryFetchState(record.value.points, record.fetchedAt, now, {
+        symbol: target.symbol,
         exchange: target.exchange || request.target.exchange,
         checkedAt,
         // Bar size comes from the request: a cached weekly or monthly series
@@ -580,7 +591,7 @@ export class ProviderRouterHistoryRoutes {
     const ranked = cachedRecords.filter((record) => hasUsablePriceHistory(record.value.points)).map((record) => {
       const tier = fetchTier[fetchState(record)];
       return { record, tier, exact: request.exactCacheVariantKeys.includes(record.variantKey),
-        lastBar: tier === 0 ? "" : calendarHistoryLastBarDate(record.value.points, target.exchange || request.target.exchange) ?? "" };
+        lastBar: tier === 0 ? "" : calendarHistoryLastBarDate(record.value.points, target.exchange || request.target.exchange, target.symbol) ?? "" };
     });
     // Current copies keep their listed order. Otherwise ties go to this key's
     // own copy, then the latest fetch, rather than to row order.
@@ -604,12 +615,16 @@ export class ProviderRouterHistoryRoutes {
     if (cachedBeforeClose) this.markCalendarChecked(request, now);
     const usableCached = hasUsablePriceHistory(cachedValue.points) && cached && !cached.expired && !cachedHistoryStale
       && !cachedBeforeClose;
-    if (usableCached && !forceRefresh) {
+    // A copy behind or before the latest session is re-checked on the paced
+    // schedule above, not on its short TTL: the source is likely to answer
+    // the same. A short-lived process (the CLI) closes its store before a
+    // background refresh lands, so it refetches a copy past its TTL before
+    // answering and falls back to that copy.
+    const refreshDue = !!cached?.stale && servedState === "current";
+    const awaitRefresh = refreshDue && !(this.deps.revalidatesInBackground?.() ?? true);
+    if (usableCached && !forceRefresh && !awaitRefresh) {
       const exactHit = request.exactCacheVariantKeys.includes(cached.variantKey);
-      // A copy behind or before the latest session is re-checked on the
-      // paced schedule above, not on its short TTL: the source is likely to
-      // answer the same.
-      if (cached.stale && servedState === "current") {
+      if (refreshDue) {
         scheduleRouterRevalidation(this.historyRefreshInFlight, request.identity.revalidationKey, () => this.refreshHistory(request));
       }
       return exactHit || !request.requestedRange
@@ -621,7 +636,7 @@ export class ProviderRouterHistoryRoutes {
     const onUnavailable = (sourceKey: string, value: PriceHistoryResult) => {
       if (value.points.length && !hasUsablePriceHistory(value.points)) supersededCacheSources.add(sourceKey);
     };
-    const attempts: HistoryAttempts = { outcomes: new Map(), candidates: new Map(), pending: new Set() };
+    const attempts: HistoryAttempts = { outcomes: new Map(), candidates: new Map(), pending: new Set(), misses: {} };
     const brokerResult = await withBrokerTimeout(this.fetchBrokerHistory(request, brokerCandidates, onUnavailable, attempts));
     for (const sourceKey of [...attempts.pending]) recordHistoryOutcome(attempts, sourceKey, "timeout");
     if (brokerResult && hasUsablePriceHistory(brokerResult.value.points)) return withReportedGaps(brokerResult.value);
@@ -657,7 +672,12 @@ export class ProviderRouterHistoryRoutes {
       throw new HistoryRetentionError(candidates[0]?.retention ?? attempts.retention, { candidates, outcomes: [...attempts.outcomes.values()] });
     }
     if (!providerResult && request.missingProviderError && !reportedGaps.some((value) => value.points.length > 0)) {
-      throw new Error(request.missingProviderError);
+      // A source answered a coin's history but it stops short of the present: say so, not that nothing answered.
+      const behind = isRoundTheClockCoin(target.symbol, target.exchange || request.target.exchange)
+        && [...attempts.outcomes.values()].some((outcome) => outcome.outcome === "stale");
+      if (behind) throw new Error(`Latest history for ${target.symbol} is behind`);
+      // The service has no listing for the symbol: say it is not a ticker, not that no source answered.
+      throw noProviderError(request.missingProviderError, { notFound: attempts.misses.notFound }, request.target.symbol);
     }
     return withReportedGaps(providerResult?.value ?? { points: [], resolution: historyResolutionForInterval(request.interval) });
   }
@@ -734,6 +754,7 @@ export class ProviderRouterHistoryRoutes {
       attempts?.pending.add(sourceKey);
       try {
         const fetched = await request.fetchProvider(provider);
+        noteProviderAnswer(attempts?.misses);
         if (fetched === null) { recordHistoryOutcome(attempts, sourceKey, "empty"); return null; }
         if (!Array.isArray(fetched.points)) { recordHistoryOutcome(attempts, sourceKey, "malformed"); return null; }
         const value = normalizeRequestResult({ ...fetched, sourceKey }, request);

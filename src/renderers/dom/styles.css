@@ -140,9 +140,11 @@ button, [data-gloom-interactive="true"] { cursor: pointer; }
   -webkit-user-select: none;
   user-select: none;
 }
-[data-gloom-role="pane-grip"],
-[data-gloom-role="pane-header-chrome"] {
+[data-gloom-role="pane-header"][data-drag-surface="pane"] {
   cursor: grab;
+}
+[data-gloom-role="pane-header-tabs"] {
+  cursor: default;
 }
 [data-gloom-role="pane-header"] [data-gloom-role="tab-button"],
 [data-gloom-role="pane-header"] button,
@@ -157,12 +159,20 @@ button, [data-gloom-interactive="true"] { cursor: pointer; }
 [data-gloom-role="pane-restore"] {
   cursor: pointer;
 }
-body.gloom-dragging [data-gloom-role="pane-grip"],
-body.gloom-dragging [data-gloom-role="pane-header-chrome"] {
+/* Up for the length of a drag (see drag-shield.ts): the grabbing cursor
+   everywhere, and no hover under the pointer. */
+[data-gloom-role="drag-shield"] {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
   cursor: grabbing;
 }
-body.gloom-dragging {
-  cursor: grabbing;
+/* Surfaces that drag a pane, its size or a split keep the whole pointer
+   stream: a touch or pen press on them never starts a pan or zoom. */
+[data-gloom-role="pane-header"][data-drag-surface="pane"],
+[data-gloom-role="resize-handle"],
+[data-gloom-role="dock-divider"] {
+  touch-action: none;
 }
 [data-gloom-role="pane-title"] {
   overflow: hidden;
@@ -310,9 +320,6 @@ body.gloom-dragging {
 }
 [data-gloom-role="chart-surface"] {
   cursor: crosshair;
-}
-body.gloom-dragging [data-gloom-role="chart-surface"] {
-  cursor: grabbing;
 }
 [data-gloom-role="tab-list"] {
   scrollbar-width: none;
@@ -746,6 +753,19 @@ html[data-gloom-screenshot="true"] [data-gloom-role="chart-watermark"] {
   box-shadow: inset 1px 0 0 var(--qb-hairline);
 }
 .gloom-qb-inline .gloom-qb-view { margin-left: 0; box-shadow: none; align-self: stretch; }
+/* A long inline choice (an expiry strip) scrolls by itself, as the terminal's
+   does, so its label and the controls beside it stay in view. */
+.gloom-qb-filters[data-strip="true"],
+.gloom-qb-inline[data-strip="true"] { flex: 0 1 auto; min-width: 0; }
+.gloom-qb-inline[data-strip="true"] .gloom-qb-segments {
+  flex: 0 1 auto;
+  min-width: 12ch;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.gloom-qb-inline[data-strip="true"] .gloom-qb-segments::-webkit-scrollbar { display: none; }
+.gloom-qb-inline[data-strip="true"] .gloom-qb-segments > button { flex: none; white-space: nowrap; }
+.gloom-qb-filters[data-strip="true"] > :not([data-strip="true"]) { flex: none; }
 .gloom-qb-view button {
   height: 100%;
   padding: 0 8px;

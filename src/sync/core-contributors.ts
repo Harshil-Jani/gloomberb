@@ -24,7 +24,8 @@ import {
 import {
   addLegacyBuiltinDisabledPluginAliases,
   addLegacyBuiltinPluginOwnerAliases,
-  normalizeBuiltinDisabledPluginIds,
+  decodeBuiltinDisabledPluginIds,
+  encodeBuiltinDisabledPluginIds,
   normalizeBuiltinPluginStateMap,
 } from "../plugins/ownership";
 import { isRecord } from "../utils/guards";
@@ -102,6 +103,10 @@ function sanitizePortfolio(portfolio: Portfolio): Portfolio {
     currency: portfolio.currency,
     brokerId: portfolio.brokerId,
     lastSyncedAt: portfolio.lastSyncedAt,
+    // Cash and targets are the user's own entries: a pulled portfolio without
+    // them would erase them on this device.
+    ...(portfolio.cash ? { cash: { ...portfolio.cash } } : {}),
+    ...(portfolio.targetWeights ? { targetWeights: { ...portfolio.targetWeights } } : {}),
   };
 }
 
@@ -359,7 +364,7 @@ function collectCoreConfigPayload(config: AppConfig) {
     // This build merges profiles one by one before it pushes, so a profile
     // missing from its list was removed, not one it never pulled.
     brokerInstancesMergedById: true,
-    disabledPlugins: addLegacyBuiltinDisabledPluginAliases(config.disabledPlugins),
+    disabledPlugins: addLegacyBuiltinDisabledPluginAliases(encodeBuiltinDisabledPluginIds(config.disabledPlugins)),
     disabledSources: config.disabledSources,
     pluginConfig: addLegacyBuiltinPluginOwnerAliases(config.pluginConfig),
     theme: config.theme,
@@ -674,7 +679,7 @@ function mergeConfigPayload(
     && Array.isArray(payload.disabledPlugins)
     && payload.disabledPlugins.every((pluginId) => typeof pluginId === "string")
   ) {
-    next.disabledPlugins = normalizeBuiltinDisabledPluginIds(payload.disabledPlugins);
+    next.disabledPlugins = decodeBuiltinDisabledPluginIds(payload.disabledPlugins);
   }
   if (canApply("pluginConfig") && isPluginStateMap(payload.pluginConfig)) {
     next.pluginConfig = withLocalPluginSecrets(

@@ -186,7 +186,7 @@ export function SeasonalityPane({ width, height, focused }: PaneProps) {
   return <Box width={width} height={height} flexDirection="column" overflow="hidden">
     {strip}
     <QueryBar width={width} filters={[{ id: "lookback", label: "Lookback", value: String(lookback), options: LOOKBACK_OPTIONS, onChange: setLookback }]} />
-    {!symbol ? <EmptyState title="Choose a ticker." /> : <PaneStatusBody subject="seasonality" loading={history.loading && !model && !weekdayModel}
+    {!symbol ? <EmptyState title="Select a ticker." /> : <PaneStatusBody subject="seasonality" loading={history.loading && !model && !weekdayModel}
       error={!model && !weekdayModel ? history.error ?? identityError ?? null : null}
       empty={model ? !model.years.length : !!weekdayModel && !weekdayModel.start}>
       {weekdayModel ? <>

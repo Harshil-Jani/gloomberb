@@ -1,4 +1,5 @@
 import { getSharedRegistry } from "../../plugins/registry";
+import { findCachedPortfolioAccount } from "../../plugins/builtin/portfolio-list/cached-account";
 import { parsePublicTickerKey } from "../../utils/exchanges";
 import { apiClient } from "../../api-client";
 import type { MarketContext } from "../types";
@@ -17,14 +18,24 @@ import type {
   HeadlessSeriesResult,
   HeadlessSnapshotResult,
 } from "../../types/plugin";
-import { cliStyles, renderSection, renderStats, renderTable } from "../../utils/cli-output";
+import { cliStyles, renderSection, renderStats, renderTable, wrapToTerminal } from "../../utils/cli-output";
 import { humanizeCliKey } from "../result";
+import {
+  exportEntriesTable,
+  exportNumber,
+  exportRowsTable,
+  float32Shortest,
+  reportFooterLines,
+  type CliReportTable,
+  type CliReportTables,
+} from "../report-tables";
+import { labelWithUnit } from "../../utils/display-number";
 import { observationDate } from "../../time-series/price-comparison";
 import type { ResolvedSeries } from "../../time-series/types";
 import type { PaneFunctionReport } from "./report";
 import type { ResolvedPaneFunction } from "./resolver";
 import { isRecord } from "../../utils/guards";
-import { formatUtcTime } from "../../utils/utc-time";
+import { formatUtcTime, localTimeSuffix } from "../../utils/utc-time";
 import { deriveHeadlessFreshness, formatFreshnessLine, type ReportFreshness } from "./freshness";
 
 interface SerializableHeadlessColumn {
@@ -151,7 +162,9 @@ async function loadHeadlessPaneModel(
  */
 export async function loadResolvedHeadlessPaneModel(
   resolved: ResolvedPaneFunction,
-  context: Pick<MarketContext, "config" | "store" | "refresh"> & { dataProvider: HeadlessPaneContext["marketData"] },
+  context: Pick<MarketContext, "config" | "store" | "refresh"> & Partial<Pick<MarketContext, "persistence">> & {
+    dataProvider: HeadlessPaneContext["marketData"];
+  },
   rawArgument: string,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<LoadedHeadlessPaneModel> {
@@ -170,7 +183,7 @@ export async function loadResolvedHeadlessPaneModel(
       const portfolio = context.config.portfolios.find(row => row.id === id);
       if (!portfolio) return null;
       const tickers = (await context.store.loadAllTickers()).filter(row => row.metadata.portfolios.includes(id));
-      return { portfolio, tickers };
+      return { portfolio, tickers, account: findCachedPortfolioAccount(context.config, portfolio, context.persistence?.resources) };
     },
     async resolveWatchlist(id) {
       if (!context.config.watchlists.some(row => row.id === id)) return null;
@@ -246,6 +259,7 @@ export function serializeHeadlessPaneResult(
 ): Record<string, unknown> {
   const common = {
     ...(result.errors ? { errors: result.errors } : {}),
+    ...(result.notes?.length ? { notes: result.notes } : {}),
     ...(result.metadata ? { metadata: result.metadata } : {}),
   };
   switch (definition.shape) {
@@ -303,27 +317,13 @@ function displayInstant(value: string): string {
   if (!Number.isFinite(time)) return value;
   const iso = new Date(time).toISOString();
   if (iso.slice(17, 23) === "00.000") return displayTime(time);
-  return `${iso.slice(0, iso.endsWith(".000Z") ? 19 : 23).replace("T", " ")} UTC`;
+  return `${iso.slice(0, iso.endsWith(".000Z") ? 19 : 23).replace("T", " ")} UTC${localTimeSuffix(time)}`;
 }
 
 /** Drops binary floating-point noise (4.019999999999996) without rounding real digits. */
 function displayNumber(value: number): string {
   if (!Number.isFinite(value) || Number.isInteger(value) || Math.abs(value) >= 1e9) return String(value);
   return String(float32Shortest(value) ?? Number(value.toPrecision(12)));
-}
-
-/**
- * Some feeds store prices as float32, so 338.93 arrives as 338.929992676. A value
- * that is exactly a float32 prints as the shortest decimal that rounds back to it,
- * which leaves genuine doubles (never exactly float32 unless short) untouched.
- */
-function float32Shortest(value: number): number | null {
-  if (Math.fround(value) !== value) return null;
-  for (let digits = 1; digits <= 9; digits += 1) {
-    const candidate = Number(value.toPrecision(digits));
-    if (Math.fround(candidate) === value) return candidate;
-  }
-  return null;
 }
 
 function displayTime(time: number): string {
@@ -333,14 +333,36 @@ function displayTime(time: number): string {
 
 const CALENDAR_RESOLUTIONS = new Set(["1d", "1wk", "1mo"]);
 
-/** Session bars print the trading date the chart and comparison notice use, not the bar's open instant. */
-function seriesPointDate(series: HeadlessSeries, date: HeadlessSeries["points"][number]["date"]): string {
-  const time = date instanceof Date ? date.getTime() : typeof date === "number" ? date : Date.parse(date);
-  if (!Number.isFinite(time)) return typeof date === "string" ? date : "-";
+type SeriesPointDate = HeadlessSeries["points"][number]["date"];
+
+function seriesPointTime(date: SeriesPointDate): number {
+  return date instanceof Date ? date.getTime() : typeof date === "number" ? date : Date.parse(date);
+}
+
+function isDateOnly(date: SeriesPointDate): boolean {
+  return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date);
+}
+
+/** Session bars are dated by the trading date the chart and comparison notice use, not the bar's open instant. */
+function calendarSeries(series: HeadlessSeries): (HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis">>) | null {
   const resolved = series as HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis">>;
-  return resolved.historyResolution && CALENDAR_RESOLUTIONS.has(resolved.historyResolution)
-    ? observationDate(time, resolved)
-    : formatUtcTime({ time, dateOnly: typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) });
+  return resolved.historyResolution && CALENDAR_RESOLUTIONS.has(resolved.historyResolution) ? resolved : null;
+}
+
+function seriesPointDate(series: HeadlessSeries, date: SeriesPointDate): string {
+  const time = seriesPointTime(date);
+  if (!Number.isFinite(time)) return typeof date === "string" ? date : "-";
+  const calendar = calendarSeries(series);
+  return calendar ? observationDate(time, calendar) : formatUtcTime({ time, dateOnly: isDateOnly(date) });
+}
+
+/** The same date for a spreadsheet: the trading date, the calendar date, or the ISO instant. */
+function seriesPointExportDate(series: HeadlessSeries, date: SeriesPointDate): string {
+  const time = seriesPointTime(date);
+  if (!Number.isFinite(time)) return typeof date === "string" ? date : "";
+  const calendar = calendarSeries(series);
+  if (calendar) return observationDate(time, calendar);
+  return isDateOnly(date) ? date as string : new Date(time).toISOString().replace(".000Z", "Z");
 }
 
 function seriesValue(series: HeadlessSeries, value: number | null): string {
@@ -360,10 +382,12 @@ function renderRows(
       header: humanizeCliKey(column.header),
       align: column.align,
       width: column.width,
+      shrink: column.shrink,
     })),
     rows.map((row) => columns.map((column) => {
       const value = row[column.key];
-      return column.format ? column.format(value, row) : displayValue(value);
+      const format = column.textFormat ?? column.format;
+      return format ? format(value, row) : displayValue(value);
     })),
   );
 }
@@ -371,6 +395,10 @@ function renderRows(
 function renderEntries(entries: HeadlessPaneEntry[]): string {
   if (entries.length === 0) return "No data.";
   return renderStats(entries.map((entry) => [entry.label, entry.formatted ?? displayValue(entry.value)]));
+}
+
+function statisticsEntries(stats: NonNullable<HeadlessSeriesResult["stats"]>): HeadlessPaneEntry[] {
+  return Array.isArray(stats) ? stats : Object.entries(stats).map(([label, value]) => ({ label, value }));
 }
 
 function renderBundle(
@@ -408,17 +436,133 @@ function renderSeries(result: HeadlessSeriesResult): string[] {
   ];
   const lines = [renderRows(rows, columns, undefined)];
   if (result.stats) {
-    const entries = Array.isArray(result.stats)
-      ? result.stats
-      : Object.entries(result.stats).map(([label, value]) => ({ label, value }));
-    lines.push("", renderSection("Statistics"), renderEntries(entries));
+    lines.push("", renderSection("Statistics"), renderEntries(statisticsEntries(result.stats)));
   }
   return lines;
 }
 
-function reportTitle(definition: HeadlessPaneDefinition, args: HeadlessPaneLoadArgs, fallback: string): string {
-  if (typeof definition.describe === "function") return definition.describe(args);
+/** The headers the text table prints. */
+function displayedColumns(columns: HeadlessPaneColumn[]): HeadlessPaneColumn[] {
+  return columns.map((column) => ({ ...column, header: humanizeCliKey(column.header) }));
+}
+
+const SERIES_FIELDS = ["value", "open", "high", "low", "close", "volume"] as const;
+
+/** Every point of a series: its date (the trading date for session bars) and its values, in the series' unit. */
+function seriesTable(series: HeadlessSeries): CliReportTable {
+  const fields = SERIES_FIELDS.filter((field) => series.points.some((point) => point[field] != null));
+  const unit = series.unit?.trim() ?? "";
+  const dates = series.points.map((point) => seriesPointExportDate(series, point.date));
+  const header = (field: (typeof SERIES_FIELDS)[number]) => {
+    const name = `${field[0]!.toUpperCase()}${field.slice(1)}`;
+    return field === "volume" ? name : labelWithUnit(name, unit);
+  };
+  return {
+    title: series.label,
+    columns: [dates.every((date) => date.length <= 10) ? "Date" : "Time", ...fields.map(header)],
+    rows: series.points.map((point, index) => [
+      dates[index]!,
+      ...fields.map((field) => {
+        const value = point[field];
+        return typeof value === "number" && Number.isFinite(value) ? exportNumber(value) : "";
+      }),
+    ]),
+  };
+}
+
+/** What a report leaves out, for the closing `# incomplete` line. */
+function incompleteDetail(
+  result: HeadlessPaneResult,
+  status: { complete: boolean; unavailableSymbols: string[] },
+): boolean | string {
+  if (status.complete) return false;
+  const requested = result.metadata?.requested;
+  const available = result.metadata?.available;
+  if (typeof requested === "number" && typeof available === "number" && available < requested) {
+    return `${available} of ${requested} available`;
+  }
+  return status.unavailableSymbols.length > 0 ? `no data for ${status.unavailableSymbols.join(", ")}` : true;
+}
+
+function textNotices(result: HeadlessPaneResult): string[] {
+  const notices = result.metadata?.notices;
+  if (!Array.isArray(notices)) return [];
+  return [...new Set(notices.filter((notice): notice is string => typeof notice === "string" && notice.trim().length > 0))];
+}
+
+/**
+ * The tables of a headless report for `--csv` and `--ndjson`, with the text
+ * view's columns: a rows or snapshot report is one table, a bundle one per
+ * section (key/value sections as `Metric,Value`), a series report one per
+ * series with every point, then its statistics. The footer carries the text
+ * view's closing line, notices, notes and errors.
+ */
+export function headlessReportTables(
+  definition: HeadlessPaneDefinition,
+  result: HeadlessPaneResult,
+  args: HeadlessPaneLoadArgs,
+  fallbackTitle: string,
+  freshness: ReportFreshness,
+  status: { complete: boolean; unavailableSymbols: string[] },
+): CliReportTables {
+  const title = reportTitle(definition, args, result, fallbackTitle);
+  let tables: CliReportTable[];
+  switch (definition.shape) {
+    case "rows": {
+      const rowsResult = result as HeadlessPaneResult & { rows: HeadlessPaneRow[]; columns?: HeadlessPaneColumn[] };
+      const columns = displayedColumns(columnsFor(rowsResult.rows, rowsResult.columns, definition.columns));
+      tables = [exportRowsTable(title, columns, rowsResult.rows)];
+      break;
+    }
+    case "bundle":
+      tables = (result as HeadlessBundleResult).sections.map((section) => (
+        "rows" in section && section.rows
+          ? exportRowsTable(section.title, displayedColumns(columnsFor(section.rows, section.columns, definition.columns)), section.rows)
+          : exportEntriesTable(section.title, section.entries)
+      ));
+      break;
+    case "series": {
+      const seriesResult = result as HeadlessSeriesResult;
+      tables = seriesResult.series.map(seriesTable);
+      if (seriesResult.stats) tables.push(exportEntriesTable("Statistics", statisticsEntries(seriesResult.stats)));
+      break;
+    }
+    case "snapshot": {
+      const snapshot = result as HeadlessSnapshotResult;
+      tables = [exportRowsTable(title, displayedColumns(columnsFor(snapshot.items, undefined, definition.columns)), snapshot.items)];
+      break;
+    }
+    default: {
+      const _exhaustive: never = definition.shape;
+      return _exhaustive;
+    }
+  }
+  return {
+    tables,
+    footer: reportFooterLines({
+      freshness,
+      incomplete: incompleteDetail(result, status),
+      errors: result.errors,
+      notes: [...textNotices(result), ...(result.notes ?? [])],
+    }),
+  };
+}
+
+function reportTitle(
+  definition: HeadlessPaneDefinition,
+  args: HeadlessPaneLoadArgs,
+  result: HeadlessPaneResult,
+  fallback: string,
+): string {
+  if (typeof definition.describe === "function") return definition.describe(args, result);
   return definition.describe ?? fallback;
+}
+
+/** One message stays on the label's line; several each get a line of their own, so none runs into the next. */
+function renderMessages(label: string, messages: readonly string[]): string[] {
+  return messages.length === 1
+    ? [cliStyles.warning(wrapToTerminal(`${label}: ${messages[0]}`))]
+    : [cliStyles.warning(`${label}:`), ...messages.map((message) => wrapToTerminal(`  ${message}`))];
 }
 
 /**
@@ -433,12 +577,9 @@ export function renderHeadlessPaneText(
   fallbackTitle: string,
   freshness: ReportFreshness = deriveHeadlessFreshness(definition, result),
 ): string {
-  const lines = [cliStyles.bold(reportTitle(definition, args, fallbackTitle)), ""];
-  const notices = result.metadata?.notices;
-  if (Array.isArray(notices)) {
-    const textNotices = [...new Set(notices.filter((notice): notice is string => typeof notice === "string" && notice.trim().length > 0))];
-    if (textNotices.length) lines.push(...textNotices, "");
-  }
+  const lines = [cliStyles.bold(reportTitle(definition, args, result, fallbackTitle)), ""];
+  const notices = textNotices(result);
+  if (notices.length) lines.push(...notices, "");
   switch (definition.shape) {
     case "rows": {
       const rowsResult = result as HeadlessPaneResult & { rows: HeadlessPaneRow[]; columns?: HeadlessPaneColumn[] };
@@ -462,8 +603,9 @@ export function renderHeadlessPaneText(
       return _exhaustive;
     }
   }
-  if (result.errors?.length) lines.push("", cliStyles.warning(`Errors: ${result.errors.join(" ")}`));
-  return [lines.join("\n").trimEnd(), "", cliStyles.muted(formatFreshnessLine(freshness))].join("\n");
+  if (result.notes?.length) lines.push("", ...renderMessages("Notes", result.notes));
+  if (result.errors?.length) lines.push("", ...renderMessages("Errors", result.errors));
+  return [lines.join("\n").trimEnd(), "", cliStyles.muted(wrapToTerminal(formatFreshnessLine(freshness)))].join("\n");
 }
 
 function resultRowCount(definition: HeadlessPaneDefinition, result: HeadlessPaneResult): number {
@@ -496,6 +638,7 @@ export async function buildHeadlessFunctionReport(
   const unavailableSymbols = loaded.result.unavailableSymbols ?? (rowCount === 0 ? symbols : []);
   const serialized = serializeHeadlessPaneResult(loaded.definition, loaded.result);
   const freshness = deriveHeadlessFreshness(loaded.definition, loaded.result);
+  const complete = loaded.result.complete !== false && unavailableSymbols.length === 0 && !loaded.result.errors?.length;
   return {
     data: {
       kind: loaded.definition.shape,
@@ -505,7 +648,7 @@ export async function buildHeadlessFunctionReport(
       options: resolved.options,
       rowCount,
       empty: rowCount === 0,
-      complete: loaded.result.complete !== false && unavailableSymbols.length === 0 && !loaded.result.errors?.length,
+      complete,
       unavailableSymbols,
       ...serialized,
       freshness,
@@ -516,6 +659,14 @@ export async function buildHeadlessFunctionReport(
       loaded.args,
       resolved.label,
       freshness,
+    ),
+    tables: headlessReportTables(
+      loaded.definition,
+      loaded.result,
+      loaded.args,
+      resolved.label,
+      freshness,
+      { complete, unavailableSymbols },
     ),
   };
 }

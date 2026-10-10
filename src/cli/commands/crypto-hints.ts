@@ -1,16 +1,10 @@
 import { isCryptoInstrumentType } from "../../tickers/search/ranking";
 import type { Quote } from "../../types/financials";
+import { isCryptoPairSymbol } from "../../utils/crypto-pair";
+import { isNotATickerMessage } from "../not-a-ticker";
 
 /** Where a crypto pair that will not load can still be read. `fn CRYP` takes no argument. */
 export const CRYPTO_BOARD_HINT = "Crypto prices may be briefly unavailable; the CRYP function (gloomberb fn CRYP) shows the crypto board.";
-
-// A base-quote pair such as BTC-USD or SOL-EUR. Equities with a share-class dash (BRK-B) and
-// currency pairs (EURUSD=X) do not match.
-const CRYPTO_PAIR = /^[A-Z0-9]{1,15}-(?:USD|EUR|GBP|USDT|USDC|BTC)$/;
-
-export function isCryptoPairSymbol(symbol: string): boolean {
-  return CRYPTO_PAIR.test(symbol);
-}
 
 // The coins whose bare ticker is most often typed for the coin itself. The label is how the note
 // names the coin and what a listing's name has to say before the note applies.
@@ -49,11 +43,15 @@ interface QuoteNoteResult {
   error: string | null;
 }
 
-/** The router words a failure as "<reason> for <symbol>"; drop the symbol so equal reasons group. */
+/**
+ * The router words a failure as "<reason> for <symbol>"; drop the symbol so equal reasons group.
+ * Any other line, such as a sentence the data service wrote, is kept as it reads.
+ */
 function failureReason(message: string, symbol: string): string {
-  const line = (message.split("\n")[0] ?? "").trim().replace(/\.+$/, "");
+  const line = (message.split("\n")[0] ?? "").trim();
+  const bare = line.replace(/\.+$/, "");
   const suffix = ` for ${symbol}`;
-  return line.toLowerCase().endsWith(suffix.toLowerCase()) ? line.slice(0, -suffix.length) : line;
+  return bare.toLowerCase().endsWith(suffix.toLowerCase()) ? bare.slice(0, -suffix.length) : line;
 }
 
 /**
@@ -70,7 +68,10 @@ export function quoteNotes(results: QuoteNoteResult[], options: { exchange?: str
     if (!symbols.includes(result.target.symbol)) failures.set(reason, [...symbols, result.target.symbol]);
   }
   const notes = [...failures].map(([reason, symbols]) => (
-    `${symbols.join(", ")}: ${reason}${symbols.some(isCryptoPairSymbol) ? `. ${CRYPTO_BOARD_HINT}` : ""}`
+    // "Not a ticker: APPLE." already names its symbol.
+    isNotATickerMessage(reason)
+      ? reason
+      : `${symbols.join(", ")}: ${reason}${symbols.some(isCryptoPairSymbol) ? `${/[.!?]$/.test(reason) ? "" : "."} ${CRYPTO_BOARD_HINT}` : ""}`
   ));
   if (!options.exchange) {
     for (const result of results) {

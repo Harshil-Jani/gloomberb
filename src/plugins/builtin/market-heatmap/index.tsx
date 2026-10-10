@@ -19,6 +19,7 @@ import {
   usePaneStatusFooter,
   type MetricTreemapDirection,
   type MetricTreemapItem,
+  type PaneFooterSegment,
 } from "../../../components";
 import { handleRefreshKey } from "../../../components/data-table/table-pane";
 import { useShortcut } from "../../../react/input";
@@ -27,9 +28,9 @@ import type { GloomPlugin, PaneProps, PaneSettingField } from "../../../types/pl
 import type { TickerRecord } from "../../../types/ticker";
 import { t, tf } from "../../../i18n";
 import { priceColor } from "../../../theme/colors";
-import { clipToDisplayWidth, formatCompact, formatCurrency, formatPercentRaw } from "../../../utils/format";
+import { clipToDisplayWidth, displayWidth, formatCompact, formatCurrency, formatPercentRaw } from "../../../utils/format";
 import { isPlainKey } from "../../../utils/keyboard";
-import { useAppSelector, usePaneAppConfig, usePaneSettingValue } from "../../../state/app/context";
+import { useAppSelector, usePaneAppConfig, usePaneSettingValue, usePaneStateValue } from "../../../state/app/context";
 import { usePluginTickerActions } from "../../runtime";
 import { useLiveQuoteEntries } from "../../../state/hooks/quote-streaming";
 import { useFxRatesMap, useTickerFinancialsMap } from "../../../market-data/hooks";
@@ -44,18 +45,22 @@ import { resolvePortfolioTotalsCurrency } from "../portfolio-list/metrics";
 import { useThrottledMemo } from "../portfolio-list/use-throttled-memo";
 import { PORTFOLIO_REORDER_THROTTLE_MS } from "../portfolio-list/use-throttled-ticker-order";
 import {
+  MARKET_HEATMAP_REQUEST_COUNT,
   MARKET_HEATMAP_UNIVERSES,
   fetchMarketHeatmap,
   resetMarketHeatmapCache,
+  type MarketHeatmapBoard,
   type MarketHeatmapUniverseId,
 } from "./data";
 import {
+  HEATMAP_COLLECTION_KIND_STATE_KEY,
   PORTFOLIO_HEATMAP_TAB,
   buildPortfolioHeatmapAssets,
   fallbackHeatmapCollectionId,
   heatmapCollectionLabel,
   heatmapFollowsCollection,
   heatmapSizeBy,
+  heatmapSizeByApplies,
   heatmapSizeWeight,
   heatmapTabId,
   isRemoteHeatmapUniverse,
@@ -76,6 +81,20 @@ import {
   rankHeatmapQuoteWeights,
   useSettledValue,
 } from "./live";
+import { useMarketHeatmapEvidence } from "./evidence";
+import { marketHeatmapHeadless } from "./headless";
+import {
+  HEATMAP_NAME_COUNTS,
+  heatmapBoardCaption,
+  heatmapMove,
+  heatmapNameCount,
+  heatmapSessionBasis,
+  regularSessionHeatmapAssets,
+  resolveHeatmapGrouping,
+  sizeWeightedMove,
+  type HeatmapGrouping,
+  type HeatmapSessionBasis,
+} from "./model";
 import {
   overlayScreenerQuoteEntries,
   resolveScreenerQuoteFeedStatus,
@@ -83,17 +102,20 @@ import {
 
 const NO_ASSETS: HeatmapBoardAsset[] = [];
 const NO_TARGETS: QuoteSubscriptionTarget[] = [];
-/** The 500 largest US stocks (an older server answers with its own maximum); ETFs stay flat and need fewer. */
-const MARKET_HEATMAP_REQUEST_COUNT: Record<MarketHeatmapUniverseId, number> = { "us-equity": 500, "us-etf": 160 };
 const SNAPSHOT_REFRESH_MS = 60_000;
 const LAYOUT_THROTTLE_MS = 5_000;
 /** A size change below this share of a tile's area is not worth moving it. */
 const LAYOUT_TOLERANCE = 0.005;
 const TERMINAL_PAINT_THROTTLE_MS = 250;
+/** "loading", which comes and goes with each refresh. */
+const LOADING_FOOTER_WIDTH = 7;
 const SELECTION_STREAM_SETTLE_MS = 1_500;
 const TOOLTIP_NAME_WIDTH = 28;
 const SIZE_BY_SETTING_KEY = "sizeBy";
 const SQRT_SIZE_VALUE: HeatmapSizeBy = "sqrt-market-cap";
+const SESSION_BASIS_SETTING_KEY = "sessionBasis";
+const REGULAR_SESSION_BASIS: HeatmapSessionBasis = "regular-session";
+const NAME_COUNT_SETTING_KEY = "maxNames";
 const NO_BOARD = { assets: NO_ASSETS, omitted: 0 };
 const EMPTY_TICKERS: TickerRecord[] = [];
 const NO_CURRENCIES: string[] = [];
@@ -122,17 +144,14 @@ function formatMoneyCompact(value: number | null | undefined, currency: string):
   return `${formatCompact(value)} ${currency}`;
 }
 
+function footerSegmentWidth(segment: PaneFooterSegment): number {
+  return segment.parts.reduce((total, part, index) => total + (index > 0 ? 1 : 0) + displayWidth(part.text), 0);
+}
+
 function sizeLabel(asset: HeatmapBoardAsset): string | null {
   if (asset.showSize === false || asset.size == null) return null;
   const label = asset.sizeCaption ?? (asset.sizeKind === "net-assets" ? "Assets" : "Mkt");
   return `${label} ${formatMoneyCompact(asset.size, asset.sizeCurrency ?? asset.currency)}`;
-}
-
-/** The move, or null when there is none: no change data is not a flat session. */
-function changeOf(asset: HeatmapBoardAsset): number | null {
-  return asset.hasChange && typeof asset.changePercent === "number" && Number.isFinite(asset.changePercent)
-    ? asset.changePercent
-    : null;
 }
 
 /** Marks a pre-market or after-hours move, which is measured from the regular close. */
@@ -145,29 +164,6 @@ function sessionMark(asset: HeatmapBoardAsset): string | null {
 function formatMove(asset: HeatmapBoardAsset, change: number | null): string {
   const mark = sessionMark(asset);
   return change == null ? "—" : mark ? `${formatPercentRaw(change)} ${mark}` : formatPercentRaw(change);
-}
-
-type HeatmapGrouping = "sector-industry" | "sector" | "flat";
-
-/**
- * Sector and industry blocks when the board knows its sectors. A board where
- * most of the value has none (ETFs, or a snapshot whose classification
- * failed) lays out flat rather than as one big unlabeled block.
- */
-function resolveGrouping(assets: readonly HeatmapBoardAsset[], industries: boolean): HeatmapGrouping {
-  let total = 0;
-  let classified = 0;
-  const sectors = new Set<string>();
-  for (const asset of assets) {
-    const weight = asset.weight ?? asset.size ?? 0;
-    total += weight;
-    if (asset.sector) {
-      classified += weight;
-      sectors.add(asset.sector);
-    }
-  }
-  if (sectors.size < 2 || classified < total / 2) return "flat";
-  return industries ? "sector-industry" : "sector";
 }
 
 /**
@@ -203,7 +199,7 @@ const paintItemCache = new WeakMap<HeatmapBoardAsset, MetricTreemapItem<HeatmapB
 function paintItem(asset: HeatmapBoardAsset): MetricTreemapItem<HeatmapBoardAsset> {
   const cached = paintItemCache.get(asset);
   if (cached) return cached;
-  const change = changeOf(asset);
+  const change = heatmapMove(asset);
   const details = [
     asset.price > 0 ? formatCurrency(asset.price, asset.currency) : null,
     sizeLabel(asset),
@@ -237,18 +233,10 @@ function otherSummary(items: readonly MetricTreemapItem<HeatmapBoardAsset>[]): s
 }
 
 function otherTooltip(items: readonly MetricTreemapItem<HeatmapBoardAsset>[]): string[] {
-  let weight = 0;
-  let weightedMove = 0;
-  for (const item of items) {
-    const change = changeOf(item.data);
-    const size = item.data.size ?? 0;
-    if (change == null || !(size > 0)) continue;
-    weight += size;
-    weightedMove += change * size;
-  }
+  const move = sizeWeightedMove(items.map((item) => item.data));
   return [
     tf("Other · {count} smaller names", { count: items.length }),
-    ...(weight > 0 ? [`${formatPercentRaw(weightedMove / weight)} ${t("cap-weighted")}`] : []),
+    ...(move != null ? [`${formatPercentRaw(move)} ${t("cap-weighted")}`] : []),
   ];
 }
 
@@ -268,6 +256,10 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
   const [linkPortfolio] = usePaneSettingValue<boolean>("linkPortfolio", false);
   const [sizeBySetting] = usePaneSettingValue<string>(SIZE_BY_SETTING_KEY, SQRT_SIZE_VALUE);
   const sizeBy = heatmapSizeBy(sizeBySetting);
+  const [sessionBasisSetting] = usePaneSettingValue<unknown>(SESSION_BASIS_SETTING_KEY, null);
+  const regularSession = heatmapSessionBasis(sessionBasisSetting) === REGULAR_SESSION_BASIS;
+  const [nameCountSetting] = usePaneSettingValue<unknown>(NAME_COUNT_SETTING_KEY, null);
+  const nameCount = heatmapNameCount(nameCountSetting);
   const activeUniverse = heatmapTabId(universeSetting);
   const portfolioTab = activeUniverse === PORTFOLIO_HEATMAP_TAB;
   const config = usePaneAppConfig();
@@ -275,6 +267,7 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
   const linkedPortfolio = useLinkedHeatmapCollection();
   const collectionId = linkedPortfolio.collectionId ?? fallbackHeatmapCollectionId(config);
   const collectionKind = getCollectionTypeFromConfig(config, collectionId);
+  const [, publishCollectionKind] = usePaneStateValue<string>(HEATMAP_COLLECTION_KIND_STATE_KEY, "");
   const portfolioLabel = heatmapCollectionLabel(config, collectionId);
   const universeTabs = useMemo(() => [
     ...MARKET_HEATMAP_UNIVERSES.map((universe) => ({ label: universe.label, value: universe.id })),
@@ -315,26 +308,38 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
         currency: boardCurrency,
         exchangeRates,
         sizeBy,
+        regularSession,
       })
       : NO_BOARD),
     [financials],
-    [boardCurrency, collectionId, collectionKind, collectionTickers, exchangeRates, financials.size, sizeBy],
+    [boardCurrency, collectionId, collectionKind, collectionTickers, exchangeRates, financials.size, regularSession, sizeBy],
     PORTFOLIO_REORDER_THROTTLE_MS,
   );
   const portfolioAssets = portfolioBoard.assets;
-  const [assets, setAssets] = useState<HeatmapBoardAsset[]>([]);
-  // The universe `assets` came from. A board is drawn only under its own tab,
-  // so a switch never paints the previous universe's tiles.
-  const [loadedUniverse, setLoadedUniverse] = useState<MarketHeatmapUniverseId | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  // The last market board that loaded, with the universe and count it was
+  // asked for. It is drawn only under its own tab, so a switch never paints the
+  // previous universe's tiles, and its footer names its own count while a new
+  // one is on its way.
+  const [board, setBoard] = useState<MarketHeatmapBoard | null>(null);
   // The first load starts before the effect runs; an empty board is not "no data".
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [stale, setStale] = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const fetchGenRef = useRef(0);
   const seenCollection = useRef<string | null>(null);
-  const boardAssets = portfolioTab ? portfolioAssets : (loadedUniverse === activeUniverse ? assets : NO_ASSETS);
+  const shownBoard = !portfolioTab && board?.universe === activeUniverse ? board : null;
+  const stale = board?.stale === true;
+  const requestCount = isRemoteHeatmapUniverse(activeUniverse)
+    ? Math.min(MARKET_HEATMAP_REQUEST_COUNT[activeUniverse], nameCount)
+    : 0;
+  const marketAssets = useMemo(
+    () => {
+      const assets: readonly HeatmapBoardAsset[] = shownBoard?.assets ?? NO_ASSETS;
+      return regularSession ? regularSessionHeatmapAssets(assets, shownBoard?.session) : assets;
+    },
+    [regularSession, shownBoard],
+  );
+  const boardAssets = portfolioTab ? portfolioAssets : marketAssets;
   const hasBoard = boardAssets.length > 0;
 
   const selectUniverse = useCallback((value: string) => {
@@ -379,9 +384,12 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
     freshnessScopeKey: `market-heatmap:${activeUniverse}`,
     liveStreaming,
   });
+  const completedSessionDate = shownBoard?.regularSessionDate ?? null;
   const resolvedAssets = useMemo(
-    () => overlayScreenerQuoteEntries(boardAssets, liveQuoteEntries, { extendedSessions: true }),
-    [boardAssets, liveQuoteEntries],
+    () => overlayScreenerQuoteEntries(boardAssets, liveQuoteEntries, regularSession
+      ? { regularSession: true, completedSessionDate }
+      : { extendedSessions: true }),
+    [boardAssets, completedSessionDate, liveQuoteEntries, regularSession],
   );
   const feedStatus = useMemo(
     () => resolveScreenerQuoteFeedStatus(quoteTargets, liveQuoteEntries, {
@@ -394,13 +402,14 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
   // Sizes follow live prices at most every LAYOUT_THROTTLE_MS and only past
   // LAYOUT_TOLERANCE; a new snapshot relays out at once. Ticks only recolour.
   const grouping = useMemo(
-    () => resolveGrouping(boardAssets, activeUniverse === "us-equity"),
+    () => resolveHeatmapGrouping(boardAssets, activeUniverse === "us-equity"),
     [activeUniverse, boardAssets],
   );
+  // A new board, or a new Colour by, applies at once rather than on the next tick.
   const layoutAssets = useThrottledMemo(
     () => resolvedAssets,
     [resolvedAssets],
-    [boardAssets],
+    [boardAssets, regularSession],
     LAYOUT_THROTTLE_MS,
   );
   const layoutItems = useSettledLayoutItems(
@@ -418,11 +427,19 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
   const paintAssets = useThrottledMemo(
     () => resolvedAssets,
     [resolvedAssets],
-    [boardAssets],
+    [boardAssets, regularSession],
     nativePaneChrome ? 0 : TERMINAL_PAINT_THROTTLE_MS,
   );
   const paintItems = useMemo(() => buildPaintItems(paintAssets), [paintAssets]);
   const visibleTiles = scene.tiles;
+  useMarketHeatmapEvidence({
+    tab: activeUniverse,
+    tiles: visibleTiles,
+    assets: paintAssets,
+    grouped: grouping !== "flat",
+    loading: !portfolioTab && loading,
+    retained: !portfolioTab && (stale || loadError != null),
+  });
   const selectedTileIndex = selectedSymbol ? visibleTiles.findIndex((tile) => tile.item.id === selectedSymbol) : -1;
   const activeIdx = selectedTileIndex >= 0 ? selectedTileIndex : (visibleTiles.length > 0 ? 0 : -1);
   const activeSymbol = activeIdx >= 0 ? visibleTiles[activeIdx]!.item.id : null;
@@ -430,7 +447,7 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
     ? resolvedAssets.find((asset) => asset.symbol === activeSymbol) ?? null
     : null;
 
-  const loadUniverse = useCallback(async (universe: MarketHeatmapUniverseId, options?: { forceRefresh?: boolean }) => {
+  const loadUniverse = useCallback(async (universe: MarketHeatmapUniverseId, count: number, options?: { forceRefresh?: boolean }) => {
     fetchGenRef.current += 1;
     const gen = fetchGenRef.current;
     setLoading(true);
@@ -438,14 +455,11 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
 
     try {
       const result = await fetchMarketHeatmap(universe, {
-        count: MARKET_HEATMAP_REQUEST_COUNT[universe],
+        count,
         forceRefresh: options?.forceRefresh,
       });
       if (fetchGenRef.current !== gen) return;
-      setAssets(result.assets);
-      setLoadedUniverse(universe);
-      setLastUpdated(result.fetchedAt);
-      setStale(result.stale === true);
+      setBoard(result);
       // Selection is the user's; the effect below only fills it when it is gone.
     } catch {
       if (fetchGenRef.current !== gen) return;
@@ -458,8 +472,8 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
 
   useEffect(() => {
     if (!isRemoteHeatmapUniverse(activeUniverse)) return;
-    void loadUniverse(activeUniverse);
-  }, [activeUniverse, loadUniverse]);
+    void loadUniverse(activeUniverse, requestCount);
+  }, [activeUniverse, loadUniverse, requestCount]);
 
   useEffect(() => {
     const previous = seenCollection.current;
@@ -468,6 +482,11 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
     setActiveUniverse(PORTFOLIO_HEATMAP_TAB);
     setSelectedSymbol(null);
   }, [collectionId, linkPortfolio, setActiveUniverse]);
+
+  // The header shows the square-root control only where it changes the board.
+  useEffect(() => {
+    publishCollectionKind(collectionKind ?? "");
+  }, [collectionKind, publishCollectionKind]);
 
   // The financials map only reads the cache; this fills it for the list on screen.
   useEffect(() => {
@@ -489,12 +508,12 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
       return;
     }
     if (!isRemoteHeatmapUniverse(activeUniverse)) return;
-    void loadUniverse(activeUniverse, { forceRefresh: true });
-  }, [activeUniverse, collectionId, collectionKind, collectionTickers, loadUniverse, portfolioTab]);
+    void loadUniverse(activeUniverse, requestCount, { forceRefresh: true });
+  }, [activeUniverse, collectionId, collectionKind, collectionTickers, loadUniverse, portfolioTab, requestCount]);
   // The list's quotes stream; on a timer only the market boards reload.
   const autoRefresh = useCallback(() => {
-    if (isRemoteHeatmapUniverse(activeUniverse)) void loadUniverse(activeUniverse, { forceRefresh: true });
-  }, [activeUniverse, loadUniverse]);
+    if (isRemoteHeatmapUniverse(activeUniverse)) void loadUniverse(activeUniverse, requestCount, { forceRefresh: true });
+  }, [activeUniverse, loadUniverse, requestCount]);
 
   const selectAdjacentUniverse = useCallback((direction: -1 | 1) => {
     const index = universeTabs.findIndex((tab) => tab.value === activeUniverse);
@@ -603,9 +622,11 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
     }
   });
 
-  const updated = useUpdatedAgo(!portfolioTab && loadedUniverse === activeUniverse ? lastUpdated : null);
+  // Ages the last check that succeeded, not the snapshot, which the server can
+  // hand back unchanged long after it was put together.
+  const checked = useUpdatedAgo(shownBoard?.checkedAt ?? null);
   // The snapshot carries sizes and every name the stream does not; the server caches it for a minute.
-  useAutoRefresh(lastUpdated, autoRefresh, { intervalMs: SNAPSHOT_REFRESH_MS });
+  useAutoRefresh(board?.checkedAt ?? null, autoRefresh, { intervalMs: SNAPSHOT_REFRESH_MS });
 
   usePaneStatusFooter({ registrationId: "market-heatmap-retained", stale: hasBoard && stale && !portfolioTab });
   usePaneNoticeFooter({
@@ -616,41 +637,53 @@ function MarketHeatmapPane({ focused, width, height }: PaneProps) {
     focused,
   });
 
-  usePaneFooter("market-heatmap", () => ({
-    info: [
-      ...(selectedAsset ? [{
-        id: "selected",
-        parts: [
-          { text: selectedAsset.symbol, tone: "label" as const },
-          {
-            text: changeOf(selectedAsset) == null ? "—" : formatPercentRaw(changeOf(selectedAsset)!),
-            tone: "value" as const,
-            color: changeOf(selectedAsset) == null ? undefined : priceColor(changeOf(selectedAsset)!),
-            bold: true,
-          },
-          ...(sessionMark(selectedAsset) ? [{ text: sessionMark(selectedAsset)!, tone: "muted" as const }] : []),
-          ...(selectedAsset.price > 0
-            ? [{ text: formatCurrency(selectedAsset.price, selectedAsset.currency), tone: "value" as const }]
-            : []),
-          ...(sizeLabel(selectedAsset) ? [{ text: sizeLabel(selectedAsset)!, tone: "muted" as const }] : []),
-          ...(selectedAsset.volume != null
-            ? [{ text: `Vol ${formatCompact(selectedAsset.volume)}`, tone: "muted" as const }]
-            : []),
-        ],
-      }] : []),
-      ...(updated ? [{
-        id: "updated",
-        parts: [{ text: `updated ${updated}`, tone: "muted" as const }],
-      }] : []),
-      ...(!portfolioTab && loading ? [{ id: "loading", parts: [{ text: "loading", tone: "muted" as const }] }] : []),
-      // Without a board the body carries the failure.
-      ...(!portfolioTab && loadError && hasBoard ? [{ id: "error", parts: [{ text: "refresh failed", tone: "warning" as const }] }] : []),
-      ...(feedStatus ? [{
-        id: "feed",
-        parts: [{ text: feedStatus, tone: feedStatus === "live" ? "value" as const : "muted" as const }],
-      }] : []),
-    ],
-  }), [feedStatus, hasBoard, loadError, loading, portfolioTab, selectedAsset, updated]);
+  usePaneFooter("market-heatmap", () => {
+    const selected: PaneFooterSegment[] = selectedAsset ? [{
+      id: "selected",
+      parts: [
+        { text: selectedAsset.symbol, tone: "label" as const },
+        {
+          text: heatmapMove(selectedAsset) == null ? "—" : formatPercentRaw(heatmapMove(selectedAsset)!),
+          tone: "value" as const,
+          color: heatmapMove(selectedAsset) == null ? undefined : priceColor(heatmapMove(selectedAsset)!),
+          bold: true,
+        },
+        ...(sessionMark(selectedAsset) ? [{ text: sessionMark(selectedAsset)!, tone: "muted" as const }] : []),
+        ...(selectedAsset.price > 0
+          ? [{ text: formatCurrency(selectedAsset.price, selectedAsset.currency), tone: "value" as const }]
+          : []),
+        ...(sizeLabel(selectedAsset) ? [{ text: sizeLabel(selectedAsset)!, tone: "muted" as const }] : []),
+        ...(selectedAsset.volume != null
+          ? [{ text: `Vol ${formatCompact(selectedAsset.volume)}`, tone: "muted" as const }]
+          : []),
+      ],
+    }] : [];
+    // Without a board the body carries the failure.
+    const failed: PaneFooterSegment[] = !portfolioTab && loadError && hasBoard
+      ? [{ id: "error", parts: [{ text: "refresh failed", tone: "warning" as const }] }]
+      : [];
+    const feed: PaneFooterSegment[] = feedStatus
+      ? [{ id: "feed", parts: [{ text: feedStatus, tone: feedStatus === "live" ? "value" as const : "muted" as const }] }]
+      : [];
+    const loadingSegment: PaneFooterSegment[] = !portfolioTab && loading
+      ? [{ id: "loading", parts: [{ text: "loading", tone: "muted" as const }] }]
+      : [];
+    // The caption takes the room the rest leaves, with "loading" counted in
+    // always, so a refresh never squeezes the row; a narrow pane drops its
+    // least important parts rather than truncating every segment.
+    const others = [...selected, ...failed, ...feed];
+    const room = width - others.reduce((total, segment) => total + footerSegmentWidth(segment) + 1, 0) - LOADING_FOOTER_WIDTH - 1;
+    const caption = shownBoard ? heatmapBoardCaption(shownBoard, { now: Date.now(), checked, failed: failed.length > 0, maxWidth: room }) : null;
+    return {
+      info: [
+        ...selected,
+        ...failed,
+        ...(caption ? [{ id: "board", parts: [{ text: caption, tone: "muted" as const }] }] : []),
+        ...feed,
+        ...loadingSegment,
+      ],
+    };
+  }, [checked, feedStatus, hasBoard, loadError, loading, portfolioTab, selectedAsset, shownBoard, width]);
 
   return (
     <Box flexDirection="column" width={width} height={height}>
@@ -710,18 +743,28 @@ export const marketHeatmapPlugin: GloomPlugin = {
       name: "Market Heatmap",
       icon: "H",
       component: MarketHeatmapPane,
+      headless: marketHeatmapHeadless,
       defaultPosition: "right",
       defaultMode: "floating",
       defaultFloatingSize: { width: 110, height: 36 },
       quickSettings: [
         LIVE_STREAMING_QUICK_SETTING,
-        { type: "toggle", key: SIZE_BY_SETTING_KEY, icon: "sqrt", onValue: SQRT_SIZE_VALUE, label: "Size by square root of market cap" },
+        {
+          type: "toggle",
+          key: SIZE_BY_SETTING_KEY,
+          icon: "sqrt",
+          onValue: SQRT_SIZE_VALUE,
+          label: "Size by square root of market cap",
+          visible: (context) => heatmapSizeByApplies(context.settings.universe, context.paneState[HEATMAP_COLLECTION_KIND_STATE_KEY]),
+        },
       ],
       settings: (context) => withLiveStreamingSetting({
         title: "Market Heatmap Settings",
         values: {
           linkPortfolio: context.settings.linkPortfolio === true,
           [SIZE_BY_SETTING_KEY]: heatmapSizeBy(context.settings[SIZE_BY_SETTING_KEY]),
+          [SESSION_BASIS_SETTING_KEY]: heatmapSessionBasis(context.settings[SESSION_BASIS_SETTING_KEY]),
+          [NAME_COUNT_SETTING_KEY]: String(heatmapNameCount(context.settings[NAME_COUNT_SETTING_KEY])),
         },
         fields: [
           {
@@ -745,6 +788,23 @@ export const marketHeatmapPlugin: GloomPlugin = {
               { value: SQRT_SIZE_VALUE, label: "Square root of market cap" },
             ],
             description: "Square root gives mid-size names room next to the largest. A portfolio is always sized by position value.",
+          },
+          {
+            key: SESSION_BASIS_SETTING_KEY,
+            label: "Colour by",
+            type: "select",
+            options: [
+              { value: REGULAR_SESSION_BASIS, label: "Regular session" },
+              { value: "active-session", label: "Active session" },
+            ],
+            description: "Active session follows pre-market and after-hours trading. Regular session shows the regular session alone: its move while it trades, then its close and move until the next one opens.",
+          },
+          {
+            key: NAME_COUNT_SETTING_KEY,
+            label: "Names",
+            type: "select",
+            options: HEATMAP_NAME_COUNTS.map((count) => ({ value: String(count), label: `Top ${count}` })),
+            description: "How many of the largest names US Stocks draws, and US ETFs up to 160. Fewer names leave fewer in Other.",
           },
           {
             key: "linkPortfolio",

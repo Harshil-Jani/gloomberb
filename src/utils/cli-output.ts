@@ -8,6 +8,8 @@ export interface CliTableColumn {
   maxWidth?: number;
   /** Dropped, rightmost first, before other columns are shortened to fit a terminal. */
   optional?: boolean;
+  /** Among optional columns, a higher priority is dropped sooner; equal ones go rightmost first. */
+  dropPriority?: number;
   /** False keeps the column whole when fitting, for identifiers a user types into the next command. */
   shrink?: boolean;
 }
@@ -30,6 +32,7 @@ const MIN_SHRUNK_COLUMN_WIDTH = 8;
 // Text columns first shrink right to left down to this width, then all shrink together.
 const SOFT_MIN_COLUMN_WIDTH = 20;
 let colorEnabledOverride: boolean | null = null;
+let widthOverride: number | null = null;
 
 function colorEnabled(): boolean {
   if (colorEnabledOverride != null) return colorEnabledOverride;
@@ -54,8 +57,14 @@ export function visibleLength(text: string): number {
   return typeof Bun !== "undefined" ? Bun.stringWidth(text) : stripAnsi(text).length;
 }
 
-/** Columns of the terminal stdout writes to, or null when output is piped or redirected. */
+/** `--width n`: tables, help and wrapped text fit n columns, whether or not stdout is a terminal. */
+export function setCliWidthOverride(value: number | null): void {
+  widthOverride = value;
+}
+
+/** Columns the output is fitted to: `--width`, else the terminal's, or null when output is piped or redirected. */
 export function cliTerminalWidth(): number | null {
+  if (widthOverride != null) return widthOverride;
   if (!process.stdout.isTTY) return null;
   const columns = process.stdout.columns;
   return typeof columns === "number" && columns > 0 ? columns : null;
@@ -135,6 +144,12 @@ export function wrapText(text: string, width: number): string[] {
     lines.push(line);
   }
   return lines;
+}
+
+/** One line of text under a table, wrapped to the width the table was fitted to; whole when output is not fitted. */
+export function wrapToTerminal(text: string): string {
+  const width = cliTerminalWidth();
+  return width == null ? text : wrapText(text, width).join("\n");
 }
 
 export const cliStyles = {
@@ -301,7 +316,9 @@ export function renderTable(columns: CliTableColumn[], rows: string[][], options
   let truncate = false;
   if (available != null && tableWidth(shown.map((entry) => entry.width)) > available) {
     while (tableWidth(shown.map((entry) => entry.width)) > available) {
-      const dropped = shown.findLast((entry) => entry.column.optional);
+      const dropped = shown.reduce<(typeof shown)[number] | undefined>((pick, entry) => (
+        entry.column.optional && (!pick || (entry.column.dropPriority ?? 0) >= (pick.column.dropPriority ?? 0)) ? entry : pick
+      ), undefined);
       if (!dropped) break;
       shown = shown.filter((entry) => entry !== dropped);
     }

@@ -7,16 +7,28 @@ import {
   statValueWidth,
   visibleLength,
   wrapText,
+  wrapToTerminal,
   type CliStatEntry,
   type CliTableColumn,
 } from "../utils/cli-output";
 import { serializeCsv } from "../utils/csv";
 import { formatUtcTime, isEpochMilliseconds, isZonedIsoDateTime } from "../utils/utc-time";
+import { formatFreshnessLine, type ReportFreshness } from "./pane-functions/freshness";
+import { withSearchHints } from "./not-a-ticker";
+import { renderReportCsv, renderReportNdjson, type CliReportTables } from "./report-tables";
+import { windowRows, type RowWindow, type RowWindowOptions } from "./row-window";
 
 export interface CliResult<T = unknown> {
   data: T;
   metadata?: Record<string, unknown>;
   warnings?: string[];
+  /**
+   * Source, as-of and status of market data, as every `fn` report states them
+   * (docs/usage.md#how-current-a-report-is): the last line of the text output
+   * and `metadata.freshness` in JSON. CSV and NDJSON stay rows only, unless
+   * the command passes `tables`, whose footer carries it.
+   */
+  freshness?: ReportFreshness;
 }
 
 export interface CliErrorObject {
@@ -48,9 +60,27 @@ export interface CliResultRenderOptions<T = unknown, Row = Record<string, unknow
   empty?: string;
   /** Text-mode block printed above the rows, for figures that are not rows. */
   summary?: (data: T) => string;
+  /** Text-mode line printed first, naming what the result is about, such as the listing a symbol resolved to. */
+  heading?: string;
+  /** Text-mode line printed under the rows, such as where a listing stops. Not printed with no rows: say it in `empty`. */
+  footnote?: string;
+  /**
+   * The row key holding each row's date, which makes the rows a dated series:
+   * `--tail` keeps the newest rows whichever way the series runs, and a
+   * `--limit` that keeps the oldest says so, under the text table and as
+   * `metadata.rows` in JSON.
+   */
+  dateKey?: string;
+  /** How many rows to show when neither `--limit` nor `--tail` is given; every row when absent. */
+  defaultLimit?: number;
+  /**
+   * What CSV and NDJSON write instead of the rows: a report's tables as the
+   * text view shows them, CSV with its `# section:` and closing `#` lines.
+   */
+  tables?: CliReportTables;
 }
 
-interface CliResultJsonEnvelope<T> extends CliResult<T> {
+interface CliResultJsonEnvelope<T> extends Omit<CliResult<T>, "freshness"> {
   ok: true;
   columns?: Array<Pick<CliResultColumn, "key" | "header" | "align" | "width">>;
 }
@@ -73,14 +103,28 @@ const KEY_ACRONYMS: Record<string, string> = {
   usd: "USD",
 };
 
-function applyLimit<T>(data: T, limit?: number): T {
-  if (!Array.isArray(data) || limit == null) return data;
-  return data.slice(0, limit) as T;
+function rowWindowOptions(options: CliGlobalOptions, renderOptions: Pick<CliResultRenderOptions, "defaultLimit">): RowWindowOptions {
+  return options.tail != null ? { tail: options.tail } : { limit: options.limit ?? renderOptions.defaultLimit };
 }
 
-function asRows<T, Row>(data: T, limit?: number, rows?: (data: T) => Row[]): Row[] {
-  const resolvedRows = rows ? rows(data) : (Array.isArray(data) ? data : [data]) as Row[];
-  return limit == null ? resolvedRows : resolvedRows.slice(0, limit);
+function windowed<Row>(
+  rows: readonly Row[],
+  options: CliGlobalOptions,
+  renderOptions: Pick<CliResultRenderOptions, "dateKey" | "defaultLimit">,
+): RowWindow<Row> {
+  const { dateKey } = renderOptions;
+  const dateOf = dateKey ? (row: Row) => (isPlainObject(row) ? row[dateKey] : undefined) : undefined;
+  return windowRows(rows, rowWindowOptions(options, renderOptions), dateOf);
+}
+
+function asRows<T, Row>(data: T, rows?: (data: T) => Row[]): Row[] {
+  return rows ? rows(data) : (Array.isArray(data) ? data : [data]) as Row[];
+}
+
+/** What JSON says about rows the window cut, under `metadata.rows`. */
+function cutMetadata(window: RowWindow<unknown>) {
+  if (window.rows.length >= window.total) return null;
+  return { shown: window.rows.length, total: window.total, kept: window.kept, ...(window.note ? { note: window.note } : {}) };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -261,6 +305,7 @@ function renderTextTable<Row extends Record<string, unknown>>(
       width: column.width,
       maxWidth: column.maxWidth,
       optional: column.optional,
+      dropPriority: column.dropPriority,
       shrink: column.shrink,
     })),
     cells.map((row) => shown.map(({ index }) => row[index]!)),
@@ -292,23 +337,44 @@ function overflowsTerminal<Row extends Record<string, unknown>>(rows: Row[]): bo
   return width > terminalWidth;
 }
 
+/** The closing source, as-of and status line of a text result, for output printed without `printResult`. */
+export function cliFreshnessFooter(freshness: ReportFreshness): string {
+  return cliStyles.muted(wrapToTerminal(formatFreshnessLine(freshness)));
+}
+
 export function serializeCliResult<T, Row extends Record<string, unknown> = Record<string, unknown>>(
   result: CliResult<T>,
   options: CliGlobalOptions,
   renderOptions: CliResultRenderOptions<T, Row> = {},
 ): string {
+  const { freshness, ...rest } = result;
   if (options.format === "json") {
     const columns = serializeColumns(renderOptions.columns);
+    const window = Array.isArray(result.data) ? windowed(result.data as unknown[], options, renderOptions) : null;
+    const cut = window ? cutMetadata(window) : null;
     const envelope: CliResultJsonEnvelope<T> = {
       ok: true,
-      ...result,
-      data: applyLimit(result.data, options.limit),
+      ...rest,
+      ...(freshness || cut ? { metadata: { ...rest.metadata, ...(freshness ? { freshness } : {}), ...(cut ? { rows: cut } : {}) } } : {}),
+      data: window ? window.rows as T : result.data,
       ...(columns?.length ? { columns } : {}),
     };
     return JSON.stringify(envelope, null, 2);
   }
+  const body = serializeCliRows(rest, options, renderOptions);
+  if (options.format !== "text" || !freshness) return body;
+  return body ? `${body}\n\n${cliFreshnessFooter(freshness)}` : cliFreshnessFooter(freshness);
+}
 
-  const rows = asRows(result.data, options.limit, renderOptions.rows);
+function serializeCliRows<T, Row extends Record<string, unknown>>(
+  result: CliResult<T>,
+  options: CliGlobalOptions,
+  renderOptions: CliResultRenderOptions<T, Row>,
+): string {
+  if (renderOptions.tables && options.format === "csv") return renderReportCsv(renderOptions.tables);
+  if (renderOptions.tables && options.format === "ndjson") return renderReportNdjson(renderOptions.tables);
+  const window = windowed(asRows(result.data, renderOptions.rows), options, renderOptions);
+  const rows = window.rows;
   if (options.format === "ndjson") {
     return rows.map((row) => JSON.stringify(row)).join("\n");
   }
@@ -319,11 +385,14 @@ export function serializeCliResult<T, Row extends Record<string, unknown> = Reco
     return renderOptions.text(result.data);
   }
   const summary = renderOptions.summary?.(result.data) ?? "";
+  const withHeading = (text: string) => renderOptions.heading ? `${renderOptions.heading}\n${text}` : text;
   if (rows.length === 0) {
-    return summary || cliStyles.muted(renderOptions.empty ?? "No results.");
+    return withHeading(summary || cliStyles.muted(renderOptions.empty ?? "No results."));
   }
-  const body = renderTextRows(rows as Row[], result.data, renderOptions);
-  return summary ? `${summary}\n\n${body}` : body;
+  const table = renderTextRows(rows as Row[], result.data, renderOptions);
+  const notes = [window.note, renderOptions.footnote].filter((note): note is string => !!note);
+  const body = [table, ...notes.map((note) => cliStyles.muted(note))].join("\n");
+  return withHeading(summary ? `${summary}\n\n${body}` : body);
 }
 
 function renderTextRows<T, Row extends Record<string, unknown>>(
@@ -347,16 +416,20 @@ export function printCliResult<T, Row extends Record<string, unknown> = Record<s
   result: CliResult<T>,
   options: CliGlobalOptions,
   renderOptions: CliResultRenderOptions<T, Row> = {},
+  args: readonly string[] = [],
 ): void {
   if (options.quiet && options.format === "text") return;
-  const output = serializeCliResult(result, options, renderOptions);
+  // JSON keeps the router's own words; everything else is for a person, so a "Not a ticker" gets its hint.
+  const hinted = (text: string) => options.format === "json" ? text : withSearchHints(text, args);
+  const output = hinted(serializeCliResult(result, options, renderOptions));
   // Bun's console writer can truncate a large pipe write after stdout has been
   // initialized. The stream queues the remaining bytes until the reader drains.
   if (output) process.stdout.write(`${output}\n`);
-  // Structured formats carry warnings in the envelope; text mode would otherwise lose them.
-  if (options.format === "text") {
+  // JSON carries warnings in its envelope. Text, CSV and NDJSON are only the
+  // rows, so a warning goes to stderr, out of a file the rows are piped into.
+  if (options.format !== "json" && !options.quiet) {
     for (const warning of result.warnings ?? []) {
-      console.error(`${cliStyles.warning("warning:")} ${warning}`);
+      console.error(`${cliStyles.warning("warning:")} ${hinted(warning)}`);
     }
   }
 }

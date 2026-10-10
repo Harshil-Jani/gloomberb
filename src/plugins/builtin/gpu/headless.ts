@@ -3,6 +3,7 @@ import type { HeadlessPaneDefinition } from "../../../types/plugin";
 import { fetchGpuBoard, fetchGpuEvents, fetchGpuHistory, loadGpuEquityHistory } from "./client";
 import { GPU_TABS, gpuArgument, gpuBasisLabel, gpuChange, gpuEquityRows, gpuEventDate, gpuProvenanceLabel, gpuLabel, gpuRows, gpuSource, gpuTab } from "./model";
 import { quoteFreshnessFields } from "../shared/report-freshness";
+import { getRegularSessionDisplay } from "../../../market-data/market/status";
 
 const observationRow = (row: GpuObservation) => ({ gpu: gpuLabel(row), source: gpuSource(row), basis: gpuBasisLabel(row.basis),
   price: row.pricePerGpuHr, availability: row.availability, observedAt: row.observedAt, effectiveAt: row.effectiveAt, provenance: row.provenance ?? "live", provenanceLabel: gpuProvenanceLabel(row, true),
@@ -19,14 +20,17 @@ export const gpuHeadless: HeadlessPaneDefinition<"bundle"> = {
   shape: "bundle", argument: { kind: "free-text", optional: true, placeholder: "GPU", description: "GPU model, such as H100 or B200." },
   options: [{ key: "tab", type: "enum", values: GPU_TABS.map(({ value }) => ({ value })), defaultValue: "board", description: "Board, sourced history, dated changes or related equities." }],
   discovery: { aliases: ["GPU"], dataRequirements: ["GPU rental price observations"],
-    limitations: ["List prices, provider-declared spot and asks are distinct bases", "1D/7D/30D need sufficient observation history; unavailable changes remain null"] },
+    limitations: ["List prices, provider-declared spot and asks are distinct bases",
+      "Hyperscaler and Neocloud rows are list indexes: the median of the providers' list prices linked over time, so a provider joining or leaving causes no jump; sample.rawMedian is the raw median of today's providers and can differ slightly",
+      "1D/7D/30D need sufficient observation history; unavailable changes remain null"] },
   describe: "GPU rental prices in USD per GPU-hour",
   async load(args, ctx) {
     const argument = Array.isArray(args.argument) ? args.argument.join(" ") : args.argument;
     const model = gpuArgument(argument);
     const tab = gpuTab(args.options.tab);
     const board = await fetchGpuBoard(ctx.apiClient);
-    const metadata = { asOf: board.asOf, stale: board.stale, complete: board.status === "available" && !board.access?.locked, unit: "USD/GPU-hour", access: board.access };
+    const metadata = { asOf: board.asOf, stale: board.stale, complete: board.status === "available" && !board.access?.locked, unit: "USD/GPU-hour", access: board.access,
+      methodology: "docs/gpu-rental-prices.md#list-indexes" };
     // Prices observed on providers' pages, not a feed; each board row says whether its source has gone quiet.
     const freshness = { source: "GPU cloud providers", status: "not-a-feed" as const, basis: "observed prices" };
     if (tab === "history") {
@@ -52,7 +56,9 @@ export const gpuHeadless: HeadlessPaneDefinition<"bundle"> = {
       const rows = await Promise.all(related.map(async (row) => {
         const quote = await ctx.marketData.getQuote(row.symbol, row.exchange).catch(() => null);
         const history = histories.find((entry) => entry.symbol === row.symbol);
-        return { symbol: row.symbol, role: row.role, price: quote?.price ?? null, change1d: quote?.changePercent ?? null,
+        // The regular session's last and move, as the pane's board shows them.
+        const headline = getRegularSessionDisplay(quote);
+        return { symbol: row.symbol, role: row.role, price: headline?.price ?? null, change1d: headline?.changePercent ?? null,
           change5d: history?.value ?? null, fiveDayAsOf: history?.asOf ?? null, quoteAsOf: quote?.lastUpdated ? new Date(quote.lastUpdated).toISOString() : null,
           ...quoteFreshnessFields(quote),
           gpu: row.reference ? gpuLabel(row.reference) : row.gpuModel, gpuSource: row.reference ? gpuSource(row.reference) : null, gpuChange7d: row.reference?.change7d ?? null };

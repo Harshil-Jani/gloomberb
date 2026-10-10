@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { AppTickerRepositoryPort } from "../core/app-service-ports";
-import type { HeadlessPaneDefinition, HeadlessPaneFreshness } from "./headless";
+import type { HeadlessPaneDefinition, HeadlessPaneFreshness, HeadlessPaneOptionDef } from "./headless";
 
 export type {
   HeadlessBundleResult,
@@ -132,6 +132,18 @@ export interface PaneDef {
    * shows would be wrong: local data, a calculator, filed records.
    */
   reportFreshness?: Pick<HeadlessPaneFreshness, "source" | "status" | "basis">;
+  /**
+   * Options a rendered-view report takes (`fn FXC --currencies USD,ZAR`):
+   * each sets the pane setting of its key, is checked by its `normalize`, and
+   * is listed with its example by `gloomberb catalog`.
+   */
+  reportOptions?: readonly PaneReportOptionDef[];
+  /**
+   * Lines a rendered-view report prints above its table, from the settings it
+   * ran with: what the default view leaves out and how to see more. `--json`
+   * carries them in `data.metadata.notices`.
+   */
+  reportNotices?(settings: Readonly<Record<string, unknown>>): string[];
   /** Add an Excel-compatible CSV action for the pane's single active DataTable. */
   tableExport?: true;
   settings?: PaneSettingsDef | ((context: PaneSettingsContext) => PaneSettingsDef | null);
@@ -144,6 +156,20 @@ export interface PaneDef {
   quickSettings?: readonly PaneQuickSettingDef[];
 }
 
+/**
+ * An option of a rendered-view report, which sets the pane setting of its key,
+ * or of `settingKey` when the flag reads better than the setting's name
+ * (`--columns` for `optionColumnIds`).
+ */
+export interface PaneReportOptionDef extends Omit<HeadlessPaneOptionDef, "pluginState"> {
+  /** The value's name in the catalog's flag, `--currencies <codes>`; the type when absent. */
+  placeholder?: string;
+  /** The option in use as typed after the function, such as `--currencies USD,ZAR,NGN`; the catalog shows it as an example. */
+  example?: string;
+  /** Checks a typed value and returns it as the pane reads it; throws an Error that names what is wrong. */
+  normalize?(value: string): string;
+}
+
 export interface PaneQuickSettingDef {
   type: "toggle";
   key: string;
@@ -154,6 +180,12 @@ export interface PaneQuickSettingDef {
    * it off picks the field's other option.
    */
   onValue?: string;
+  /**
+   * Shows the control only where it changes something, for a setting that
+   * applies to some of what the pane can show. The field stays in the
+   * settings dialog either way.
+   */
+  visible?: (context: PaneSettingsContext) => boolean;
 }
 
 export interface PaneSettingsContext {
@@ -272,6 +304,11 @@ interface PaneTemplateShortcut {
   aliases?: readonly string[];
   argPlaceholder?: string;
   argKind?: "text" | "ticker" | "ticker-list";
+  /**
+   * For a ticker list, entries kept as typed instead of resolved as tickers:
+   * CORR keeps map series (`GEO:HORMUZ`) beside its tickers.
+   */
+  keepArgToken?: (token: string) => boolean;
   argOptional?: boolean;
   /**
    * With no argument typed and none to infer from the active ticker, open
@@ -378,6 +415,10 @@ export interface CommandResultDef {
   label: string;
   detail?: string;
   category?: string;
+  /** Short tag drawn left of the label, as on a search provider's row. Six characters at most. */
+  badge?: string;
+  /** Drawn muted after the label, e.g. a person's full name after their @username. */
+  name?: string;
   right?: string;
   keywords?: string[];
   current?: boolean;
@@ -403,6 +444,8 @@ export interface CommandBarResultDef {
   category?: string;
   /** Short tag drawn left of the label, e.g. a document type. Six characters at most. */
   badge?: string;
+  /** Drawn muted after the label, e.g. a person's full name after their @username. */
+  name?: string;
   right?: string;
   keywords?: string[];
   disabled?: boolean;
@@ -420,15 +463,29 @@ export interface CommandBarSearchProvider {
   category: string;
   /** Sort position of the section. Higher sinks. Navigation sections are negative; use a positive value to sit below them. */
   priority?: number;
-  /** Skip provide() below this length. Default 3. */
+  /** Skip the provider below this length. Default 3. */
   minQueryLength?: number;
-  /** Default 300. */
+  /** Default 300. Ignored by `match`. */
   debounceMs?: number;
+  /**
+   * Codes (`CHAT`) after which the provider is still asked, typed alone or
+   * with text after them, with the whole query. Every other provider stays
+   * quiet once a code claims the text.
+   */
+  shortcuts?: readonly string[];
   provide(
     query: string,
     context: CommandBarSearchContext,
     signal: AbortSignal,
   ): Promise<CommandBarResultDef[]>;
+  /**
+   * Rows from what the app already holds in memory. When set, the bar calls
+   * this instead of `provide`, as it renders and on every keystroke, so it
+   * must be cheap: no request, no waiting. Its rows are ranked with the bar's
+   * own matches as they are typed and sit under Suggested in the empty bar.
+   * Keep `provide` answering the same rows for older versions of the app.
+   */
+  match?(query: string, context: CommandBarSearchContext): CommandBarResultDef[];
 }
 
 interface CliHelpColumn {
