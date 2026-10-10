@@ -112,7 +112,7 @@ export function IvHistoryPane({ width, height, focused }: PaneProps) {
       { id: "lookback", label: "Lookback", value: lookback, options: LOOKBACKS, onChange: setLookback },
       { id: "realized", label: "Realized", value: String(hvWindow), options: HV_OPTIONS, onChange: setHvWindow },
     ]} />
-    {!symbol ? <EmptyState title="Choose a ticker." /> : <PaneStatusBody subject="implied volatility history" loading={resource.loading && !model}
+    {!symbol ? <EmptyState title="Select a ticker." /> : <PaneStatusBody subject="implied volatility history" loading={resource.loading && !model}
       error={!model ? resource.error ?? identityError ?? null : null} empty={!!model && !model.iv30.length && !model.quoteIv30.length}
       emptyTitle={model?.status === "queued" || model?.status === "backfilling" ? `Backfilling ${symbol} implied volatility history...` : undefined}>
       {model ? <>

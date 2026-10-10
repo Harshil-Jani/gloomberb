@@ -244,7 +244,7 @@ function FilingEventsReader({
     return { info, hints };
   }, [loading, error, ticker, selected, openFiling]);
 
-  if (!ticker) return <EmptyState title="Pick a ticker to see its 8-K filings." />;
+  if (!ticker) return <EmptyState title="Select a ticker." />;
   if (loading && !data) {
     return <PaneStatusBody loading align="center" loadingLabel="Loading 8-Ks..." />;
   }

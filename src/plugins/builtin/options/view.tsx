@@ -758,7 +758,7 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   }, { enabled: focused, phase: "before" });
 
   if (!ticker) {
-    return <EmptyState title="No ticker selected." message="Select a ticker to view options." />;
+    return <EmptyState title="Select a ticker." />;
   }
   if (loading && !chain) return <Spinner label="Loading options chain..." />;
   if (error && !chain) return <EmptyState title="Options chain unavailable." message={error} />;

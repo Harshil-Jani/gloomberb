@@ -240,7 +240,7 @@ export function DividendYieldPane({ focused, width, height, loadData = fetchDivi
   ), [refresh]);
 
   const emptyTitle = !symbol
-    ? "No ticker selected."
+    ? "Select a ticker."
     : loading
       ? "Loading dividends..."
       : error ?? (data?.historyAvailable ? "No cash distributions reported." : "Dividend history unavailable.");

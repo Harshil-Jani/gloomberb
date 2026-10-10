@@ -254,7 +254,7 @@ export function ExecutivesPane({
   const ticker = symbol ? symbol.toUpperCase() : null;
   const listing = useIssuerListing(boundTicker);
   if (wall) return wall;
-  if (!ticker) return <EmptyState title="Pick a ticker to see its executives." />;
+  if (!ticker) return <EmptyState title="Select a ticker." />;
   return <ExecutiveResearch key={ticker} ticker={ticker} listing={listing} focused={focused} width={width} nested={nested} guard={guard} />;
 }
 

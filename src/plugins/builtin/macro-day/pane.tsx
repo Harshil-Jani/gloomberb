@@ -102,7 +102,7 @@ export function MacroDayPane({ width, height, focused }: PaneProps) {
       { id: "release", label: "Release", value: release, options: RELEASE_OPTIONS, onChange: setRelease, inline: true },
       { id: "lookback", label: "Lookback", value: String(lookback), options: LOOKBACK_OPTIONS, onChange: setLookback },
     ]} />
-    {!symbol ? <EmptyState title="Choose a ticker." /> : <PaneStatusBody subject="macro-day moves" loading={history.loading && !model}
+    {!symbol ? <EmptyState title="Select a ticker." /> : <PaneStatusBody subject="macro-day moves" loading={history.loading && !model}
       error={!model ? history.error ?? identityError ?? null : null} empty={!!model && !model.events.length}>
       {model ? <>
         <StatGrid items={stats} width={width} />

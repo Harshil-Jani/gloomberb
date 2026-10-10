@@ -167,7 +167,7 @@ function RiskFactorsReader({
   const bodyWidth = Math.max(12, width - 2);
   const proseWidth = Math.min(bodyWidth, READING_WIDTH);
 
-  if (!ticker) return <EmptyState title="Pick a ticker to see its risk factors." />;
+  if (!ticker) return <EmptyState title="Select a ticker." />;
   if (!list.data && list.loading) return <PaneStatusBody loading align="center" loadingLabel="Loading risk factors..." />;
   if (!list.data && listError && year === null) return <PaneStatusBody error={listError} errorTitle="Could not load risk reports." />;
   if (year === null) return <EmptyState title={`No 10-K risk factors on file for ${ticker}.`} />;
