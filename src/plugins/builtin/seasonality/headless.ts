@@ -1,7 +1,7 @@
 import type { HeadlessPaneDefinition } from "../../../types/plugin";
 import { resolveHeadlessInstrument } from "../shared/headless-market-data";
 import { loadSeasonalityHistory } from "./client";
-import { MONTH_LABELS, projectSeasonality, projectWeekdays, TURN_OF_MONTH_LABELS, WEEKDAY_LABELS } from "./model";
+import { MONTH_LABELS, projectSeasonality, projectWeekdays, TURN_OF_MONTH_LABELS } from "./model";
 
 const percent = (digits: number) => (value: unknown) => typeof value === "number" ? `${(value * 100).toFixed(digits)}%` : "--";
 const statColumns = (digits: number, countHeader: string) => [{ key: "mean", header: "Avg", format: percent(digits) },
@@ -17,22 +17,21 @@ export const seasonalityHeadless: HeadlessPaneDefinition<"bundle"> = {
   options: [
     { key: "tab", type: "enum", values: [{ value: "returns" }, { value: "overlay" }, { value: "weekdays" }], defaultValue: "returns",
       description: "Initial view", pluginState: { pluginId: "ticker-research", key: "activeTabId" } },
-    { key: "lookbackYears", type: "integer", minimum: 1, maximum: 30, defaultValue: 10, description: "Calendar years, the current one included" },
+    { key: "lookbackYears", type: "integer", minimum: 1, maximum: 30, defaultValue: 10, description: "Calendar years, the current one included; Weekdays covers every daily close served" },
   ],
   async load(args, ctx) {
     const instrument = await resolveHeadlessInstrument(ctx, args.symbols[0]!);
-    const lookbackYears = Number(args.options.lookbackYears) || 10;
     const weekdays = args.options.tab === "weekdays";
     const history = await loadSeasonalityHistory({ instrument, cadence: weekdays ? "daily" : "monthly", signal: ctx.signal }, ctx.marketData);
     ctx.signal.throwIfAborted();
     const common = { errors: history.error ? [history.error] : [] };
     if (weekdays) {
-      const model = projectWeekdays(history.history, { symbol: instrument.symbol, exchange: instrument.exchange, lookbackYears });
+      const model = projectWeekdays(history.history, { symbol: instrument.symbol, exchange: instrument.exchange, fetchedAt: history.fetchedAt });
       const present = model.start != null;
       return {
         sections: [
           { title: "By weekday", columns: [{ key: "day", header: "Day" }, ...statColumns(3, "Sessions")],
-            rows: model.weekdays.map((stat, day) => ({ day: WEEKDAY_LABELS[day], ...stat })) },
+            rows: model.weekdays },
           { title: "Turn of month", columns: [{ key: "day", header: "Session" }, ...statColumns(3, "Sessions")],
             rows: [...model.turnOfMonth.map((stat, index) => ({ day: TURN_OF_MONTH_LABELS[index], ...stat })),
               { day: "Turn of month", ...model.turnWindow }, { day: "Other days", ...model.otherDays }] },
@@ -40,11 +39,13 @@ export const seasonalityHeadless: HeadlessPaneDefinition<"bundle"> = {
         complete: !history.stale && !history.error && present,
         unavailableSymbols: present ? [] : [instrument.symbol],
         ...common,
+        // Dated by its last session's close.
+        freshness: { basis: "daily closes", maxAgeMinutes: 14 * 24 * 60 },
         metadata: { unit: "decimal return, local-price session close to close", start: model.start, asOf: model.asOf, stale: history.stale,
           fetchedAt: history.fetchedAt, methodology: "docs/research-data.md#seasonality" },
       };
     }
-    const model = projectSeasonality(history.history, { symbol: instrument.symbol, lookbackYears });
+    const model = projectSeasonality(history.history, { symbol: instrument.symbol, lookbackYears: Number(args.options.lookbackYears) || 10 });
     const monthColumns = MONTH_LABELS.map((label, month) => ({ key: `m${month}`, header: label, format: percent(1) }));
     return {
       sections: [

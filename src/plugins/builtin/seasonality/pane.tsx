@@ -16,7 +16,7 @@ import type { PaneProps } from "../../../types/plugin";
 import { Box } from "../../../ui";
 import { loadSeasonalityHistory } from "./client";
 import { type DailyReturnStat, MONTH_LABELS, OVERLAY_YEAR, projectSeasonality, projectWeekdays, type SeasonalityModel,
-  TURN_OF_MONTH_LABELS, WEEKDAY_LABELS, type WeekdayModel } from "./model";
+  TURN_OF_MONTH_LABELS, type WeekdayModel } from "./model";
 
 const TABS = [{ value: "returns", label: "Returns" }, { value: "overlay", label: "Overlay" }, { value: "weekdays", label: "Weekdays" }];
 export const LOOKBACK_OPTIONS = [{ value: "5", label: "5Y" }, { value: "10", label: "10Y" }, { value: "20", label: "20Y" }];
@@ -47,8 +47,8 @@ function tableRows(model: SeasonalityModel): Row[] {
   ];
 }
 
-function hitCell(value: number | null): DataTableCell {
-  const heat = resolveHeatCellColors(value == null ? null : (value - 0.5) * 2);
+function hitCell(value: number | null, quiet = false): DataTableCell {
+  const heat = resolveHeatCellColors(value == null ? null : (value - 0.5) * 2, { quiet });
   return { text: value == null ? "--" : `${Math.round(value * 100)}%`, value: value == null ? null : value * 100,
     backgroundColor: heat.background, color: heat.foreground };
 }
@@ -78,19 +78,23 @@ function weekdayRows(model: WeekdayModel): WeekdayRow[] {
   const stat = (label: string, value: DailyReturnStat): WeekdayRow => ({ kind: "stat", id: label, label, stat: value });
   return [
     { kind: "section", id: "weekdays", label: "By weekday" },
-    ...model.weekdays.map((value, day) => stat(WEEKDAY_LABELS[day]!, value)),
+    ...model.weekdays.map((value) => stat(value.day, value)),
     { kind: "section", id: "turn", label: "Turn of month" },
     ...model.turnOfMonth.map((value, index) => stat(TURN_OF_MONTH_LABELS[index]!, value)),
   ];
 }
 
+/** A row with fewer sessions (an exchange's rare Saturday session) is shown but not tinted. */
+const MIN_TINTED_SESSIONS = 20;
+
 function renderWeekdayCell(row: WeekdayRow, column: DataTableColumn): DataTableCell {
   if (row.kind === "section") return { text: "" };
   if (column.id === "label") return { text: row.label };
   if (column.id === "count") return { text: String(row.stat.count), value: row.stat.count };
-  if (column.id === "hitRate") return hitCell(row.stat.hitRate);
+  const quiet = row.stat.count < MIN_TINTED_SESSIONS;
+  if (column.id === "hitRate") return hitCell(row.stat.hitRate, quiet);
   const value = column.id === "mean" ? row.stat.mean : row.stat.median;
-  const heat = resolveHeatCellColors(value == null ? null : value / SESSION_SCALE);
+  const heat = resolveHeatCellColors(value == null ? null : value / SESSION_SCALE, { quiet });
   return { text: pct(value, 2), value: value == null ? null : value * 100, backgroundColor: heat.background, color: heat.foreground };
 }
 
@@ -110,11 +114,13 @@ function overlaySeries(model: SeasonalityModel, colors: ReturnType<typeof useThe
   ];
 }
 
-const tone = (value: number | null) => value == null ? undefined : value >= 0 ? "positive" as const : "negative" as const;
+/** Green above zero, red below; a figure that rounds to zero is neither. */
+const tone = (value: number | null, digits = 1) => value == null || !/[1-9]/.test((value * 100).toFixed(digits)) ? undefined
+  : value > 0 ? "positive" as const : "negative" as const;
 
 function weekdayStats(model: WeekdayModel): StatItem[] {
-  const figure = (id: string, label: string, stat: DailyReturnStat): StatItem => ({ id, label, value: pct(stat.mean, 2), tone: tone(stat.mean),
-    detail: stat.count ? `${Math.round(stat.hitRate! * 100)}% up, ${stat.count} sessions` : undefined });
+  const figure = (id: string, label: string, stat: DailyReturnStat): StatItem => ({ id, label, value: pct(stat.mean, 2), tone: tone(stat.mean, 2),
+    detail: stat.count ? `${Math.round(stat.hitRate! * 100)}% up` : undefined });
   return [figure("turn", "Turn of month", model.turnWindow), figure("other", "Other days", model.otherDays)];
 }
 
@@ -158,9 +164,10 @@ export function SeasonalityPane({ width, height, focused }: PaneProps) {
   const lookbackYears = Number(lookback) || 10;
   const model = useMemo(() => history.data && cadence === "monthly"
     ? projectSeasonality(history.data.history, { symbol: symbol ?? "", lookbackYears }) : null, [history.data, cadence, lookbackYears, symbol]);
+  // Daily closes are served for five years, so Weekdays counts all of them and has no lookback.
   const weekdayModel = useMemo(() => history.data && cadence === "daily"
-    ? projectWeekdays(history.data.history, { symbol: symbol ?? "", exchange, lookbackYears }) : null,
-  [history.data, cadence, lookbackYears, symbol, exchange]);
+    ? projectWeekdays(history.data.history, { symbol: symbol ?? "", exchange, fetchedAt: history.data.fetchedAt }) : null,
+  [history.data, cadence, symbol, exchange]);
   const rows = useMemo(() => model ? tableRows(model) : [], [model]);
   const dailyRows = useMemo(() => weekdayModel ? weekdayRows(weekdayModel) : [], [weekdayModel]);
   const series = useMemo(() => model ? overlaySeries(model, colors) : [], [model, colors]);
@@ -180,12 +187,13 @@ export function SeasonalityPane({ width, height, focused }: PaneProps) {
     [model, weekdayModel]);
 
   const { strip, rows: tabRows } = usePaneTabs({ tabs: TABS, activeValue: view, onSelect: setView, focused, dense: true });
-  const contentHeight = Math.max(4, height - 1 - tabRows - statGridRows(stats, width));
+  const queryRows = cadence === "monthly" ? 1 : 0;
+  const contentHeight = Math.max(4, height - queryRows - tabRows - statGridRows(stats, width));
   const palette = resolveChartPalette(colors);
 
   return <Box width={width} height={height} flexDirection="column" overflow="hidden">
     {strip}
-    <QueryBar width={width} filters={[{ id: "lookback", label: "Lookback", value: String(lookback), options: LOOKBACK_OPTIONS, onChange: setLookback }]} />
+    {queryRows ? <QueryBar width={width} filters={[{ id: "lookback", label: "Lookback", value: String(lookback), options: LOOKBACK_OPTIONS, onChange: setLookback }]} /> : null}
     {!symbol ? <EmptyState title="Select a ticker." /> : <PaneStatusBody subject="seasonality" loading={history.loading && !model && !weekdayModel}
       error={!model && !weekdayModel ? history.error ?? identityError ?? null : null}
       empty={model ? !model.years.length : !!weekdayModel && !weekdayModel.start}>
