@@ -51,8 +51,14 @@ const BUILTIN_PLUGIN_OWNER_ALIASES: Record<string, string> = {
  * while its switch belongs to the successor that holds the module now.
  */
 const BUILTIN_DISABLED_PLUGIN_ALIASES: Record<string, string> = {
+  correlation: "quant",
+  "crypto-board": "crypto",
   "earnings-calendar": "earnings",
   "earnings-calls": "earnings",
+  "fx-matrix": "global-markets",
+  "market-movers": "screeners",
+  sectors: "global-markets",
+  "world-indices": "global-markets",
   // `macro-tv` keeps meaning all of Macro: TV left for its own repository, so
   // no successor holds it, and turning it off was turning Macro off.
 };
@@ -67,6 +73,7 @@ const BUILTIN_DISABLED_PLUGIN_ALIASES: Record<string, string> = {
  */
 const BUILTIN_PLUGIN_GROUPS: Readonly<Record<string, readonly string[]>> = {
   macro: ["rates-macro", "credit", "earnings"],
+  "market-overview": ["global-markets", "screeners", "futures-commodities", "crypto", "alt-data", "quant"],
 };
 
 let pluginGroups = BUILTIN_PLUGIN_GROUPS;
@@ -91,6 +98,11 @@ const LEGACY_MODULE_IDS_BY_OWNER: Record<string, readonly string[]> = {
 
 function normalizeBuiltinPluginOwnerId(pluginId: string): string {
   return BUILTIN_PLUGIN_OWNER_ALIASES[pluginId] ?? pluginId;
+}
+
+/** Every retired built-in module id, for checks that each still lands on the right plugin. */
+export function retiredBuiltinModuleIds(): string[] {
+  return Object.keys(BUILTIN_PLUGIN_OWNER_ALIASES);
 }
 
 export function isReservedBuiltinPluginId(pluginId: string): boolean {
