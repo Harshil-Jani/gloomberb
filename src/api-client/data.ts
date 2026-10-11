@@ -112,6 +112,7 @@ import type {
   CloudAnalystResearchPayload,
   CloudShortInterestPayload,
   CloudCdsHistoryResponse,
+  CloudCdsLevelsResponse,
   CloudCdsResponse,
   CloudCongressHousePayload,
   CloudEarningsCallListPayload,
@@ -749,6 +750,11 @@ export class CloudDataApi {
 
   async getCloudCdsHistory(params: CloudCdsHistoryParams): Promise<CloudCdsHistoryResponse> {
     return this.request<CloudCdsHistoryResponse>(cloudCdsHistoryPath(params), { signal: AbortSignal.timeout(30_000) });
+  }
+
+  /** Every listed issuer's latest 5Y level in one request. */
+  async getCloudCdsLevels(): Promise<CloudCdsLevelsResponse> {
+    return this.request<CloudCdsLevelsResponse>("/cloud/credit/cds/levels", { signal: AbortSignal.timeout(30_000) });
   }
 
   async getCloudCdxBoard(params: CloudCreditBoardParams = {}): Promise<CdxBoardPayload> {
