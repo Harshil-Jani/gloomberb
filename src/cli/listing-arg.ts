@@ -4,6 +4,7 @@ import type { CliCommandContext } from "../types/plugin";
 import type { TickerRecord } from "../types/ticker";
 import { listingVenues, quotedOnVenue, readSharedCode, type ListingDeps, type ListingStore, type ListingVenue } from "../tickers/listing-venues";
 import { findUsListingOfCompany, type UsListing } from "../tickers/us-listing";
+import { quotedListing, type CurrentListing } from "../tickers/ticker-changes";
 import { cliStyles } from "../utils/cli-output";
 import { groupByCompany, sameCompany, shortCompanyName } from "../tickers/company-name";
 import {
@@ -600,6 +601,11 @@ function endedTradingDate(quote: Quote, now = Date.now()): string | null {
   if (!(last > 0) || now - last < ENDED_AFTER_MS || !isQuoteStaleForCurrentSession(quote, now)) return null;
   const zone = resolveExchangeTimeZone(quote.listingExchangeName || quote.exchangeName) ?? "UTC";
   return zonedDateKey(last, zone);
+}
+
+/** What trades under a symbol now, from its quote: nothing when it has none or stopped long ago. */
+export function tradingListing(quote: Quote | null | undefined, now = Date.now()): CurrentListing | null {
+  return quote && !endedTradingDate(quote, now) ? quotedListing(quote) : null;
 }
 
 /** "TWTR: no longer trading since 2022-10-27 (last price $53.86)", for a quote that stopped long ago. */
