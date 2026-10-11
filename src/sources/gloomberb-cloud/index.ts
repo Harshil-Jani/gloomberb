@@ -26,6 +26,7 @@ import type { PriceHistoryResult } from "../../types/price-history";
 import { parseHistorySession } from "../../market-data/history-session";
 import { quoteMetadataFromQuote, quoteMetadataMatchesTarget } from "../../market-data/quotes/metadata";
 import type { InstrumentSearchResult } from "../../types/instrument";
+import type { TickerChanges } from "../../types/ticker-changes";
 import {
   apiClient,
   type CloudAnalystResearchPayload,
@@ -39,13 +40,13 @@ import { normalizeNewsFeed } from "../../news/news-model";
 import { resolveCurrencyUnit } from "../../utils/currency-units";
 import { canonicalExchange, canonicalTickerKey, parsePublicTickerKey } from "../../utils/exchanges";
 import { normalizePriceHistory, priceHistoryIntervalMs, reachesLatestSettledSession } from "../../utils/price-history";
-import { createProviderMiss } from "../provider-errors";
+import { createProviderMiss, providerMissReason } from "../provider-errors";
 import { assertSecRegistrantMatches } from "../sec-registrant";
 import { nonUsSecListingVenue } from "../../utils/sec";
 import { publicListingTarget } from "../listing-target";
 import { canonicalHistoryInterval, HistoryRetentionError, parseHistoryRecoveryCandidate, parseHistoryRetention, type HistoryRetention } from "../history-retention";
 import { getRouterEntityKey } from "../provider-router/cache";
-import { tickerHasListingSuffix } from "../listing-symbols";
+import { hongKongListingCode, tickerHasListingSuffix } from "../listing-symbols";
 import { parseSecAcceptanceTime } from "../sec-edgar/acceptance-time";
 import { hasMalformedIntradayHistory } from "../../time-series/history-quality";
 import {
@@ -57,6 +58,7 @@ import {
   formatCloudDateTime,
   isEmptyCloudStatus,
   mapBatchError,
+  NOT_FOUND_REASON,
   mapCloudFinancials,
   mapOptionsChain,
   mapPricePoint,
@@ -124,7 +126,7 @@ async function withCloudFallback<T>(load: () => Promise<T>, message: string): Pr
     return await load();
   } catch (error) {
     if (isCloudProviderMiss(error)) {
-      throw createProviderMiss(message);
+      throw createProviderMiss(message, providerMissReason(error));
     }
     throw error;
   }
@@ -200,15 +202,15 @@ function mapCloudPriceHistory(
   if (stale && !reachesLatestSettledSession(points, Date.now(), { symbol: ticker, exchange, intervalMs: priceHistoryIntervalMs(interval) })) {
     throw createProviderMiss(`Cloud chart data is stale for ${ticker}`);
   }
-  if (
-    /^\d+(min|h)$/i.test(interval)
-    && hasMalformedIntradayHistory(points)
-  ) {
+  const intraday = /^\d+(min|h)$/i.test(interval);
+  // Daily bars answering an intraday range: the listing has no intraday bars.
+  const dailyBars = intraday && response.servedResolution === "1day";
+  if (intraday && !dailyBars && hasMalformedIntradayHistory(points)) {
     throw createProviderMiss(`Cloud chart data failed OHLC validation for ${ticker}`);
   }
   const matchingInterval = [response.providerMeta?.servedResolution, response.providerMeta?.requestedResolution]
     .every((declared) => declared === undefined || canonicalHistoryInterval(declared) === canonicalHistoryInterval(interval));
-  const resolution = matchingInterval ? cloudHistoryResolution(interval) : null;
+  const resolution = dailyBars ? "1d" : matchingInterval ? cloudHistoryResolution(interval) : null;
   // Metadata this client cannot read (a newer version, a far-off clock) is
   // absent, not contradictory; only a readable mismatch rejects the history.
   const declared = parseHistorySession(response.historySession) !== null;
@@ -237,7 +239,7 @@ function cloudHistoryResolution(interval: string): ManualChartResolution | null 
 }
 
 function quoteTargetKey(symbol: string, exchange?: string): string {
-  const target = publicListingTarget(symbol, exchange);
+  const target = cloudInstrumentTarget(symbol, exchange);
   const base = target.exchange && tickerHasListingSuffix(target.symbol) ? target.symbol.slice(0, target.symbol.indexOf(".")) : target.symbol;
   return canonicalTickerKey(base, target.exchange);
 }
@@ -251,7 +253,14 @@ function cloudResponseTargetKey(key: string, requested: Set<string>): string | u
     ? symbol : undefined;
 }
 
-const cloudInstrumentTarget = publicListingTarget;
+/**
+ * The listing as Gloom Cloud knows it. A Hong Kong code goes out with its four
+ * digits: Cloud has no 700 or 5 on HKEX, only 0700 and 0005.
+ */
+function cloudInstrumentTarget(symbol: string, exchange?: string) {
+  const target = publicListingTarget(symbol, exchange);
+  return target.exchange ? { ...target, symbol: hongKongListingCode(target.symbol, target.exchange) } : target;
+}
 
 function cloudHistoryRecovery(
   context: MarketDataRequestContext | undefined,
@@ -323,7 +332,7 @@ function unwrapRequiredCloudResponse<T>(response: CloudMarketResponse<T>, messag
     return response.data;
   }
   if (isEmptyCloudStatus(response.status)) {
-    throw createProviderMiss(response.reasonCode ?? message);
+    throw createProviderMiss(response.reasonCode ?? message, response.message, { notFound: response.reasonCode === NOT_FOUND_REASON });
   }
   throw new Error(response.reasonCode ?? message);
 }
@@ -404,13 +413,14 @@ export class GloomberbCloudProvider implements AssetDataProvider {
     return withCloudFallback(
       async () => {
         const response = await apiClient.getCloudQuote(target.symbol, target.exchange);
-        if (isStaleCloudResponse(response)) {
-          throw createProviderMiss(`Cloud quotes are stale for ${ticker}`);
-        }
-        return retainRequestedQuoteSymbol(mapQuote(
+        const quote = retainRequestedQuoteSymbol(mapQuote(
           unwrapRequiredCloudResponse(response, `Cloud quotes are unavailable for ${ticker}`),
           response.providerMeta,
         ), ticker);
+        // A stale answer is the last price the service has. It stays flagged, so
+        // no freshness check passes it and only a request with no current quote
+        // from any source falls back to it.
+        return isStaleCloudResponse(response) ? { ...quote, stale: true } : quote;
       },
       `Cloud quotes are unavailable for ${ticker}`,
     );
@@ -481,9 +491,9 @@ export class GloomberbCloudProvider implements AssetDataProvider {
       stale: data.stale === true || response.stale === true };
   }
 
-  async search(query: string, _context?: SearchRequestContext): Promise<InstrumentSearchResult[]> {
+  async search(query: string, context?: SearchRequestContext): Promise<InstrumentSearchResult[]> {
     return withCloudFallback(
-      () => apiClient.searchInstruments(query, 10),
+      () => apiClient.searchInstruments(query, context?.limit ?? 10),
       "Cloud search is unavailable",
     );
   }
@@ -563,6 +573,12 @@ export class GloomberbCloudProvider implements AssetDataProvider {
       const response = await apiClient.getCloudCorporateActions(target.symbol, target.exchange);
       return unwrapRequiredCloudResponse(response, `Cloud corporate actions are unavailable for ${ticker}`) as CloudCorporateActionsPayload;
     }, `Cloud corporate actions are unavailable for ${ticker}`);
+  }
+
+  async getTickerChanges(symbol: string, options: { signal?: AbortSignal } = {}): Promise<TickerChanges | null> {
+    const response = await apiClient.getCloudTickerChanges(symbol, options);
+    // "empty" is an answer: no change on record.
+    return response.status === "success" || response.status === "partial" ? response.data : null;
   }
 
   async getArticleSummary(url: string): Promise<string | null> {

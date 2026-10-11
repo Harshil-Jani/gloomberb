@@ -3,6 +3,7 @@ import type { HeadlessPaneDefinition } from "../../../types/plugin";
 import { fetchRevenueBreakdown } from "./client";
 import { quarterLabel, reportedSpan } from "./model";
 import { SEC_FILINGS } from "../shared/report-freshness";
+import { resolveHeadlessIssuerListing } from "../shared/headless-market-data";
 
 export const revenueBreakdownHeadless: HeadlessPaneDefinition<"bundle"> = {
   shape: "bundle",
@@ -16,10 +17,10 @@ export const revenueBreakdownHeadless: HeadlessPaneDefinition<"bundle"> = {
     aliases: ["SEG"],
     dataRequirements: ["Gloom Cloud revenue breakdowns from 10-Q and 10-K XBRL"],
     limitations: [
-      "US filers only; 20-F filers report no quarterly breakdown",
-      "Rows are the members that add up to reported revenue; subtotals are dropped",
-      "Fiscal quarters; Q4 is the fiscal year less nine months",
-      "Free accounts get the two largest rows",
+      "US filers only; 20-F filers report no quarterly breakdown.",
+      "Rows are the members that add up to reported revenue; subtotals are dropped.",
+      "Fiscal quarters; Q4 is the fiscal year less nine months.",
+      "Free accounts get the two largest rows.",
     ],
   },
   options: [
@@ -34,10 +35,12 @@ export const revenueBreakdownHeadless: HeadlessPaneDefinition<"bundle"> = {
   ],
   describe: (args) => `Revenue breakdown | ${args.symbols[0]}`,
   async load(args, ctx) {
+    const symbol = args.symbols[0]!;
     const data = reportedSpan(await fetchRevenueBreakdown(
-      args.symbols[0]!,
+      symbol,
       (args.options.view as RevenueBreakdownView | undefined) ?? "product",
       ctx.apiClient,
+      await resolveHeadlessIssuerListing(ctx, symbol),
     ));
     return {
       complete: data.access === "full",

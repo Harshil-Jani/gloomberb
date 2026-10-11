@@ -39,3 +39,14 @@ test("a group typed after MAP opens its layers, and an unknown layer names the k
   await expect(mapHeadless.load(createTestHeadlessArgs({ options: { layer: "ufo" } }), createTestHeadlessContext({ apiClient })))
     .rejects.toThrow('No map layer "ufo". Layers: chokepoints, ports, airports');
 });
+
+test("a layer reports the status its cadence implies, and a layer that cannot serve claims none", async () => {
+  const freshness = async (layer: string) => (
+    await mapHeadless.load(createTestHeadlessArgs({ options: { layer } }), createTestHeadlessContext({ apiClient }))
+  ).freshness;
+  expect(await freshness("vessels")).toEqual({ status: "live" });
+  expect(await freshness("chokepoints")).toMatchObject({ status: "not-a-feed", basis: "daily data" });
+  expect(await freshness("airports")).toMatchObject({ status: "not-a-feed", basis: "reference data" });
+  // An unavailable live layer has no rows to call live; its error says why.
+  expect(await freshness("flights")).toBeUndefined();
+});

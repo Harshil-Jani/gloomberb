@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   confirmDialog,
   usePaneFooter,
+  usePaneMenuItems,
   usePaneNoticeFooter,
   usePaneTabs,
   type DataTableKeyEvent,
@@ -83,12 +84,25 @@ import {
 } from "./data";
 import { usePortfolioPaneStreaming } from "./streaming";
 import { usePortfolioSupplementalData } from "./supplemental";
+import { PERPETUAL_COLUMN_IDS } from "../cell-version";
+import { useListPerpetuals } from "../../perps/list-perpetuals";
+import { openPerpLabel, useOpenPerpMarket } from "../../perps/open-market";
 import { useLiveStreamingSetting } from "../../../../state/hooks/live-streaming";
 import { useThrottledTickerOrder } from "../use-throttled-ticker-order";
 import { useThrottledMemo } from "../use-throttled-memo";
 import { useColumnClock } from "../use-column-clock";
 import { liveMarketCapitalization } from "../live-valuation";
-import { hasUnknownOptionMultiplier } from "../position-metrics";
+import { hasUnknownOptionMultiplier } from "../../../../portfolio/position-metrics";
+import {
+  allocationTotal,
+  buildPortfolioAllocation,
+  CASH_SYMBOL,
+  hasTargetWeights,
+  resolvePortfolioCash,
+} from "../allocation";
+
+/** Columns that need the portfolio's total. */
+const ALLOCATION_COLUMN_IDS = new Set(["weight", "drift", "trade", "trade_value"]);
 
 // Rows follow every tick. Totals walk the whole collection, so the footer
 // coalesces to about four updates a second and the weight denominator to one.
@@ -116,6 +130,8 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
 
   const [streamWindow, setStreamWindow] = useState({ start: 0, end: 24 });
   const [quickAddFocused, setQuickAddFocused] = useState(false);
+  // Bumped by the empty table's "+ ticker" button to open the add row.
+  const [quickAddRequest, setQuickAddRequest] = useState(0);
 
   const {
     cursorSymbol,
@@ -162,12 +178,18 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
   const flashSymbols = useQuoteFlashMap(financialsMap, valueFlashingEnabled);
 
   const accountStateInput = useMemo(() => ({ brokerAccounts, config }), [brokerAccounts, config]);
-  const { accountState, accountsError } = usePortfolioAccountState(currentPortfolio, accountStateInput);
+  const { accountState, accountsError, brokerError } = usePortfolioAccountState(currentPortfolio, accountStateInput);
+  const brokerPortfolio = isPortfolioTab && !!currentPortfolio?.brokerInstanceId;
+  const portfolioTargets = currentPortfolio?.targetWeights;
   const columns = useMemo(
-    () => resolveVisibleColumns(paneSettings.columnIds, isPortfolioTab),
-    [isPortfolioTab, paneSettings.columnIds],
+    () => resolveVisibleColumns(paneSettings.columnIds, isPortfolioTab, { targetWeights: hasTargetWeights(currentPortfolio) }),
+    [currentPortfolio, isPortfolioTab, paneSettings.columnIds],
   );
   const supplementalData = usePortfolioSupplementalData(tickers, columns, appActive);
+  // One lookup for the whole list, only while a perpetual column is on screen.
+  const showsPerpetuals = viewMode === "table" && columns.some((column) => PERPETUAL_COLUMN_IDS.has(column.id));
+  const perpetuals = useListPerpetuals(tickers, showsPerpetuals);
+  const openPerpMarket = useOpenPerpMarket();
   const visibleWarmupRequirements = useMemo(
     () => resolveVisibleWarmupRequirements(columns),
     [columns],
@@ -178,19 +200,32 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     () => resolvePortfolioTotalsCurrency(currentPortfolio, config.baseCurrency),
     [config.baseCurrency, currentPortfolio],
   );
+  // The broker account's cash when it reports one, else the cash entered by hand.
+  const cashLine = useMemo(
+    () => isPortfolioTab ? resolvePortfolioCash(currentPortfolio, accountState?.account) : null,
+    [accountState, currentPortfolio, isPortfolioTab],
+  );
   const trackedCurrencies = useMemo(
-    () => buildTrackedCurrencies(tickers, financialsMap, accountState, totalsCurrency),
-    [accountState, financialsMap, tickers, totalsCurrency],
+    () => buildTrackedCurrencies(tickers, financialsMap, accountState, totalsCurrency, cashLine?.source === "manual" ? cashLine.currency : undefined),
+    [accountState, cashLine, financialsMap, tickers, totalsCurrency],
   );
   const exchangeRates = useFxRatesMap(trackedCurrencies);
   const conversionCurrencies = trackedCurrencies.some((currency) => currency !== totalsCurrency) ? trackedCurrencies : [];
   const fxStatus = summarizeFxRates(conversionCurrencies, exchangeRates, (currency) => getSharedMarketDataCoordinator()?.getFxEntry(currency));
   const fxStatusText = fxStatusLabel(fxStatus);
   const activeSort = resolveCollectionSortPreference(activeCollectionId, isPortfolioTab, collectionSorts);
+  const accountCurrency = accountState?.account.currency ?? "";
+  const convertAccountValue = useCallback(
+    (value: number) => convertCurrency(value, accountCurrency, totalsCurrency, exchangeRates),
+    [accountCurrency, exchangeRates, totalsCurrency],
+  );
+  const cashValue = cashLine == null ? null
+    : cashLine.source === "broker" ? convertAccountValue(cashLine.amount)
+      : convertCurrency(cashLine.amount, cashLine.currency, totalsCurrency, exchangeRates);
   // Only weights divide by the total: skip the walk when nothing shows one.
   const needsWeightTotal = isPortfolioTab
-    && (viewMode === "grid" || columns.some((column) => column.id === "weight"));
-  const portfolioTotalMarketValue = useThrottledMemo(
+    && (viewMode === "grid" || columns.some((column) => ALLOCATION_COLUMN_IDS.has(column.id)));
+  const weightHoldings = useThrottledMemo(
     () => needsWeightTotal ? calculatePortfolioSummaryTotals(
       tickers,
       financialsMap,
@@ -198,11 +233,13 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
       exchangeRates,
       isPortfolioTab,
       activeCollectionId,
-    ).totalMktValue : undefined,
+    ).allocationHoldings : undefined,
     [financialsMap],
     [activeCollectionId, exchangeRates, isPortfolioTab, needsWeightTotal, tickers, totalsCurrency],
     WEIGHT_TOTAL_THROTTLE_MS,
   );
+  // Priced holdings plus cash, as `portfolio show` totals them.
+  const portfolioTotalMarketValue = weightHoldings ? allocationTotal(weightHoldings, cashValue) ?? undefined : undefined;
 
   // The header, footer and notices move with live quotes a few times a second,
   // not on every tick.
@@ -226,14 +263,19 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     baseCurrency: totalsCurrency,
     exchangeRates,
     portfolioTotalMarketValue,
+    portfolioTargets,
     supplementalVersion: supplementalData.version,
     analystResearch: supplementalData.analystResearch,
     corporateActions: supplementalData.corporateActions,
     earningsEvents: supplementalData.earningsEvents,
+    perpetuals: perpetuals.markets,
+    perpetualsVersion: perpetuals.version,
   }), [
     activeCollectionId,
     exchangeRates,
     isPortfolioTab,
+    perpetuals,
+    portfolioTargets,
     portfolioTotalMarketValue,
     supplementalData,
     totalsCurrency,
@@ -292,11 +334,16 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
       : null,
     [accountState],
   );
-  const accountCurrency = accountState?.account.currency ?? "";
-  const convertAccountValue = useCallback(
-    (value: number) => convertCurrency(value, accountCurrency, totalsCurrency, exchangeRates),
-    [accountCurrency, exchangeRates, totalsCurrency],
-  );
+  // Cash entered by hand gets its own figures; a broker account's cash is already in the header.
+  const manualCash = useMemo(() => {
+    if (!isPortfolioTab || accountState || (cashLine == null && portfolioTargets?.[CASH_SYMBOL] == null)) return null;
+    const allocation = buildPortfolioAllocation({
+      holdings: portfolioSummaryTotals.allocationHoldings ?? [],
+      cashValue: cashValue ?? (cashLine ? Number.NaN : null),
+      targets: portfolioTargets,
+    });
+    return allocation.cash ? { ...allocation.cash, total: allocation.total } : null;
+  }, [accountState, cashLine, cashValue, isPortfolioTab, portfolioSummaryTotals, portfolioTargets]);
   const summarySegments = useMemo(() => buildPortfolioSummarySegments({
     totals: portfolioSummaryTotals,
     accountState: summaryAccountState,
@@ -304,7 +351,9 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     convertAccountValue,
     currency: totalsCurrency,
     baseCurrency: config.baseCurrency,
-  }), [config.baseCurrency, convertAccountValue, isPortfolioTab, portfolioSummaryTotals, summaryAccountState, totalsCurrency]);
+    manualCash,
+    brokerPortfolio,
+  }), [brokerPortfolio, config.baseCurrency, convertAccountValue, isPortfolioTab, manualCash, portfolioSummaryTotals, summaryAccountState, totalsCurrency]);
   // The header row sits in the pane's one-cell side padding, like the table.
   const summaryWidth = Math.max(0, width - 2);
   const summaryLayout = useMemo(() => layoutPortfolioSummaryHeader(summarySegments, summaryWidth, {
@@ -442,7 +491,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     accountState: summaryAccountState,
     accountStatusText: accountsError
       ? `Accounts unavailable: ${accountsError}`
-      : isPortfolioTab && currentPortfolio?.brokerInstanceId && !accountState ? "Acct missing" : undefined,
+      : brokerPortfolio ? brokerError ?? (accountState ? undefined : "Acct missing") : undefined,
     financialsMap,
     isPortfolioTab,
     refreshingSize,
@@ -451,7 +500,8 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
   }), [financialsMap, sortedTickers], [
     accountState,
     accountsError,
-    currentPortfolio?.brokerInstanceId,
+    brokerError,
+    brokerPortfolio,
     isPortfolioTab,
     portfolioSummaryTotals,
     refreshingSize,
@@ -516,10 +566,18 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     }
   }, [appStateRef, dialog, dispatch, notify, removalCollection, selectedTicker, setCursorSymbol]);
 
+  // The cursor row's perpetual, for the keyboard: the pane menu opens what clicking its cell opens.
+  const cursorPerpetual = showsPerpetuals && cursorSymbol ? perpetuals.markets.get(cursorSymbol) ?? null : null;
+  usePaneMenuItems("portfolio-list-perpetual", () => cursorPerpetual
+    ? [{ id: "open-perpetual", label: openPerpLabel(cursorPerpetual), onSelect: () => openPerpMarket(cursorPerpetual.marketId) }]
+    : null, [cursorPerpetual, openPerpMarket]);
+
   usePaneFooter("portfolio-list", () => ({
-    info: fxStatusText && !fxWarning
-      ? [...summaryFooterInfo, { id: "fx", parts: [{ text: `FX ${fxStatusText}`, tone: "muted" as const }] }]
-      : summaryFooterInfo,
+    info: [
+      ...summaryFooterInfo,
+      ...(fxStatusText && !fxWarning ? [{ id: "fx", parts: [{ text: `FX ${fxStatusText}`, tone: "muted" as const }] }] : []),
+      ...(showsPerpetuals && perpetuals.stale ? [{ id: "perpetuals", parts: [{ text: "perpetuals stale", tone: "warning" as const }] }] : []),
+    ],
     hints: [
       ...(removalCollection
         ? [{
@@ -555,11 +613,13 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     fxStatusText,
     fxWarning,
     isPortfolioTab,
+    perpetuals.stale,
     removalCollection,
     removeSelectedTicker,
     selectedTicker,
     setCashDrawerExpanded,
     showCashDrawer,
+    showsPerpetuals,
     summaryFooterInfo,
     toggleViewMode,
     viewMode,
@@ -575,6 +635,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     return null;
   }, [activeCollectionId, config, currentPortfolio]);
   const showQuickAdd = !!(activeCollectionId && activeCollectionEntry && quickAddCollectionKind);
+  const requestQuickAdd = useCallback(() => setQuickAddRequest((count) => count + 1), []);
   const quickAddHeight = showQuickAdd ? 1 : 0;
   const selectedFinancials = cursorSymbol ? financialsMap.get(cursorSymbol) : undefined;
   const selectedCap = liveMarketCapitalization(selectedFinancials?.quote, selectedFinancials?.fundamentals);
@@ -599,6 +660,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
       width={width}
       onAdded={handleTickerAdded}
       onFocusChange={setQuickAddFocused}
+      focusRequest={quickAddRequest}
     />
   ) : null;
 
@@ -637,6 +699,8 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
           visibleRangeBuffer={3}
           resetScrollKey={activeCollectionId}
           onRowActivate={handleRowActivate}
+          onAddTicker={showQuickAdd ? requestQuickAdd : undefined}
+          onOpenPerpetual={showsPerpetuals ? openPerpMarket : undefined}
           rootHeight={contentHeight}
         />
       ) : (

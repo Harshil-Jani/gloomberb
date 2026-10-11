@@ -11,8 +11,10 @@ import {
   riskCoverageShortfall,
   riskCoverageText,
   RISK_VIEWS,
+  riskEvidence,
   riskPercentile,
   riskValue,
+  sinceFallbackNote,
   type PortfolioRiskModel,
   type RiskCoverage,
   type RiskDisplayRow,
@@ -39,7 +41,8 @@ function displayRow(row: RiskDisplayRow) {
     value: riskValue(row),
     percentile: riskPercentile(row),
     asOf: row.asOf?.slice(0, 10) ?? null,
-    detail: row.detail,
+    detail: riskEvidence(row),
+    ...(row.amount != null ? { amount: row.amount, currency: row.amountCurrency ?? null } : {}),
   };
 }
 
@@ -70,14 +73,14 @@ function coverageSummary(coverage: RiskCoverage, limit = Infinity) {
   };
 }
 
-/** One line for the whole coverage in place of a notice per left-out holding. */
-function coverageError(coverage: RiskCoverage | undefined): string | null {
+/** One line for the whole coverage in place of a note per left-out holding. */
+function coverageLine(coverage: RiskCoverage | undefined): { error?: string; note?: string } {
   const shortfall = riskCoverageShortfall(coverage);
-  if (shortfall) return `Basket estimates unavailable: ${shortfall.title} ${shortfall.message}`.trim();
-  // Converted holdings are covered, not an error; only a left-out holding raises one.
+  // No estimate at all is a failure; an estimate that leaves holdings out is a caveat.
+  if (shortfall) return { error: `Basket estimates unavailable: ${shortfall.title} ${shortfall.message}`.trim() };
   return coverage?.leftOut.length
-    ? `Basket ${riskCoverageText(coverage)}; metadata.coverage lists each with its reason.`
-    : null;
+    ? { note: `Basket ${riskCoverageText(coverage)}; metadata.coverage lists each with its reason.` }
+    : {};
 }
 
 /** One view, its strongest or first rows, and the portfolio's totals instead of the model. */
@@ -119,10 +122,10 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
       "Explicit local evidence for account returns and attribution",
     ],
     limitations: [
-      `Fixed-current-weight USD equity basket over the holdings that qualify, largest ${RISK_HISTORY_LIMIT} by value; foreign listings convert to USD at daily FX closes; metadata.coverage states the covered share of market value and each holding left out`,
-      "No account performance inferred",
-      "ETF price-return factor proxies",
-      "Historical percentiles need 20 rolling samples",
+      `Fixed-current-weight USD equity basket over the holdings that qualify, largest ${RISK_HISTORY_LIMIT} by value; foreign listings convert to USD at daily FX closes; metadata.coverage states the covered share of market value and each holding left out.`,
+      "No account performance inferred.",
+      "ETF price-return factor proxies.",
+      "Historical percentiles need 20 rolling samples.",
     ],
   },
   options: [
@@ -130,9 +133,16 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
       key: "view",
       type: "enum",
       settingKey: "riskView",
-      defaultValue: "risk",
+      // No default: left out, the report prints every view.
       values: RISK_VIEWS.map((value) => ({ value })),
-      description: "Portfolio risk view.",
+      description: "One portfolio risk view; every view when left out.",
+    },
+    {
+      key: "since",
+      type: "enum",
+      settingKey: "riskSince",
+      values: [{ value: "filed" }],
+      description: "Risk rows since the 13F filing date of a portfolio made with portfolio import --13f, instead of the trailing 60 sessions.",
     },
     {
       key: "evidence",
@@ -144,28 +154,25 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
       key: "equity-shift",
       type: "integer",
       settingKey: "equityShift",
-      defaultValue: -10,
       minimum: -99,
       maximum: 100,
-      description: "Independent index shock in percent.",
+      description: "Independent index shock in percent (-10 when left out).",
     },
     {
       key: "rate-shift",
       type: "integer",
       settingKey: "rateShift",
-      defaultValue: 100,
       minimum: -500,
       maximum: 500,
-      description: "Independent 10Y yield shock in basis points.",
+      description: "Independent 10Y yield shock in basis points (100 when left out).",
     },
     {
       key: "vol-shift",
       type: "integer",
       settingKey: "volShift",
-      defaultValue: 10,
       minimum: -50,
       maximum: 100,
-      description: "Independent VIX shock in index points.",
+      description: "Independent VIX shock in index points (10 when left out).",
     },
   ],
   describe: (args) =>
@@ -191,7 +198,8 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
       throw new Error(
         "Imported evidence belongs to a different portfolio or currency",
       );
-    const view = String(args.options.view ?? "risk");
+    const requestedView = isRiskView(args.options.view) ? args.options.view : null;
+    const view: string = requestedView ?? "risk";
     const localOnly =
       ["performance", "attribution", "greeks"].includes(view) &&
       evidence != null;
@@ -226,7 +234,17 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
         rates: Number(args.options["rate-shift"] ?? 100),
         volatility: Number(args.options["vol-shift"] ?? 10),
       },
+      args.options.since === "filed" ? { since: "filed" } : {},
     );
+    // Options for views the report does not print are named, not dropped silently; the fallback from --since opens the report.
+    const fallback = sinceFallbackNote(local.portfolio);
+    const shifted = ["equity-shift", "rate-shift", "vol-shift"].filter((key) => args.options[key] != null);
+    const notices = [
+      ...(model.window.kind === "since-filed" ? [`Risk rows since the 13F filing on ${model.window.filed}, against ${model.benchmark}`] : []),
+      ...(args.options.since === "filed" && model.window.kind !== "since-filed" ? [fallback] : []),
+      ...(requestedView && requestedView !== "stress" && shifted.length ? [`${shifted.map((key) => `--${key}`).join(", ")} change${shifted.length === 1 ? "s" : ""} the stress view only, not --view ${requestedView}`] : []),
+      ...(requestedView && args.options.since != null && requestedView !== "risk" ? [`--since changes the risk view only, not --view ${requestedView}`] : []),
+    ];
     // A basket view is complete only when the basket covers every holding.
     const covered = model.coverage.leftOut.length === 0;
     const complete =
@@ -241,15 +259,18 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
               : view === "factors"
                 ? covered && model.factors.every((row) => row.value != null)
                 : model.complete;
+    // A basket view with too little covered shows no estimate, and the report says why rather than leaving dashes.
+    const shortfall = BASKET_VIEWS.has(view as RiskView) ? coverageLine(model.coverage).error : undefined;
     return {
       complete,
-      errors: [...riskCoverageNotices(model.coverage), ...model.warnings],
-      sections: RISK_VIEWS.map((view) => ({
+      errors: [...(shortfall ? [shortfall] : []), ...model.warnings],
+      notes: [...riskCoverageNotices(model.coverage), ...model.notes.filter((note) => note !== fallback)],
+      sections: (requestedView ? [requestedView] : RISK_VIEWS).map((view) => ({
         title: view,
         columns: RISK_COLUMNS,
         rows: model.rows[view].map(displayRow),
       })),
-      metadata: { coverage: coverageSummary(model.coverage), model },
+      metadata: { coverage: coverageSummary(model.coverage), model, benchmark: model.benchmark, window: model.window, notices },
     };
   },
   compact(result, args) {
@@ -257,17 +278,16 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
     if (!model?.rows) return result;
     const view = isRiskView(args.options.view) ? args.options.view : "risk";
     const { rows, notices } = compactRiskRows(model, view);
-    // Each left-out holding is in metadata.coverage; the errors keep one line for all of them.
+    // Each left-out holding is in metadata.coverage; the notes keep one line for all of them.
     const perHolding = new Set(riskCoverageNotices(model.coverage));
     const basketView = BASKET_VIEWS.has(view);
-    const coverageLine = basketView ? coverageError(model.coverage) : null;
-    const errors = [
-      ...(coverageLine ? [coverageLine] : []),
-      ...(result.errors ?? []).filter((error) => !perHolding.has(error)),
-    ];
+    const coverage = basketView ? coverageLine(model.coverage) : {};
+    const errors = [...new Set([...(coverage.error ? [coverage.error] : []), ...(result.errors ?? [])])];
+    const notes = [...(coverage.note ? [coverage.note] : []), ...(result.notes ?? []).filter((note) => !perHolding.has(note))];
     return {
       complete: result.complete,
       ...(errors.length ? { errors } : {}),
+      ...(notes.length ? { notes } : {}),
       sections: [{ title: view, columns: RISK_COLUMNS, rows: rows.map(displayRow) }],
       metadata: {
         portfolio: {
@@ -276,6 +296,8 @@ export const portfolioRiskHeadless: HeadlessPaneDefinition<"bundle"> = {
           currency: model.portfolio.currency,
         },
         view,
+        benchmark: model.benchmark,
+        window: model.window,
         ...(basketView && model.coverage
           ? { coverage: coverageSummary(model.coverage, COMPACT_LEFT_OUT_LIMIT) }
           : {}),

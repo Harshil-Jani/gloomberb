@@ -1,4 +1,5 @@
 import type { HeadlessPaneDefinition } from "../../../types/plugin";
+import { resolveHeadlessIssuerListing } from "../shared/headless-market-data";
 import { companyQuery, fetchCompanyData, type CompanyMode } from "./client";
 
 export function companyHeadless(mode: CompanyMode): HeadlessPaneDefinition<"bundle"> {
@@ -7,7 +8,7 @@ export function companyHeadless(mode: CompanyMode): HeadlessPaneDefinition<"bund
     freshness: { source: "Company filings and calls", status: "not-a-feed", basis: "reported data" },
     argument: { kind: "ticker", description: "Listed company ticker, including exchange-qualified global symbols.", placeholder: "ticker" },
     discovery: { aliases: [mode === "kpis" ? "KPIS" : "GUIDE"], dataRequirements: ["Gloom Cloud company disclosures"],
-      limitations: ["Pro dataset with a fixed latest preview on Free", "Coverage follows available company disclosures; missing data is not zero", "Compare matching definition, period, currency, basis and scope", "Fiscal labels without explicit calendar dates are retained without inferred dates"] },
+      limitations: ["Pro dataset with a fixed latest preview on Free.", "Coverage follows available company disclosures; missing data is not zero.", "Compare matching definition, period, currency, basis and scope.", "Fiscal labels without explicit calendar dates are retained without inferred dates."] },
     options: [
       { key: "tab", type: "enum", settingKey: "tab", defaultValue: "table", values: [{ value: "table" }, { value: "chart" }, ...(mode === "guidance" ? [{ value: "history" }] : []), { value: "evidence" }], description: "The pane section to render." },
       { key: "metric", type: "string", settingKey: "metric", description: "Canonical metric ID, such as arr or subscribers." },
@@ -19,7 +20,8 @@ export function companyHeadless(mode: CompanyMode): HeadlessPaneDefinition<"bund
     describe: (args) => `${mode === "kpis" ? "Company KPIs" : "Company guidance"} | ${args.symbols[0]}`,
     async load(args, ctx) {
       const options = companyQuery(args.options);
-      const data = await fetchCompanyData(mode, args.symbols[0]!, options, ctx.apiClient);
+      const symbol = args.symbols[0]!;
+      const data = await fetchCompanyData(mode, symbol, options, ctx.apiClient, await resolveHeadlessIssuerListing(ctx, symbol));
       return { complete: !data.truncated, errors: data.truncated ? [data.access === "preview" ? "Full disclosures and history require Gloom Pro" : "Response limit reached; narrow the metric or date range"] : [],
         sections: "series" in data ? [
           { title: "Latest KPIs", rows: data.series.map((series) => ({ ...series.latest })) },

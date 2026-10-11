@@ -1,6 +1,8 @@
 import { isCryptoInstrumentType } from "../../tickers/search/ranking";
+import { isCryptoVenuePerpetual } from "../../tickers/instrument-kind";
 import type { Quote } from "../../types/financials";
 import { isCryptoPairSymbol } from "../../utils/crypto-pair";
+import { isNotATickerMessage } from "../not-a-ticker";
 
 /** Where a crypto pair that will not load can still be read. `fn CRYP` takes no argument. */
 export const CRYPTO_BOARD_HINT = "Crypto prices may be briefly unavailable; the CRYP function (gloomberb fn CRYP) shows the crypto board.";
@@ -42,11 +44,15 @@ interface QuoteNoteResult {
   error: string | null;
 }
 
-/** The router words a failure as "<reason> for <symbol>"; drop the symbol so equal reasons group. */
+/**
+ * The router words a failure as "<reason> for <symbol>"; drop the symbol so equal reasons group.
+ * Any other line, such as a sentence the data service wrote, is kept as it reads.
+ */
 function failureReason(message: string, symbol: string): string {
-  const line = (message.split("\n")[0] ?? "").trim().replace(/\.+$/, "");
+  const line = (message.split("\n")[0] ?? "").trim();
+  const bare = line.replace(/\.+$/, "");
   const suffix = ` for ${symbol}`;
-  return line.toLowerCase().endsWith(suffix.toLowerCase()) ? line.slice(0, -suffix.length) : line;
+  return bare.toLowerCase().endsWith(suffix.toLowerCase()) ? bare.slice(0, -suffix.length) : line;
 }
 
 /**
@@ -63,13 +69,22 @@ export function quoteNotes(results: QuoteNoteResult[], options: { exchange?: str
     if (!symbols.includes(result.target.symbol)) failures.set(reason, [...symbols, result.target.symbol]);
   }
   const notes = [...failures].map(([reason, symbols]) => (
-    `${symbols.join(", ")}: ${reason}${symbols.some(isCryptoPairSymbol) ? `. ${CRYPTO_BOARD_HINT}` : ""}`
+    // "Not a ticker: APPLE." already names its symbol.
+    isNotATickerMessage(reason)
+      ? reason
+      : `${symbols.join(", ")}: ${reason}${symbols.some(isCryptoPairSymbol) ? `${/[.!?]$/.test(reason) ? "" : "."} ${CRYPTO_BOARD_HINT}` : ""}`
   ));
   if (!options.exchange) {
     for (const result of results) {
       const note = notTheCoinNote(result.target.symbol, result.quote);
       if (note) notes.push(note);
     }
+  }
+  const perpetuals = results
+    .filter((result) => result.quote && isCryptoVenuePerpetual(result.quote.instrumentType, result.quote.name))
+    .map((result) => result.target.symbol);
+  if (perpetuals.length > 0) {
+    notes.push(`${perpetuals.join(", ")}: perpetual futures ${perpetuals.length === 1 ? "price" : "prices"} on crypto venues, 24/7; not the listed future, not spot.`);
   }
   return notes;
 }

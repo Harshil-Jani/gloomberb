@@ -1,14 +1,24 @@
 const currencyFormatters = new Map<string, Intl.NumberFormat>();
 const numberFormatters = new Map<number, Intl.NumberFormat>();
 
-function getCurrencyFormatter(currency: string, maximumFractionDigits = 2): Intl.NumberFormat {
+/** Currencies whose minor unit is a thousandth (ISO 4217 exponent 3): an Omani share is OMR 1.366, not OMR 1.37.
+ * IQD is left out on purpose: it has the exponent in ISO 4217 but trades in whole units. */
+const THREE_DECIMAL_CURRENCIES = new Set(["BHD", "JOD", "KWD", "LYD", "OMR", "TND"]);
+
+/** Decimals a price or amount in this currency is shown to: 3 for the thousandth currencies, 2 for everything else. */
+export function currencyPriceDigits(currency: string | undefined): 2 | 3 {
+  return currency != null && THREE_DECIMAL_CURRENCIES.has(currency.trim().toUpperCase()) ? 3 : 2;
+}
+
+function getCurrencyFormatter(currency: string, maximumFractionDigits: number = currencyPriceDigits(currency)): Intl.NumberFormat {
   const key = `${currency}:${maximumFractionDigits}`;
   let formatter = currencyFormatters.get(key);
   if (!formatter) {
     formatter = new Intl.NumberFormat("en-US", {
       style: "currency",
       currency,
-      minimumFractionDigits: 2,
+      // Whole units (0) drop the cents rather than throw.
+      minimumFractionDigits: Math.min(currencyPriceDigits(currency), maximumFractionDigits),
       maximumFractionDigits,
     });
     currencyFormatters.set(key, formatter);
@@ -29,7 +39,11 @@ function getNumberFormatter(decimals: number): Intl.NumberFormat {
 }
 
 /** Format a number as currency (e.g., $1,234.56) */
-export function formatCurrency(value: number | undefined, currency = "USD", maximumFractionDigits = 2): string {
+export function formatCurrency(
+  value: number | undefined,
+  currency = "USD",
+  maximumFractionDigits: number = currencyPriceDigits(currency),
+): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return getCurrencyFormatter(currency, maximumFractionDigits).format(value);
 }
@@ -128,6 +142,19 @@ export function formatCompactCurrency(
 export function formatNumber(value: number | undefined, decimals = 2): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return getNumberFormatter(decimals).format(value);
+}
+
+/**
+ * A value to a count of significant digits, so a small ratio keeps its leading
+ * digits (0.0005664, not 0.0006) while a large one reads as a plain number
+ * (1,235). Decimals follow the rounded value, so 9.9996 reads 10.00.
+ */
+export function formatSignificant(value: number | undefined, digits = 4): string {
+  if (value == null || !Number.isFinite(value)) return formatNumber(undefined);
+  if (value === 0) return getNumberFormatter(0).format(0);
+  const rounded = Number(value.toPrecision(digits));
+  const decimals = Math.min(12, Math.max(0, digits - 1 - Math.floor(Math.log10(Math.abs(rounded)))));
+  return getNumberFormatter(decimals).format(rounded);
 }
 
 /** A percentile rank with its window: "73 pctl 1Y", "-- pctl 1Y" when unranked, "73 pctl" without a window. */

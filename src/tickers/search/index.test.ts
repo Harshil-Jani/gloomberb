@@ -123,6 +123,26 @@ describe("ticker-search utilities", () => {
     }
   });
 
+  test("a bare symbol's quote on a US exchange is its one US listing, whichever venue the feed labels it with", async () => {
+    // /market/search?q=ET and the bare quotes, captured 2026-10-11: the feed labels ET's NYSE line
+    // NYSE American, and Cboe BZX funds BTS.
+    const quote = (listingExchangeName: string) => ({ symbol: "ET", listingExchangeName, currency: "USD", price: 20.41, lastUpdated: 1, change: 0, changePercent: 0 });
+    const resolve = (results: InstrumentSearchResult[], listingExchangeName: string) => resolveTickerSearch({ query: "ET", activeTicker: null,
+      tickers: new Map(), dataProvider: createTestDataProvider({ search: async () => results, getQuote: async () => quote(listingExchangeName) }) });
+    const energyTransfer = [makeSearchResult("ET", "Energy Transfer LP", { exchange: "NYSE", currency: "USD" }),
+      makeSearchResult("ET", "Energy Transfer LP", { exchange: "IEX", currency: "USD" }),
+      makeSearchResult("ET", "Evertz Technologies Ltd.", { exchange: "TSX", currency: "CAD" })];
+    expect(await resolve(energyTransfer, "AMEX"))
+      .toMatchObject({ kind: "provider", result: { exchange: "NYSE" }, otherListings: ["ET:IEX", "ET:XTSE"] });
+    expect(await resolve([makeSearchResult("ET", "Fund", { exchange: "BATS", currency: "USD" }),
+      makeSearchResult("ET", "Fund", { exchange: "IEX", currency: "USD" })], "BTS"))
+      .toMatchObject({ result: { exchange: "BATS" }, otherListings: ["ET:IEX"] });
+    // A US quote is no evidence for a listing abroad, nor between two US lines search disagrees on.
+    await expect(resolve(energyTransfer.slice(1), "NYSE")).rejects.toBeInstanceOf(AmbiguousTickerError);
+    await expect(resolve([...energyTransfer, makeSearchResult("ET", "Energy Transfer LP", { exchange: "ARCA", currency: "USD" })], "AMEX"))
+      .rejects.toBeInstanceOf(AmbiguousTickerError);
+  });
+
   test("explicit venues and saved identities bypass default quote disambiguation", async () => {
     const results = [makeSearchResult("VOD", "Vodacom", { exchange: "JSE", currency: "ZAR" }),
       makeSearchResult("VOD", "Vodafone", { exchange: "LSE", currency: "GBP" }),
@@ -208,6 +228,17 @@ describe("ticker-search utilities", () => {
     expect(findExactTickerSearchMatch([{ label: "JPY/USD" }], "JPY=X")).toBeNull();
   });
 
+  test("a pair named on its currency venue opens the pair search lists there", async () => {
+    for (const [query, symbol] of [["EURUSD:CCY", "EURUSD=X"], ["EURUSD:FX", "EURUSD=X"], ["USDJPY:FX", "JPY=X"], ["EURGBP:CCY", "EURGBP=X"]]) {
+      const dataProvider = makeDataProvider([
+        makeSearchResult(symbol!, "Currency Pair", { exchange: "CCY", type: "CURRENCY" }),
+        makeSearchResult(query!.split(":")[0]!, "Lookalike Fund", { exchange: "LSE", type: "ETF" }),
+      ]);
+      expect(await resolveTickerSearch({ query, activeTicker: null, tickers: new Map(), dataProvider }), query)
+        .toMatchObject({ kind: "provider", symbol, result: { exchange: "CCY" } });
+    }
+  });
+
   test("retains the quote currency of FX catalogue rows and reuses saved qualified futures", async () => {
     for (const symbol of ["JPY=X", "USDJPY=X", "USD/JPY", "EUR/JPY"]) {
       expect(await resolveTickerSearch({
@@ -223,6 +254,24 @@ describe("ticker-search utilities", () => {
       })).toMatchObject({ kind: "local", symbol: "ES=F:CME" });
     }
     expect(findExactTickerSearchMatch([{ label: "ES=F:CME" }], "ES=F:NYMEX")).toBeNull();
+  });
+
+  test("a futures board code finds its future first where no security uses the code, and right after the security otherwise", async () => {
+    const asked: string[] = [];
+    const dataProvider = createTestDataProvider({
+      search: async (query) => {
+        asked.push(query);
+        if (query.endsWith("=F")) return [makeSearchResult(query, `${query} future`, { exchange: "NYM", type: "FUTURE" })];
+        if (query === "TTF") return [makeSearchResult("TTFL", "Trident Texofab Ltd.", { exchange: "BSE", type: "Common Stock" })];
+        return ["AMEX", "TSX", "NEO", "IEX"].map((exchange) => makeSearchResult("NG", "NovaGold Resources Inc.", { exchange, type: "Common Stock" }));
+      },
+    });
+    const search = (query: string) => searchTickerCandidates({ query, tickers: new Map(), dataProvider });
+    expect((await search("TTF")).map((item) => item.symbol)).toEqual(["TTF=F", "TTFL"]);
+    expect(asked).toEqual(expect.arrayContaining(["TTF", "TTF=F"]));
+    expect((await search("NG")).map((item) => `${item.symbol} ${item.result?.exchange}`).slice(0, 3)).toEqual(["NG AMEX", "NG=F NYM", "NG TSX"]);
+    // Typed alone, TTF opens the future.
+    expect(await resolveTickerSearch({ query: "ttf", activeTicker: null, tickers: new Map(), dataProvider })).toMatchObject({ kind: "provider", symbol: "TTF=F" });
   });
 
   test("a trailing class code keeps that class and also asks for its market spelling", async () => {
@@ -673,6 +722,67 @@ describe("ticker-search utilities", () => {
       makeSearchResult("NESTLEIND", "Nestle India Ltd.", { exchange: "NSE" }),
       makeSearchResult("NESN", "Nestlé S.A.", { exchange: "SWX" }),
     ])).toEqual(["NESN", "NESTLEIND"]);
+  });
+
+  describe("trade-name aliases", () => {
+    const build = (query: string, providerResults: InstrumentSearchResult[]) => buildTickerSearchCandidates({
+      query,
+      tickers: new Map<string, TickerRecord>(),
+      providerResults,
+      totalLimit: 10,
+    }).map((item) => `${item.symbol}:${item.exchangeLabel}`);
+
+    test("a row filed under a trade name matches it and leads; without the alias its legal name is dropped", () => {
+      const home = makeSearchResult("2222", "Saudi Arabian Oil Co.", { exchange: "TADAWUL", type: "Common Stock" });
+      const subsidiary = makeSearchResult("2223", "Saudi Aramco Base Oil Company", { exchange: "TADAWUL", type: "Common Stock" });
+      expect(build("Aramco", [subsidiary, { ...home, searchAliases: ["Aramco", "Saudi Aramco"] }]))
+        .toEqual(["2222:TADAWUL", "2223:TADAWUL"]);
+      // Older servers send no aliases: only the namesake subsidiary matches.
+      expect(build("Aramco", [subsidiary, home])).toEqual(["2223:TADAWUL"]);
+    });
+
+    test("rows sharing a trade name keep the server's order, ahead of lookalike names", () => {
+      const alphabet = (symbol: string, share: string) => makeSearchResult(symbol, `Alphabet Inc. Class ${share} Common Stock`,
+        { searchAliases: ["Google"] });
+      const rows = [
+        alphabet("GOOGL", "A"),
+        alphabet("GOOG", "C"),
+        makeSearchResult("GOOGL", "Google Inc.", { exchange: "BYMA", type: "Depositary Receipt" }),
+      ];
+      expect(build("Google", rows)).toEqual(["GOOGL:NASDAQ", "GOOG:NASDAQ", "GOOGL:BYMA"]);
+    });
+  });
+
+  describe("themes and several words", () => {
+    const build = (query: string, providerResults: InstrumentSearchResult[]) => buildTickerSearchCandidates({
+      query,
+      tickers: new Map<string, TickerRecord>(),
+      providerResults,
+      totalLimit: 10,
+    }).map((item) => `${item.symbol}:${item.category}`);
+    const lithium = { searchKeywords: ["lithium"] };
+    const rows = [
+      makeSearchResult("LAC", "Lithium Americas Corp.", { exchange: "NYSE", type: "EQUITY" }),
+      makeSearchResult("ALB", "Albemarle Corporation", { exchange: "NYSE", type: "EQUITY", ...lithium }),
+      makeSearchResult("LIT", "Global X Lithium & Battery Tech ETF", { exchange: "ARCA", type: "ETF", ...lithium }),
+      makeSearchResult("SQM", "Sociedad Química y Minera de Chile S.A.", { exchange: "NYSE", type: "EQUITY", ...lithium }),
+      makeSearchResult("COPX", "Global X Copper Miners ETF", { exchange: "ARCA", type: "ETF" }),
+    ];
+
+    test("a company sent with a theme answers to it after the names, as related; older servers' rows are dropped", () => {
+      expect(build("lithium", rows)).toEqual([
+        "LAC:Primary Listing", "LIT:Funds & Derivatives", "ALB:Related", "SQM:Related",
+      ]);
+      expect(build("lithium etf", rows)).toEqual(["LIT:Funds & Derivatives"]);
+      expect(build("lithium", rows.map(({ searchKeywords: _keywords, ...row }) => row))).toEqual([
+        "LAC:Primary Listing", "LIT:Funds & Derivatives",
+      ]);
+    });
+
+    test("several words match on all of them in any order, never on some", () => {
+      expect(build("miners copper", rows)).toEqual(["COPX:Funds & Derivatives"]);
+      expect(build("copper lithium", rows)).toEqual([]);
+    });
   });
 
   describe("provider popularity", () => {

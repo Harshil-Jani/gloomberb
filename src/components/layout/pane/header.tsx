@@ -14,6 +14,8 @@ const PANE_HEADER_HEIGHT = 1;
 const HEADER_TAB_TOP_GAP = 2;
 const PANE_HEADER_GRIP = ":: ";
 export const PANE_HEADER_ACTION = " ... ";
+/** The pane's docs: the same width shown or blank, so the title never shifts. */
+export const PANE_HEADER_HELP = " ? ";
 export const PANE_HEADER_CLOSE = " x ";
 /** Same width as the close mark, so the header hit areas stay put. */
 export const PANE_HEADER_RESTORE = " - ";
@@ -46,6 +48,8 @@ interface PaneHeaderProps {
   onHeaderMouseDragEnd?: (event: any) => void;
   onHeaderContextMenu?: (event: any) => void;
   onActionMouseDown?: (event: any) => void;
+  /** The `?`: this pane's entry in DOCS. Absent, the header draws no `?`. */
+  onHelpMouseDown?: (event: any) => void;
   onCloseMouseDown?: (event: any) => void;
   /** Pane fullscreen. The corner mark leaves fullscreen instead of closing. */
   fullscreen?: boolean;
@@ -127,6 +131,7 @@ export function PaneHeader({
   onHeaderMouseDragEnd,
   onHeaderContextMenu,
   onActionMouseDown,
+  onHelpMouseDown,
   onCloseMouseDown,
   fullscreen = false,
   onRestoreMouseDown,
@@ -141,19 +146,21 @@ export function PaneHeader({
   const visuallyFocused = focused || windowModeSelected;
   const backgroundColor = floating ? floatingPaneTitleBg(visuallyFocused) : paneTitleBg(visuallyFocused);
   const actionText = showActions ? PANE_HEADER_ACTION : "     ";
+  const helpText = onHelpMouseDown ? (showActions ? PANE_HEADER_HELP : "   ") : "";
   const closeText = fullscreen ? PANE_HEADER_RESTORE : floating ? PANE_HEADER_CLOSE : "";
   const onCornerMouseDown = fullscreen ? onRestoreMouseDown : onCloseMouseDown;
   const lockText = locked ? PANE_HEADER_LOCK : "";
   const terminalQuickSettingsWidth = quickSettings.reduce((total, setting) => total + displayWidth(quickSettingText(setting)), 0)
-    + displayWidth(lockText);
+    + displayWidth(lockText) + helpText.length;
   const textColor = paneTitleText(visuallyFocused, floating);
   const topInset = topRule ? 1 : 0;
   const handleTerminalHeaderMouseDown = useCallback((event: any) => {
     capturePointerDrag(nativeRenderer, terminalHeaderRef.current);
     onHeaderMouseDown?.(event);
   }, [nativeRenderer, onHeaderMouseDown]);
-  // The grip, the title and the empty bar move the pane. A fullscreen pane
-  // cannot move, so there they move the desktop window instead.
+  // The whole bar moves the pane: the grip, the title, the empty space and its
+  // padding. Tabs and buttons stop the press before it gets here. A fullscreen
+  // pane cannot move, so there the bar moves the desktop window instead.
   const windowDrag = Boolean(titleBar) || (fullscreen && titleBarOverlay === true && nativeWindowChrome === true);
   const beginPaneDrag = (event: { stopPropagation?: () => void }) => {
     event.stopPropagation?.();
@@ -167,19 +174,17 @@ export function PaneHeader({
     }
     void rendererHost.startWindowDrag?.();
   };
-  const paneDragHandlers = {
-    onMouseDown: beginPaneDrag,
-    onMouseDrag: onHeaderMouseDrag,
-    onMouseDragEnd: onHeaderMouseDragEnd,
-  };
-  const chromeHandlers = windowDrag ? { onMouseDown: beginWindowDrag } : paneDragHandlers;
+  const barHandlers = windowDrag
+    ? { onMouseDown: beginWindowDrag }
+    : { onMouseDown: beginPaneDrag, onMouseDrag: onHeaderMouseDrag, onMouseDragEnd: onHeaderMouseDragEnd };
 
   if (nativePaneChrome) {
     const ruleColor = visuallyFocused ? colors.borderFocused : colors.border;
+    // No width of its own: it stretches across its pane, so it follows a
+    // frame a resize sizes outside React.
     return (
       <Box
         height={titleBar?.rows ?? nativePaneHeaderRows()}
-        width={width}
         backgroundColor={backgroundColor}
         flexDirection="row"
         data-gloom-role="pane-header"
@@ -187,6 +192,8 @@ export function PaneHeader({
         data-floating={floating ? "true" : "false"}
         data-focused={focused ? "true" : "false"}
         data-window-mode-selected={windowModeSelected ? "true" : "false"}
+        data-drag-surface={windowDrag ? "window" : "pane"}
+        {...barHandlers}
         onMouseMove={onHeaderMouseMove}
         onContextMenu={onHeaderContextMenu}
         style={{
@@ -207,13 +214,13 @@ export function PaneHeader({
         }}
       >
         {!titleBar && (
-          <Box data-gloom-role="pane-grip" flexShrink={0} flexDirection="row" alignItems="center" style={{ alignSelf: "stretch", marginRight: 6 }} {...paneDragHandlers}>
+          <Box data-gloom-role="pane-grip" flexShrink={0} flexDirection="row" alignItems="center" style={{ alignSelf: "stretch", marginRight: 6 }}>
             <Icon name="grip" size={12} color={visuallyFocused ? colors.borderFocused : colors.textMuted} />
           </Box>
         )}
         {/* Full header height, so trimming the title to its capitals never lets
             this clip cut descenders. */}
-        <Box data-gloom-role="pane-header-chrome" minWidth={0} flexShrink={tabs ? 0 : 1} overflow="hidden" flexDirection="row" alignItems="center" style={{ alignSelf: "stretch", ...(tabs ? { maxWidth: "40%" } : {}) }} {...chromeHandlers}>
+        <Box data-gloom-role="pane-header-chrome" minWidth={0} flexShrink={tabs ? 0 : 1} overflow="hidden" flexDirection="row" alignItems="center" style={{ alignSelf: "stretch", ...(tabs ? { maxWidth: "40%" } : {}) }}>
           <Text
             fg={textColor}
             selectable={false}
@@ -285,10 +292,21 @@ export function PaneHeader({
             />
           </Box>
         ))}
-        <Box data-gloom-role="pane-header-chrome" flexGrow={1} minWidth={0} {...chromeHandlers} />
+        <Box flexGrow={1} minWidth={0} />
         {locked && (
           <Box data-gloom-role="pane-lock">
             <IconButton icon="lock" label="Locked: the close shortcut leaves this pane open" color={colors.textMuted} />
+          </Box>
+        )}
+        {onHelpMouseDown && (
+          <Box data-gloom-role="pane-help">
+            {showActions ? (
+              <IconButton
+                icon="help"
+                label="Docs for this pane"
+                onPress={(event) => onHelpMouseDown(event)}
+              />
+            ) : <Box width={2} />}
           </Box>
         )}
         <Box data-gloom-role="pane-action">
@@ -355,6 +373,9 @@ export function PaneHeader({
         {locked && (
           <TerminalPaneButton text={lockText} fg={colors.textMuted} role="pane-lock" />
         )}
+        {helpText && (
+          <TerminalPaneButton text={helpText} fg={textColor} role="pane-help" onMouseDown={showActions ? onHelpMouseDown : undefined} />
+        )}
         <TerminalPaneButton
           text={actionText}
           fg={textColor}
@@ -404,6 +425,9 @@ export function PaneHeader({
       ))}
       {locked && (
         <TerminalPaneButton text={lockText} fg={colors.textMuted} role="pane-lock" />
+      )}
+      {helpText && (
+        <TerminalPaneButton text={helpText} fg={textColor} role="pane-help" onMouseDown={showActions ? onHelpMouseDown : undefined} />
       )}
       <TerminalPaneButton
         text={actionText}

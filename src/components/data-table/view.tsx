@@ -9,7 +9,7 @@ import {
   type RefObject,
 } from "react";
 import type { ScrollBoxRenderable } from "../../ui";
-import { useShortcut } from "../../react/input";
+import { useBeforeShortcut, useShortcut } from "../../react/input";
 import { isPlainKey, isPlainKeyboardEvent } from "../../utils/keyboard";
 import { DataTable, type DataTableColumn, type DataTableProps } from "../ui";
 import { useDataTableSortMenu } from "./sort-menu";
@@ -41,6 +41,11 @@ function stopTableKey(event: DataTableKeyEvent) {
 }
 
 const DATA_TABLE_SELECTION_COMMIT_DELAY_MS = 150;
+
+/** The keys that step the cursor: a burst of them is what the commit delay collapses. */
+function isCursorStepKey(event: DataTableKeyEvent): boolean {
+  return isPlainKey(event, "j", "k", "down", "up", "home", "end", "pageup", "pagedown");
+}
 
 /** Shift+Left/Right or Ctrl+Left/Right, with no other modifier. */
 function horizontalScrollDirection(event: DataTableKeyEvent): -1 | 0 | 1 {
@@ -108,7 +113,8 @@ export interface DataTableViewProps<
   /**
    * Fires immediately as the lightweight visual cursor moves. Expensive detail
    * work and persisted selection belong in selection.onChange, which is
-   * coalesced across keyboard repeats.
+   * coalesced across keyboard repeats and lands before any other key reaches
+   * a handler.
    */
   onCursorChange?: (
     item: T,
@@ -445,6 +451,24 @@ export function DataTableView<
     commitTarget(target, reason);
   }, [clearPendingCommit, commitTarget, getCommitTarget]);
 
+  const flushPendingCommit = useCallback(() => {
+    if (!pendingCommitRef.current) return;
+    const target = pendingCommitTargetRef.current;
+    clearPendingCommit();
+    lastKeyboardCommitAtRef.current = performance.now();
+    commitTarget(target, "keyboard");
+  }, [clearPendingCommit, commitTarget]);
+  const flushPendingCommitRef = useRef(flushPendingCommit);
+  flushPendingCommitRef.current = flushPendingCommit;
+
+  // The delay only coalesces a burst of steps. Any other key acts on the row
+  // under the cursor, so a step still waiting commits before the key reaches
+  // a handler, which reads the selection the pane holds.
+  useBeforeShortcut((event) => {
+    if (event.defaultPrevented || event.propagationStopped || isCursorStepKey(event)) return;
+    flushPendingCommitRef.current();
+  });
+
   const scheduleCommitIndex = useCallback((index: number) => {
     if (selection.kind === "none") return;
     const target = getCommitTarget(index);
@@ -464,14 +488,9 @@ export function DataTableView<
     pendingCommitTargetRef.current = target;
     pendingCommitTimerRef.current = setTimeout(() => {
       pendingCommitTimerRef.current = null;
-      pendingCommitRef.current = false;
-      const pendingTarget = pendingCommitTargetRef.current;
-      pendingCommitTargetRef.current = null;
-      clearSelectionScrollTarget();
-      lastKeyboardCommitAtRef.current = performance.now();
-      commitTarget(pendingTarget, "keyboard");
+      flushPendingCommitRef.current();
     }, DATA_TABLE_SELECTION_COMMIT_DELAY_MS);
-  }, [clearSelectionScrollTarget, commitIndexImmediately, commitTarget, getCommitTarget, selection.kind]);
+  }, [commitIndexImmediately, getCommitTarget, selection.kind]);
 
   const updateCursorIndex = useCallback((
     index: number,
@@ -593,26 +612,45 @@ export function DataTableView<
     && (!isNavigable || isNavigable(item, index))
   ), [effectiveSelectedIndex, isNavigable]);
 
+  // The row handlers reach the latest cursor logic through a ref, so their
+  // identity survives a parent render. Most callers build `selection` inline,
+  // which used to give every handler a new identity on each render and made
+  // every visible row re-render its cells, even when nothing in it changed.
+  const rowHandlerStateRef = useRef({
+    activateIndex,
+    onRowContextMenu: tableProps.onRowContextMenu,
+    onRowMouseDown: tableProps.onRowMouseDown,
+    updateCursorIndex,
+  });
+  rowHandlerStateRef.current = {
+    activateIndex,
+    onRowContextMenu: tableProps.onRowContextMenu,
+    onRowMouseDown: tableProps.onRowMouseDown,
+    updateCursorIndex,
+  };
+
   const handleTableSelect = useCallback((_item: T, index: number) => {
-    updateCursorIndex(index, { commit: "immediate" });
-  }, [updateCursorIndex]);
+    rowHandlerStateRef.current.updateCursorIndex(index, { commit: "immediate" });
+  }, []);
 
   const handleTableActivate = useCallback((_item: T, index: number) => {
-    activateIndex(index);
-  }, [activateIndex]);
+    rowHandlerStateRef.current.activateIndex(index);
+  }, []);
 
   const handleRowMouseDown = useCallback((item: T, index: number, event: any) => {
-    const handled = tableProps.onRowMouseDown?.(item, index, event);
+    const latest = rowHandlerStateRef.current;
+    const handled = latest.onRowMouseDown?.(item, index, event);
     if (handled === true) {
-      updateCursorIndex(index, { commit: "immediate" });
+      latest.updateCursorIndex(index, { commit: "immediate" });
     }
     return handled;
-  }, [tableProps.onRowMouseDown, updateCursorIndex]);
+  }, []);
 
   const handleRowContextMenu = useCallback((item: T, index: number, event: any) => {
-    updateCursorIndex(index, { commit: "immediate" });
-    tableProps.onRowContextMenu?.(item, index, event);
-  }, [tableProps.onRowContextMenu, updateCursorIndex]);
+    const latest = rowHandlerStateRef.current;
+    latest.updateCursorIndex(index, { commit: "immediate" });
+    latest.onRowContextMenu?.(item, index, event);
+  }, []);
 
   // Wide tables scroll their columns on Shift+Left/Right, the way a chart pans,
   // and on Ctrl+Left/Right where the OS leaves those alone (macOS takes them to
@@ -653,7 +691,9 @@ export function DataTableView<
       event.preventDefault();
       return;
     }
-    if (tableProps.items.length === 0) return;
+    // Without a cursor there is nothing for these keys to move, so they stay
+    // free for the pane scroll keys to scroll the rows.
+    if (tableProps.items.length === 0 || selection.kind === "none") return;
 
     if (isPlainKey(event, "j", "down")) {
       stopTableKey(event);

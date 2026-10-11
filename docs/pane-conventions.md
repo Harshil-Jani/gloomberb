@@ -125,6 +125,9 @@ Section headings read in title case, bright and bold: the kit capitalises
 lower-case words, so write acronyms in capitals and never a whole heading in
 capitals. Pass `onHeaderClick` only when the table sorts (without it headers
 are not interactive), and `selection={{ kind: "none" }}` for a static table.
+A section header can carry one quiet `action` at its right end for the whole
+group, such as the preset its rows are set to (the Plugins pane's starter
+pack); it is a setting you apply, not a filter, and it also gets a footer key.
 Never build a table from padded `Text` rows: the kit gives the header band,
 gutters and fill to the footer.
 
@@ -157,9 +160,16 @@ back button or clicking Back pops it. Rules:
 - A detail read as text sits in a `DetailScrollBody` whose ref is the
   stack's `detailScrollRef`, so j/k step it a line at a time and the next
   item starts at the top.
+- Any other scrolling body is a `ScrollBox`. Leaving `scrollY` out means it
+  scrolls vertically, with the wheel and, while the pane is focused, with the
+  arrows, j/k, PageUp, PageDown, Home and End; `scrollY={false}` turns that off.
+  A body does not bind those keys itself unless it wants to step by a line.
 - A detail the user reads and comes back from is the stack, not a dialog or
   a floating pane. A new pane (`pinTicker`, `createPaneFromTemplate`) is for
   something kept beside the list.
+- A row's DES (`d`, a menu entry, a linked ticker) opens through
+  `useOpenDescription` (`shared/open-description.ts`), which brings forward
+  the DES already open for that listing instead of opening a second one.
 
 **Long lists.** A paged or cursored source appends on scroll and never shows
 page numbers or a Load more button. An offset-paged source loads through
@@ -339,6 +349,11 @@ header, with the detail's height.
 - Destructive actions ask with `confirmDialog` (a `ConfirmDialog`) from a
   `variant="danger"` button or a footer hint, never a bare button that acts
   on first press.
+- A dialog's keys: the terminal names them in the `DialogFrame` footer line;
+  the desktop and the web put each on its button as a keycap
+  (`desktopShortcut`), put keys no button has and a note such as a deadline
+  beside the buttons (`DialogActions` `hints`), and draw no footer line
+  (`desktopFooter={null}`).
 - A form inside a stack detail follows the same rules; Back is the navigation
   Cancel and the footer goes empty while editing.
 

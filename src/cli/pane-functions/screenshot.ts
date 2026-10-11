@@ -1,15 +1,16 @@
 import { fetchTape } from "../../plugins/builtin/time-sales/client";
+import { isOptionsUnavailableError } from "../../market-data/options-alternatives";
 import type { TapeCapture } from "../../plugins/builtin/time-sales/snapshot-client";
 import { apiClient } from "../../api-client";
 import { snapshotInstrumentKey, type SnapshotMarketData } from "../../market-data/snapshot-provider";
 import { toMarketDataContext } from "../../market-data/selectors";
 import type { ChartPaneModel } from "../../plugins/builtin/chart-composer/headless";
-import { loadResolvedHeadlessPaneModel } from "./headless";
+import { loadResolvedHeadlessPaneModel, type LoadedHeadlessPaneModel } from "./headless";
 import { dirname, resolve } from "path";
 import { mkdir } from "fs/promises";
 import type { PaneRuntimeState } from "../../core/state/app/state";
 import { CHART_COMPOSER_PANE_ID, type AppConfig } from "../../types/config";
-import type { OptionsChain, PricePoint, TickerFinancials } from "../../types/financials";
+import type { OptionsChain, PricePoint, Quote, TickerFinancials } from "../../types/financials";
 import type { TickerRecord } from "../../types/ticker";
 import { slugifyName } from "../../utils/slugify";
 import {
@@ -18,7 +19,7 @@ import {
   type HttpProxyRequestEnvelope,
   type HttpProxyResponseEnvelope,
 } from "../../utils/http-proxy-response";
-import { getTheme, getThemeIds } from "../../theme/themes";
+import { requireThemeId } from "../commands/themes";
 import { isRecord } from "../../utils/guards";
 
 const DEFAULT_SHOT_DEVICE_SCALE_FACTOR = 2;
@@ -30,7 +31,7 @@ import {
   type DesktopPaneShotPayload,
   type DesktopPaneShotRenderResult,
 } from "../desktop-pane-shot";
-import { optionPaneState } from "./options";
+import { optionPaneState, SHOT_SIZE_LIMITS, type ShotSizeClamp } from "./options";
 import type { ResolvedPaneFunction } from "./resolver";
 import type { MarketContext } from "../types";
 import { capabilityPluginState } from "./capabilities";
@@ -73,6 +74,8 @@ import { collectExternalPluginBundles } from "../../renderers/electrobun/bun/ext
 import type { ResolvedSeries } from "../../time-series/types";
 import { getQuoteMonitorPaneSettings } from "../../plugins/builtin/ticker-detail/settings";
 import { accessGateSentence } from "./access-gate";
+import { findCollection } from "../../plugins/builtin/portfolio-list/cli/render";
+import { peekCachedBrokerAccounts } from "../../plugins/builtin/portfolio-list/cached-account";
 import {
   paneEvidenceMismatches,
   paneScreenshotEvidenceHook,
@@ -84,6 +87,7 @@ import {
   clipPriceHistoryToRange,
   createFallbackTicker,
   fetchTickerFinancials,
+  loadBrokerMarkedHolding,
   isFinancialAnalysisFunction,
   readsDailyReturns,
   withShotDailyReturns,
@@ -91,6 +95,9 @@ import {
   withShotPriceHistory,
   withShotSeasonalityHistory,
 } from "./data";
+import { renderedReportFreshness, renderedReportNotices, renderedReportObservations } from "./report-notices";
+import { captureStatusLine, datesPaneData, deriveHeadlessFreshness, deriveRenderedFreshness, type CaptureStatusLine, type ReportFreshness } from "./freshness";
+import { quotesFreshness } from "../freshness";
 import {
   financialRatioRenderMismatches,
   financialRatioShotEvidence,
@@ -424,6 +431,10 @@ export interface PaneScreenshotResult {
   usable: boolean;
   unusableReason: string | null;
   dataEvidence: PaneScreenshotDataEvidence | null;
+  /** What the pane says its view leaves out, such as OMON's "21 of 145 strikes". */
+  notices?: string[];
+  /** How current the captured data is, as the capture's status line says it; absent with `--no-status`. */
+  freshness?: ReportFreshness;
   outputPath: string;
   render: DesktopPaneShotRenderResult & {
     expectedText: string[];
@@ -440,6 +451,39 @@ export function defaultScreenshotPath(resolved: ResolvedPaneFunction, rawArg: st
   return resolve(process.cwd(), `gloomberb-${suffix}.png`);
 }
 
+/**
+ * The pixels of the PNG a `shot` of this size writes: the layout snapped to
+ * whole cells, drawn at the device scale factor (twice the layout size, as
+ * `--scale` trades cells for glyph size at the same output size).
+ */
+function shotImagePixels(widthPx: number, heightPx: number, scale = 1): { width: number; height: number } {
+  const device = DEFAULT_SHOT_DEVICE_SCALE_FACTOR * scale;
+  return {
+    width: Math.round(Math.max(1, Math.floor(widthPx / scale / DESKTOP_CELL_WIDTH_PX)) * DESKTOP_CELL_WIDTH_PX * device),
+    height: Math.round(Math.max(1, Math.floor(heightPx / scale / DESKTOP_CELL_HEIGHT_PX)) * DESKTOP_CELL_HEIGHT_PX * device),
+  };
+}
+
+/** The tallest layout, in cells, a capture may grow to at this scale: the `--height` limit. */
+function shotMaxHeightCells(scale: number): number {
+  return Math.max(1, Math.floor(SHOT_SIZE_LIMITS.height.max / scale / DESKTOP_CELL_HEIGHT_PX));
+}
+
+/** What `shot` says when it drew another size than the one asked for, naming the PNG it wrote. */
+export function shotSizeWarnings(
+  clamped: readonly ShotSizeClamp[] | undefined,
+  size: { width: number; height: number; scale?: number },
+): string[] {
+  if (!clamped?.length) return [];
+  const pixels = shotImagePixels(size.width, size.height, size.scale);
+  return clamped.map(({ dimension, requested, used }) => {
+    const { min, max } = SHOT_SIZE_LIMITS[dimension];
+    const bound = requested < min ? `below the ${min} minimum` : `above the ${max} maximum`;
+    const drawn = dimension === "width" ? `${pixels.width} px wide` : `${pixels.height} px tall`;
+    return `--${dimension} ${requested} is ${bound}, so the capture used ${used} and the PNG is ${drawn}.`;
+  });
+}
+
 export async function buildDesktopShotPayload(
   resolved: ResolvedPaneFunction,
   context: MarketContext,
@@ -450,6 +494,7 @@ export async function buildDesktopShotPayload(
   theme: string | null,
   scale: number,
   watermark: string | null,
+  loadModel: () => Promise<LoadedHeadlessPaneModel> = () => loadResolvedHeadlessPaneModel(resolved, context, rawArg),
 ): Promise<DesktopPaneShotPayload> {
   // The requested size is the output size. Scale shrinks the CSS viewport and
   // raises the device scale factor by the same factor, so a 1200px wide shot at
@@ -491,7 +536,7 @@ export async function buildDesktopShotPayload(
   };
   const config = stripDesktopShotCredentials<AppConfig>({
     ...context.config,
-    ...(theme ? { theme: resolveShotTheme(theme) } : {}),
+    ...(theme ? { theme: requireThemeId(theme) } : {}),
     layout,
     layouts: [{
       name: "CLI Shot",
@@ -518,18 +563,17 @@ export async function buildDesktopShotPayload(
   let chartModel: ChartPaneModel | undefined;
   const evidenceHook = paneScreenshotEvidenceHook(resolved);
   if (evidenceHook?.prepare) {
-    const prepared = await evidenceHook.prepare({ resolved, context, settings: shotInstance.settings ?? {},
-      loadModel: () => loadResolvedHeadlessPaneModel(resolved, context, rawArg) });
+    const prepared = await evidenceHook.prepare({ resolved, context, settings: shotInstance.settings ?? {}, loadModel });
     shotInstance = { ...shotInstance, settings: { ...shotInstance.settings, ...prepared.settings } };
     for (const [symbol, data] of prepared.financials ?? []) {
       financials.push([symbol, data]);
-      tickers.push(createFallbackTicker(symbol, data, context));
+      tickers.push(await createFallbackTicker(symbol, data, context));
     }
   } else if (resolved.pane.id === "analytics") {
-    const loaded = await loadResolvedHeadlessPaneModel(resolved, context, rawArg);
+    const loaded = await loadModel();
     shotInstance = { ...shotInstance, settings: { ...shotInstance.settings, analyticsView: "risk", riskSnapshot: loaded.result.metadata?.model ?? null } };
   } else if (resolved.pane.id === CHART_COMPOSER_PANE_ID) {
-    const loaded = await loadResolvedHeadlessPaneModel(resolved, context, rawArg);
+    const loaded = await loadModel();
     chartModel = loaded.result as ChartPaneModel;
     shotInstance = { ...shotInstance, settings: { ...shotInstance.settings, chartSpec: chartModel.spec } };
     const authored = parseChartSpec(resolved.instance.settings?.chartSpec);
@@ -549,13 +593,23 @@ export async function buildDesktopShotPayload(
       if (!target.instrument) financials.push([label, data]);
       const { symbol } = parsePublicTickerKey(key);
       const ticker = await context.store.loadTicker(key) ?? await context.store.loadTicker(symbol);
-      tickers.push(ticker ?? createFallbackTicker(key, data, context));
+      tickers.push(ticker ?? await createFallbackTicker(key, data, context));
     }
     intradayHistories.push(...chartModel.snapshot.intradayHistories.map((history) => ({
       ...history, start: history.start?.toISOString() ?? null, end: history.end?.toISOString() ?? null,
     })));
   } else for (const symbol of await collectShotSymbolsWithCollections(resolved, context, rawArg)) {
-    const entry = await fetchTickerFinancials(context, symbol);
+    let entry: Awaited<ReturnType<typeof fetchTickerFinancials>>;
+    try {
+      entry = await fetchTickerFinancials(context, symbol);
+    } catch (error) {
+      // The pane values a holding no quote covers, such as an option contract,
+      // at the broker's mark. It has no financials to capture.
+      const holding = COLLECTION_PANE_IDS.has(resolved.pane.id) ? await loadBrokerMarkedHolding(context, symbol) : null;
+      if (!holding) throw error;
+      tickers.push(holding);
+      continue;
+    }
     const requestedRange = shotPriceHistoryRange(resolved);
     let data = entry.financials;
     const exchange = entry.instrument.exchange
@@ -563,7 +617,9 @@ export async function buildDesktopShotPayload(
       ?? data.quote?.listingExchangeName
       ?? data.quote?.exchangeName
       ?? "";
-    const fiveYearsDaily = resolved.pane.id === "realized-vol" || resolved.pane.id === "iv-history" || resolved.pane.id === "macro-day";
+    const fiveYearsDaily = resolved.pane.id === "realized-vol" || resolved.pane.id === "iv-history" || resolved.pane.id === "macro-day"
+      // KELLY's History tab reads monthly returns off five years of daily closes.
+      || resolved.pane.id === "kelly-sizer";
     if (fiveYearsDaily || resolved.pane.id === "iv-screen" || resolved.pane.id === "short-watch"
       || resolved.pane.id === "backtest" || resolved.pane.id === OPTIONS_PANE_ID) {
       // Generic 5Y snapshots can contain weekly bars. The snapshot provider
@@ -581,7 +637,7 @@ export async function buildDesktopShotPayload(
     } else if (shotRatioTab(resolved)?.key === "valuation") {
       data = await withShotPeriodEndHistory(context, entry.instrument, exchange, resolved, data);
     } else if (resolved.pane.id === "seasonality") {
-      data = await withShotSeasonalityHistory(context, entry.instrument, data);
+      data = await withShotSeasonalityHistory(context, entry.instrument, resolved, data);
     } else if (requestedRange && readsDailyReturns(resolved)) {
       data = await withShotDailyReturns(context, entry.instrument, exchange, requestedRange, data);
     } else if (requestedRange) {
@@ -598,15 +654,19 @@ export async function buildDesktopShotPayload(
       // letting the pane fetch them.
       data = await withShotPriceHistory(context, symbol, entry.tickerFile, data);
     }
-    tickers.push(entry.tickerFile ?? createFallbackTicker(symbol, data, context));
+    tickers.push(entry.tickerFile ?? await createFallbackTicker(symbol, data, context));
     financials.push([symbol, data]);
     if (resolved.pane.id === "time-sales") {
       tapeSnapshots.push([entry.instrument.symbol, exchange, await fetchTape(entry.instrument.symbol, exchange)]);
     }
     if (includeOptionsChains && context.dataProvider.getOptionsChain) {
+      // A future with no chain of its own is the pane's to explain (the listed alternative), not a failed shot.
       const chain = await context.dataProvider.getOptionsChain(entry.instrument.symbol, exchange, undefined,
-        context.refresh ? { cacheMode: "refresh" } : undefined);
-      optionsChains.push([symbol, chain]);
+        context.refresh ? { cacheMode: "refresh" } : undefined).catch((error: unknown) => {
+        if (isOptionsUnavailableError(error)) return null;
+        throw error;
+      });
+      if (chain) optionsChains.push([symbol, chain]);
     }
   }
   layout.instances[0] = shotInstance;
@@ -624,6 +684,9 @@ export async function buildDesktopShotPayload(
     deviceScaleFactor,
     watermark,
     tickers,
+    ...(COLLECTION_PANE_IDS.has(resolved.pane.id)
+      ? { brokerAccounts: peekCachedBrokerAccounts(context.config, context.persistence?.resources) }
+      : {}),
     financials,
     ...(instrumentFinancials?.length ? { instrumentFinancials } : {}),
     ...(historyVariants?.length ? { historyVariants } : {}),
@@ -652,23 +715,13 @@ async function collectShotSymbolsWithCollections(
   context: MarketContext,
   rawArg: string,
 ): Promise<string[]> {
-  const symbols = collectShotSymbols(resolved, rawArg);
-  if (!COLLECTION_PANE_IDS.has(resolved.pane.id)) return symbols;
+  if (!COLLECTION_PANE_IDS.has(resolved.pane.id)) return collectShotSymbols(resolved, rawArg);
+  // `shot PF Retirement` names a portfolio, not a ticker to fetch.
+  const symbols = rawArg.trim() && findCollection(context.config, rawArg) ? [] : collectShotSymbols(resolved, rawArg);
   const members = (await context.store.loadAllTickers())
     .filter(({ metadata }) => metadata.portfolios.length > 0 || metadata.watchlists.length > 0)
     .map(({ metadata }) => metadata.ticker);
   return [...new Set([...symbols, ...members])];
-}
-
-function resolveShotTheme(requested: string): string {
-  const normalized = requested.trim().toLowerCase().replace(/[\s_]+/g, "-");
-  const ids = getThemeIds();
-  const match = ids.find((id) => id.toLowerCase() === normalized)
-    ?? ids.find((id) => getTheme(id).name.toLowerCase().replace(/[\s_]+/g, "-") === normalized);
-  if (!match) {
-    throw new Error(`Unknown theme "${requested}". Available themes: ${ids.join(", ")}`);
-  }
-  return match;
 }
 
 function shotPriceHistoryRange(resolved: ResolvedPaneFunction): TimeRange | null {
@@ -685,6 +738,105 @@ function shotPriceHistoryRange(resolved: ResolvedPaneFunction): TimeRange | null
   }
 }
 
+/** The bridge, keeping every quote it serves the page: what a pane that loads its own quotes (WEI) shows. */
+function recordBridgedQuotes(bridge: DesktopPaneShotBridge): { bridge: DesktopPaneShotBridge; quotes: Quote[] } {
+  const quotes: Quote[] = [];
+  const keep = (value: unknown) => {
+    if (isRecord(value) && typeof value.symbol === "string" && typeof value.price === "number") quotes.push(value as unknown as Quote);
+  };
+  return {
+    quotes,
+    bridge: {
+      ...bridge,
+      async marketData(operation, args) {
+        const result = await bridge.marketData(operation, args);
+        if (operation === "getQuote") keep(result);
+        if (operation === "getQuotesBatch" && Array.isArray(result)) {
+          for (const entry of result) keep(isRecord(entry) ? entry.quote : null);
+        }
+        return result;
+      },
+    },
+  };
+}
+
+/**
+ * How current a capture's data is (`captureStatusLine`). A pane that dates its
+ * view itself (the news wire's delay, FXC's rates) is taken at its word, and a
+ * pane that declares a status is never dated by the quotes it shows; otherwise
+ * those quotes date it, with their delay and where their markets stand. Then
+ * the pane's report, as `fn` ends; then what the rendered view carries.
+ */
+function shotFreshness(
+  resolved: Pick<ResolvedPaneFunction, "pane">,
+  payload: Pick<DesktopPaneShotPayload, "financials" | "instrumentFinancials">,
+  render: Pick<DesktopPaneShotRenderResult, "semanticUi" | "footerText" | "rows">,
+  bridgedQuotes: readonly Quote[],
+  report: ReportFreshness | undefined,
+  now = Date.now(),
+): CaptureStatusLine {
+  const published = renderedReportFreshness(render.semanticUi ?? []);
+  const declared = { ...resolved.pane.reportFreshness, ...published };
+  const quotes = [
+    ...payload.financials.map(([, financials]) => financials.quote),
+    ...(payload.instrumentFinancials ?? []).map(({ financials }) => financials.quote),
+    ...bridgedQuotes,
+  ];
+  // A pane that publishes the observations behind its figures (FXC's rates) dates itself.
+  const observed = renderedReportObservations(render.semanticUi ?? []);
+  const quoted = declared.status || observed.length > 0
+    ? undefined
+    : quotesFreshness(quotes, declared.source ? { source: declared.source } : undefined, now);
+  return captureStatusLine({
+    report,
+    selfDated: Object.keys(published).length > 0 || observed.length > 0,
+    quoted,
+    rendered: () => deriveRenderedFreshness(declared, {
+      footerText: render.footerText ?? "",
+      cellTimes: render.rows.flatMap((row) => row.cells.flatMap((cell) => (cell.instant ? [cell.instant] : []))),
+      observed,
+    }, now),
+  });
+}
+
+/**
+ * A capture's data dated as its `fn` report dates it, from the same loader:
+ * COT's weekly report, CHOKE's transits, GPU's prices. Undefined for a pane
+ * without a report, or when it did not load.
+ */
+async function reportShotFreshness(
+  resolved: Pick<ResolvedPaneFunction, "headless">,
+  loadModel: () => Promise<LoadedHeadlessPaneModel>,
+  now = Date.now(),
+): Promise<ReportFreshness | undefined> {
+  if (!resolved.headless) return undefined;
+  try {
+    const loaded = await loadModel();
+    return deriveHeadlessFreshness(loaded.definition, loaded.result, now);
+  } catch {
+    return undefined;
+  }
+}
+
+/** How long a rendered capture waits for its report's freshness before dating itself without it. */
+const SHOT_REPORT_WAIT_MS = 20_000;
+
+/** `pending`'s value, or undefined when it has not settled within `ms`; a later result is dropped. */
+function settledWithin<T>(pending: Promise<T>, ms: number): Promise<T | undefined> {
+  let cancel = () => {};
+  const expired = new Promise<undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    cancel = () => clearTimeout(timer);
+  });
+  return Promise.race([pending, expired]).finally(() => cancel());
+}
+
+/** One load of the pane's report per capture, shared by the payload and the status line. */
+function onceLoader(load: () => Promise<LoadedHeadlessPaneModel>): () => Promise<LoadedHeadlessPaneModel> {
+  let pending: Promise<LoadedHeadlessPaneModel> | undefined;
+  return () => (pending ??= load());
+}
+
 export async function renderDesktopShot({
   resolved,
   context,
@@ -695,6 +847,8 @@ export async function renderDesktopShot({
   theme,
   scale,
   watermark,
+  statusLine = false,
+  fitRows = false,
   options,
   captureImage = true,
 }: {
@@ -707,6 +861,10 @@ export async function renderDesktopShot({
   theme?: string | null;
   scale?: number;
   watermark?: string | null;
+  /** Draw the dated status line in the capture's footer. Reports and `--no-status` leave it out. */
+  statusLine?: boolean;
+  /** No `--height` was asked for: a pane that fits its rows (FUT) grows to show them all. */
+  fitRows?: boolean;
   options: Record<string, string | true>;
   captureImage?: boolean;
 }): Promise<PaneScreenshotResult> {
@@ -715,8 +873,10 @@ export async function renderDesktopShot({
   const previousSessionToken = apiClient.getSessionToken();
   let payload: DesktopPaneShotPayload;
   let render: DesktopPaneShotRenderResult;
+  let freshness: ReportFreshness | undefined;
   apiClient.setSessionToken(apiProxy.sessionToken);
   try {
+    const loadModel = onceLoader(() => loadResolvedHeadlessPaneModel(resolved, context, rawArg));
     payload = await buildDesktopShotPayload(
       resolved,
       context,
@@ -727,17 +887,30 @@ export async function renderDesktopShot({
       theme ?? null,
       scale ?? 1,
       watermark ?? null,
+      loadModel,
     );
+    if (statusLine && captureImage) payload.statusLine = true;
+    if (fitRows && resolved.pane.shotFitsRows) payload.maxHeightCells = shotMaxHeightCells(scale ?? 1);
+    // Loads while the page renders.
+    const report = payload.statusLine ? reportShotFreshness(resolved, loadModel) : undefined;
+    const recorded = recordBridgedQuotes(createDesktopShotBridge(context));
+    const shotPayload = payload;
     render = await renderDesktopPaneScreenshot(payload, outputPath, apiProxy, {
       captureImage,
-      bridge: createDesktopShotBridge(context),
+      bridge: recorded.bridge,
+      statusLine: async (rendered) => {
+        const line = shotFreshness(resolved, shotPayload, rendered, recorded.quotes, report && await settledWithin(report, SHOT_REPORT_WAIT_MS));
+        freshness = line.freshness;
+        return { variants: line.variants, observed: datesPaneData(line.freshness) };
+      },
     });
   } finally {
     apiClient.setSessionToken(previousSessionToken);
   }
   const renderedInstance = payload.config.layout.instances.find(({ instanceId }) => instanceId === payload.paneId);
   if (renderedInstance) resolved = { ...resolved, instance: renderedInstance };
-  return assessPaneScreenshot(resolved, payload, render, rawArg, outputPath);
+  const assessed = assessPaneScreenshot(resolved, payload, render, rawArg, outputPath);
+  return freshness ? { ...assessed, freshness } : assessed;
 }
 
 /** What a rendered capture shows, and whether it is fit to use. */
@@ -801,6 +974,7 @@ export function assessPaneScreenshot(
   const unusableReason = usable
     ? null
     : shotUnusableReasonFor(resolved, payload, render, unavailableSymbols, semanticMismatch);
+  const { notices } = renderedReportNotices(render.semanticUi ?? []);
   return {
     kind: "pane-screenshot",
     target: resolved.token,
@@ -821,6 +995,7 @@ export function assessPaneScreenshot(
     usable,
     unusableReason,
     dataEvidence,
+    ...(notices.length > 0 ? { notices } : {}),
     outputPath,
     render: {
       ...stripDesktopShotCredentials(render),

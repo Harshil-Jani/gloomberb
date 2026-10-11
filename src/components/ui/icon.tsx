@@ -6,6 +6,7 @@ import { t } from "../../i18n";
 
 export type IconName =
   | "more"
+  | "help"
   | "close"
   | "zap"
   | "sqrt"
@@ -27,11 +28,14 @@ export type IconName =
   | "sort-up"
   | "sort-down"
   | "grip"
-  | "image";
+  | "image"
+  | "thumbs-up"
+  | "thumbs-down";
 
 /** Terminal glyph for each icon; the desktop host draws SVG. */
 export const ICON_GLYPHS: Record<IconName, string> = {
   more: "...",
+  help: "?",
   close: "x",
   zap: "⚡",
   sqrt: "√",
@@ -54,6 +58,10 @@ export const ICON_GLYPHS: Record<IconName, string> = {
   "sort-down": "▼",
   grip: "::",
   image: "▣",
+  // Votes rather than emoji: an emoji keeps its own colours, so it could not
+  // show which thumb is chosen.
+  "thumbs-up": "+1",
+  "thumbs-down": "-1",
 };
 
 export interface IconProps {
@@ -160,7 +168,10 @@ export function IconButton({
         if (!disabled) onPress?.(event);
       }}
     >
-      <Text fg={disabled ? colors.textMuted : color ?? colors.textDim} selectable={false}>{` ${ICON_GLYPHS[icon]} `}</Text>
+      {/* Pressed takes the colour the desktop and the terminal pane header give an active toggle. */}
+      <Text fg={disabled ? colors.textMuted : color ?? (pressed ? colors.warning : colors.textDim)} selectable={false}>
+        {` ${ICON_GLYPHS[icon]} `}
+      </Text>
     </Box>
   );
 }

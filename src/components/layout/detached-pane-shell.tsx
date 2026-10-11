@@ -32,6 +32,7 @@ import { contextMenuDivider, type ContextMenuItem } from "../../types/context-me
 import { useKeybindings } from "../../app/keybindings";
 import { useDialogState } from "../../ui/dialog";
 import { getShortcutDisplayMode } from "../../utils/shortcut-labels";
+import { fireAndForget } from "../../utils/fire-and-forget";
 import {
   inputCaptureAllowsPaneManagementShortcut,
   modalSurfaceOwnsKey,
@@ -41,6 +42,8 @@ import {
 import { menuItemsForFallback, paneFooterMenuItems } from "./shell/menu";
 import { paneMenuButtonAnchor, ShellActionMenuOverlay, type ActionMenuState } from "./shell/action-menu-overlay";
 import { getPaneFooter } from "./pane/footer";
+import { requestPaneDocs } from "../../docs/requests";
+import { DOCS_PANE_TEMPLATE_ID } from "../../docs/content";
 
 interface DetachedPaneShellProps {
   pluginRegistry: PluginRegistry;
@@ -142,7 +145,7 @@ export function DetachedPaneShell({ pluginRegistry, desktopWindowBridge }: Detac
       if (takeDoubleEscapeClose(doubleEscapeState, desktopWindowBridge.paneId, Date.now())) {
         event.preventDefault();
         event.stopPropagation();
-        if (!locked) void desktopWindowBridge.closeDetachedPane?.(desktopWindowBridge.paneId);
+        if (!locked) fireAndForget(desktopWindowBridge.closeDetachedPane?.(desktopWindowBridge.paneId), "desktop.closeDetachedPane");
       }
       return;
     }
@@ -170,7 +173,7 @@ export function DetachedPaneShell({ pluginRegistry, desktopWindowBridge }: Detac
       pluginRegistry.notify({ body: "Pane is locked. Unlock it in pane settings.", type: "info" });
       return;
     }
-    void desktopWindowBridge.closeDetachedPane?.(desktopWindowBridge.paneId);
+    fireAndForget(desktopWindowBridge.closeDetachedPane?.(desktopWindowBridge.paneId), "desktop.closeDetachedPane");
   }, [desktopWindowBridge, locked, pluginRegistry]);
 
   const startWindowDrag = useCallback(() => {
@@ -212,8 +215,13 @@ export function DetachedPaneShell({ pluginRegistry, desktopWindowBridge }: Detac
   }, [desktopWindowBridge.paneId, focusPane, pluginRegistry]);
 
   const dockPane = desktopWindowBridge.dockDetachedPane
-    ? () => { void desktopWindowBridge.dockDetachedPane?.(desktopWindowBridge.paneId); }
+    ? () => { fireAndForget(desktopWindowBridge.dockDetachedPane?.(desktopWindowBridge.paneId), "desktop.dockDetachedPane"); }
     : null;
+
+  // The `?`: this window cannot open a pane, so the window's help host shows the pane's card.
+  const openDocs = () => {
+    requestPaneDocs(desktopWindowBridge.paneId, (id) => pluginRegistry.createPaneFromTemplate(DOCS_PANE_TEMPLATE_ID, { values: { pane: id } }));
+  };
 
   /** The same menu as a pane in the main window, minus what a window cannot do. */
   const buildMenuItems = (): ContextMenuItem[] => {
@@ -236,6 +244,7 @@ export function DetachedPaneShell({ pluginRegistry, desktopWindowBridge }: Detac
         onSelect: () => pluginRegistry.openPaneSettings(desktopWindowBridge.paneId),
       });
     }
+    items.push({ id: "pane-docs", label: "Docs", onSelect: openDocs });
     if (sharePayload) {
       items.push({ id: "share-pane", label: "Share Pane", accelerator: accelerators.share, onSelect: sharePane });
     }
@@ -421,6 +430,7 @@ export function DetachedPaneShell({ pluginRegistry, desktopWindowBridge }: Detac
               }}
               onHeaderMouseDown={startWindowDrag}
               onActionMouseDown={() => openActions()}
+              onHelpMouseDown={openDocs}
             />
             <PaneBodyFrame layoutProps={bodyFrame.layoutProps} backgroundColor={background}>
               <PaneHeaderTabsProvider value={headerTabsContext}>

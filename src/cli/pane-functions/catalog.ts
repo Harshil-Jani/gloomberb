@@ -24,6 +24,7 @@ import {
   wrapText,
   type CliStatEntry,
 } from "../../utils/cli-output";
+import { renderGlossaryEntries, type GlossaryLookup } from "../glossary";
 
 export interface PaneFunctionCatalog {
   panes: ReadonlyMap<string, PaneDef>;
@@ -259,6 +260,11 @@ function paneCatalogSearchScore(entry: PaneCatalogEntry, query: string): number 
   ].filter((value): value is string => !!value).join(" ").toLowerCase();
 
   let score = searchable.includes(query.toLowerCase()) ? 12 : 0;
+  // A query that is one of the function's own keywords ("hedge" for OSA) beats one found inside a
+  // longer keyword ("hedge funds" for 13F).
+  const keywords = [entry.label, ...entry.keywords, ...entry.capability.aliases]
+    .filter((value): value is string => !!value).map((value) => value.toLowerCase().replace(/\s+/g, " "));
+  if (keywords.includes(terms.join(" "))) score += 4;
   let matchedTerms = 0;
   for (const term of terms) {
     const normalized = normalizeLookupToken(term);
@@ -320,7 +326,8 @@ function optionChoices(option: PaneFunctionOptionDef): string[] {
 
 function optionFlags(option: PaneFunctionOptionDef): string {
   const choices = optionChoices(option).join("|");
-  return `--${option.key} <${choices && choices.length <= MAX_INLINE_CHOICES ? choices : option.values?.length ? "value" : option.type}>`;
+  const value = choices && choices.length <= MAX_INLINE_CHOICES ? choices : option.values?.length ? "value" : option.placeholder ?? option.type;
+  return `--${option.key} <${value}>`;
 }
 
 function optionDescription(option: PaneFunctionOptionDef): string {
@@ -329,6 +336,12 @@ function optionDescription(option: PaneFunctionOptionDef): string {
   if (choices.join("|").length > MAX_INLINE_CHOICES) parts.push(`One of ${choices.join(", ")}`);
   if (option.defaultValue !== undefined && option.defaultValue !== "") parts.push(`Default ${String(option.defaultValue)}`);
   return `${parts.join(". ")}.`;
+}
+
+/** A limitation as a sentence, so one does not run into the next: with a full stop unless it ends in one. */
+export function limitationSentence(text: string): string {
+  const trimmed = text.trim();
+  return !trimmed || /[.!?]["')\]]*$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 function renderCatalogEntry(entry: PaneCatalogEntry): string {
@@ -353,7 +366,7 @@ function renderCatalogEntry(entry: PaneCatalogEntry): string {
   const keywords = capability.aliases.filter((keyword) => !mnemonics.has(keyword.toLowerCase()));
   if (keywords.length > 0) stats.push(["Keywords", keywords.join(", ")]);
   if (capability.dataRequirements.length > 0) stats.push(["Requires", capability.dataRequirements.join(", ")]);
-  if (capability.limitations.length > 0) stats.push(["Limitations", capability.limitations.join(" ")]);
+  if (capability.limitations.length > 0) stats.push(["Limitations", capability.limitations.map(limitationSentence).join(" ")]);
   lines.push(renderStats(stats));
 
   if (capability.options.length > 0) {
@@ -365,26 +378,60 @@ function renderCatalogEntry(entry: PaneCatalogEntry): string {
   }
 
   lines.push("", renderSection("Examples"));
-  if (capability.reportReadiness !== "unsupported") lines.push(...wrapCommandLine(`gloomberb fn ${invocation}`, width));
+  if (capability.reportReadiness !== "unsupported") {
+    lines.push(...wrapCommandLine(`gloomberb fn ${invocation}`, width));
+    for (const option of capability.options) {
+      if (option.example) lines.push(...wrapCommandLine(`gloomberb fn ${invocation} ${option.example}`, width));
+    }
+  }
   lines.push(...wrapCommandLine(`gloomberb shot ${invocation} --output ${entry.token.toLowerCase()}.png`, width));
   return lines.join("\n");
 }
 
-export function renderPaneCatalogReport(entries: PaneCatalogEntry[], args: ParsedPaneCatalogArgs): string {
+/**
+ * The glossary part of a search: the meaning of a term the query names, or
+ * the terms that hold its words, to look up next.
+ */
+function renderCatalogGlossary(glossary: GlossaryLookup, width: number): string {
+  const defined = glossary.exact.length > 0 ? [renderSection("Glossary"), ...renderGlossaryEntries(glossary.exact)] : [];
+  const others = glossary.partial.map((entry) => entry.term).join(", ");
+  const related = others
+    ? wrapText(`${defined.length > 0 ? "Related" : "Glossary"}: ${others}. gloomberb catalog glossary <term> explains one.`, width)
+      .map((line) => cliStyles.muted(line))
+    : [];
+  return [...defined, ...related].join("\n");
+}
+
+/**
+ * `catalog [query]`: one function in full, or the matches, with the glossary
+ * terms the query names. `gap` is the line for data no source carries yet
+ * (`knownGapMessage`): it leads, and stands in for "No functions match".
+ */
+export function renderPaneCatalogReport(
+  entries: PaneCatalogEntry[],
+  args: ParsedPaneCatalogArgs,
+  glossary: GlossaryLookup = { exact: [], partial: [] },
+  gap: string | null = null,
+): string {
   const query = args.query.trim().toLowerCase();
   const exact = query
     ? entries.find((entry) => entry.token.toLowerCase() === query)
       ?? entries.find((entry) => entry.aliases.some((alias) => alias.toLowerCase() === query))
     : undefined;
   if (exact) return renderCatalogEntry(exact);
-  if (args.query && entries.length === 1) return renderCatalogEntry(entries[0]!);
 
   const width = Math.min(cliTerminalWidth() ?? CATALOG_TEXT_WIDTH, CATALOG_TEXT_WIDTH);
+  const terms = renderCatalogGlossary(glossary, width);
+  const withGap = (text: string) => [gap ? wrapText(gap, width).join("\n") : "", text].filter(Boolean).join("\n\n");
+  const withTerms = (text: string) => withGap(terms ? `${text}\n\n${terms}` : text);
+  if (args.query && entries.length === 1) return withTerms(renderCatalogEntry(entries[0]!));
+
   const note = (text: string) => wrapText(text, width).map((line) => cliStyles.muted(line)).join("\n");
   if (entries.length === 0) {
-    return note(args.query
+    if (glossary.exact.length > 0 || gap) return withGap(terms);
+    return withTerms(note(args.query
       ? `No functions match "${args.query}". Run gloomberb catalog to browse them all.`
-      : "No functions are available.");
+      : "No functions are available."));
   }
 
   const shown = entries.slice(0, args.limit);
@@ -413,5 +460,5 @@ export function renderPaneCatalogReport(entries: PaneCatalogEntry[], args: Parse
       ? `gloomberb catalog <function> shows its options and examples. Add --all to list all ${entries.length}.`
       : "gloomberb catalog <function> shows its options and examples."),
   ];
-  return lines.join("\n");
+  return withTerms(lines.join("\n"));
 }

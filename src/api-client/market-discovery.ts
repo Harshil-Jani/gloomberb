@@ -1,4 +1,4 @@
-import type { CloudCorporateActionsPayload, CloudQuotePayload } from "./types";
+import type { CloudCorporateActionsPayload, CloudMoverSessionFields, CloudQuotePayload } from "./types";
 
 export interface ScreenerQuote {
   symbol: string;
@@ -19,6 +19,8 @@ export interface ScreenerQuote {
   lastUpdated?: number;
   /** Session-fixed, so the price column reads its decimals from it rather than from each tick. */
   previousClose?: number;
+  /** The quote's sessions beside the live print the list ranks by, when the server sends them. */
+  sessions?: CloudMoverSessionFields;
 }
 
 
@@ -46,6 +48,12 @@ export interface MarketHeatmapAsset {
   industry: string | null;
   marketState: string | null;
   source: MarketHeatmapSource;
+  /**
+   * The move of the last completed regular session, which `price`, `change`
+   * and `changePercent` then are. Null while the regular session trades, and
+   * for a name without that session's close.
+   */
+  regularChangePercent?: number | null;
 }
 
 export interface MarketHeatmapResult {
@@ -53,6 +61,17 @@ export interface MarketHeatmapResult {
   universe: MarketHeatmapUniverseId;
   source: MarketHeatmapSource;
   fetchedAt: number;
+  /** The US market session the snapshot describes; null when the server cannot tell. */
+  session?: "REGULAR" | "PRE" | "POST" | "CLOSED" | null;
+  /** The completed regular session every stored tile describes outside the regular session, as a New York date; null while it trades. */
+  regularSessionDate?: string | null;
+  /**
+   * When that session closed, in epoch milliseconds: its real close from the
+   * exchange calendar, so an early close reads 13:00 New York. Null while a
+   * session trades and when the snapshot names no session; an older server
+   * leaves it out.
+   */
+  regularSessionClosedAt?: number | null;
   assets: MarketHeatmapAsset[];
 }
 
@@ -67,7 +86,10 @@ export interface MarketMoversPayload {
 export interface DividendSummary {
   trailingAnnualDividendRate: number | null;
   trailingAnnualDividendYield: number | null;
+  /** The indicated annual rate fundamentals serve: the latest regular distribution annualized. */
   forwardAnnualDividendRate: number | null;
+  /** The ex-date of the distribution that rate annualizes, YYYY-MM-DD. */
+  forwardRateAsOf?: string | null;
   payoutRatio: number | null;
   exDividendDate: number | null;
   dividendDate: number | null;

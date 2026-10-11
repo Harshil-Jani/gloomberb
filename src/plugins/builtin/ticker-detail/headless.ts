@@ -1,12 +1,16 @@
 import { FINANCIAL_VINTAGE_NOTICE } from "../../../utils/financial-statements";
 import { hasValidQuoteObservationTime } from "../../../market-data/quotes/freshness";
-import { getActiveQuoteDisplay } from "../../../market-data/market/status";
+import { EXTENDED_SESSION_LABELS, getQuoteSessionFields, type ExtendedSession } from "../../../market-data/market/status";
 import type { HeadlessPaneColumn, HeadlessPaneDefinition } from "../../../types/headless";
 import type { TimeRange } from "../../../time-series/range";
 import { formatNumber, formatPercentRaw } from "../../../utils/format";
 import { formatMarketPrice, formatMarketPriceWithCurrency, formatPriceObservation, withCurrencyMinorDigits, type MarketFormatOptions } from "../../../market-data/market/format";
 import { pricePointValues, priceHistoryIntegrityNotice } from "../../../utils/price-history-integrity";
-import { buildFinancialTableModel, financialStatementCurrency, financialStatementDateNotice, financialStatementLimitations, formatFinancialHeader } from "./financials/model";
+import {
+  buildFinancialTableModel, financialStatementCurrency, financialStatementDateNotice, financialStatementLimitations,
+  formatFinancialHeader, isPerShareFinancialRow, receiptShareCountLabel,
+} from "./financials/model";
+import { adrRatioText } from "../../../utils/depositary-receipt";
 import { paneSchemas } from "./headless-schema";
 import { loadPeriodEndHistory } from "./financials/period-end-history";
 import {
@@ -52,8 +56,18 @@ export const financialStatementsHeadless: HeadlessPaneDefinition<"rows"> = {
     const statementCurrency = financialStatementCurrency(financials, [
       ...financials.annualStatements, ...financials.quarterlyStatements,
     ]);
-    const dates = table?.statements.map(({ date, currency, dateSource, providerDate, dateEvidence, availableAt, fieldAvailability, fieldSources, unavailableFields, epsBasis, unavailableEarnings, aggregation }) => ({
+    // Gloom Cloud states when a period's share counts and EPS are on the receipts.
+    const receiptPeriods = table?.statements.filter(({ shareBasis }) => shareBasis === "depositary_receipt").map(({ date }) => date) ?? [];
+    const allReceipts = receiptPeriods.length > 0 && receiptPeriods.length === table?.statements.length;
+    const shareBases = new Set(table?.statements.map(({ shareBasis }) => shareBasis ?? null));
+    const ratio = adrRatioText(financials.fundamentals?.adrRatio ?? financials.quote?.adrRatio);
+    const shareBasisNotice = receiptPeriods.length === 0 || !table?.rows.some(isPerShareFinancialRow) ? null
+      : allReceipts
+        ? `Share counts are in ADRs and EPS is per ADR${ratio ? `; ${ratio}` : ""}.`
+        : `Share counts are in ADRs and EPS is per ADR for ${receiptPeriods.join(", ")}${ratio ? ` (${ratio})` : ""}; other periods as reported.`;
+    const dates = table?.statements.map(({ date, currency, dateSource, providerDate, dateEvidence, availableAt, fieldAvailability, fieldSources, unavailableFields, epsBasis, unavailableEarnings, aggregation, shareBasis }) => ({
       date, currency: currency ?? statementCurrency ?? null,
+      shareBasis: shareBasis ?? null,
       availableAt: availableAt ?? null,
       fieldAvailability: fieldAvailability ? { ...fieldAvailability } : null,
       ...(fieldSources ? { fieldSources } : {}),
@@ -68,7 +82,7 @@ export const financialStatementsHeadless: HeadlessPaneDefinition<"rows"> = {
       label: formatFinancialHeader(date, [currency ?? statementCurrency, table.unit].filter(Boolean).join(" ") || undefined, dateSource, false, aggregation?.periodEnd).trim(),
     })) ?? [];
     const rows = table?.rows.map((row) => ({
-      id: row.id, kind: row.kind, metric: row.unitLabel,
+      id: row.id, kind: row.kind, metric: allReceipts ? receiptShareCountLabel(row) : row.unitLabel,
       cells: row.cells.map((cell, index) => ({
         date: dates[index]?.date ?? "", value: cell.value ?? null,
         growth: cell.growth ?? null, formatted: cell.valueText.trim(), growthFormatted: cell.growthText.trim(),
@@ -92,7 +106,9 @@ export const financialStatementsHeadless: HeadlessPaneDefinition<"rows"> = {
         symbol, name: financials.quote?.name ?? symbol, currency: statementCurrency ?? null, unit: table?.unit ?? null, quoteCurrency: financials.quote?.currency ?? null,
         statement: table?.subTab.key ?? options.statement, statementLabel: table?.subTab.name ?? null,
         period: requestedPeriod, growthBasis: requestedPeriod === "quarterly" ? "QoQ" : "YoY", columns: dates,
-        notices: rows.length ? [FINANCIAL_VINTAGE_NOTICE] : [],
+        shareBasis: shareBases.size === 1 ? [...shareBases][0] ?? null : null,
+        ...(receiptPeriods.length > 0 ? { adrRatio: financials.fundamentals?.adrRatio ?? financials.quote?.adrRatio ?? null } : {}),
+        notices: rows.length ? [FINANCIAL_VINTAGE_NOTICE, ...(shareBasisNotice ? [shareBasisNotice] : [])] : [],
         limitations: financialStatementLimitations(financials),
         dateProvenance: financialStatementDateNotice(table?.statements ?? []),
       },
@@ -179,18 +195,34 @@ function quoteAmount(value: unknown, row: Record<string, unknown>, signed = fals
   return amount === "—" ? amount : `${signed && value >= 0 ? "+" : ""}${amount}`;
 }
 
+function percentCell(value: unknown): string {
+  return formatPercentRaw(typeof value === "number" && Number.isFinite(value) ? value : undefined);
+}
+
+const QUOTE_MONITOR_COLUMNS: HeadlessPaneColumn[] = [
+  { key: "symbol", header: "Ticker" },
+  { key: "name", header: "Name" },
+  { key: "price", header: "Last", align: "right", format: (value, row) => quoteAmount(value, row) },
+  { key: "change", header: "Change", align: "right", format: (value, row) => quoteAmount(value, row, true) },
+  { key: "changePercent", header: "Change %", align: "right", format: percentCell },
+];
+
+/** The pre-market or after-hours print and its move from the regular close, for the rows that have one. */
+function extendedSessionColumn(session: ExtendedSession): HeadlessPaneColumn {
+  return {
+    key: "extendedPrice", header: EXTENDED_SESSION_LABELS[session], align: "right",
+    format: (value, row) => row.extendedSession === session
+      ? `${quoteAmount(value, row)} ${percentCell(row.extendedChangePercent)}`
+      : "—",
+  };
+}
+
 export const quoteComparisonHeadless: HeadlessPaneDefinition<"rows"> = {
   ...paneSchemas["quote-monitor-pane"],
   shape: "rows",
-  description: "Current quotes for one or more tickers: name, last price, change and percent change.",
+  description: "Current quotes for one or more tickers: name, the regular session's last price, change and percent change, and any pre-market or after-hours print.",
   describe: ({ symbols }) => `Quote Monitor | ${symbols.join(", ")}`,
-  columns: [
-    { key: "symbol", header: "Ticker" },
-    { key: "name", header: "Name" },
-    { key: "price", header: "Last", align: "right", format: (value, row) => quoteAmount(value, row) },
-    { key: "change", header: "Change", align: "right", format: (value, row) => quoteAmount(value, row, true) },
-    { key: "changePercent", header: "Change %", align: "right", format: (value) => formatPercentRaw(typeof value === "number" && Number.isFinite(value) ? value : undefined) },
-  ],
+  columns: QUOTE_MONITOR_COLUMNS,
   async load({ symbols }, ctx) {
     const loaded = await loadHeadlessSymbols(symbols, ctx, async (key) => {
       const { symbol, exchange } = await resolveHeadlessInstrument(ctx, key);
@@ -199,19 +231,25 @@ export const quoteComparisonHeadless: HeadlessPaneDefinition<"rows"> = {
       if (!hasValidQuoteObservationTime(quote)) throw new Error(`Quote observation time is unavailable for ${key}`);
       return quote;
     });
+    const rows = loaded.entries.map(({ symbol, data: quote }) => {
+      // As the pane's cards show them: the regular session, then any extended print from its close.
+      const { price, change, changePercent, ...extended } = getQuoteSessionFields(quote);
+      return {
+        symbol, name: quote.name ?? "", price, currency: quote.currency,
+        ...(quote.instrumentType ? { instrumentType: quote.instrumentType } : {}),
+        ...(quote.priceBasis ? { priceBasis: quote.priceBasis } : {}),
+        change, changePercent, ...extended,
+        marketCap: quote.marketCap ?? null, updatedAt: quote.lastUpdated,
+        ...quoteFreshnessFields(quote),
+      };
+    });
+    // An extended column only when a row has a print for it, so a closed board stays as narrow as before.
+    const extendedColumns = (["PRE", "POST"] as const)
+      .filter((session) => rows.some((row) => row.extendedSession === session))
+      .map(extendedSessionColumn);
     return {
-      rows: loaded.entries.map(({ symbol, data: quote }) => {
-        // The pane's cards show the live session's print, so the rows do too.
-        const display = getActiveQuoteDisplay(quote)!;
-        return {
-          symbol, name: quote.name ?? "", price: display.price, currency: quote.currency,
-          ...(quote.instrumentType ? { instrumentType: quote.instrumentType } : {}),
-          ...(quote.priceBasis ? { priceBasis: quote.priceBasis } : {}),
-          change: display.change, changePercent: display.changePercent,
-          marketCap: quote.marketCap ?? null, updatedAt: quote.lastUpdated,
-          ...quoteFreshnessFields(quote),
-        };
-      }),
+      rows,
+      ...(extendedColumns.length > 0 ? { columns: [...QUOTE_MONITOR_COLUMNS, ...extendedColumns] } : {}),
       unavailableSymbols: loaded.unavailableSymbols, errors: loaded.errors,
     };
   },

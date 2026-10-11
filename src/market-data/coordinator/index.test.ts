@@ -7,6 +7,7 @@ import type { InstrumentSearchResult } from "../../types/instrument";
 import type { PricePoint, Quote } from "../../types/financials";
 import { createTestDataProvider, createTestFinancials } from "../../test-support/data-provider";
 import { SNAPSHOT_FAILURE_RETRY_MS } from "./entries";
+import { AssetDataRouter } from "../../sources/provider-router";
 
 // Stream ticks apply on a data frame; these tests step that frame directly.
 const streamClock = createManualFrameDriver(0);
@@ -951,6 +952,37 @@ describe("MarketDataCoordinator", () => {
     }
   });
 
+  it("shows the last known price, flagged stale, when no source has a current quote", async () => {
+    const fixedNow = Date.parse("2026-10-12T14:00:00Z");
+    const realDateNow = Date.now;
+    Date.now = () => fixedNow;
+    try {
+      // The service flags Thursday's close stale (a venue it still reads as trading).
+      const thursday: Quote = {
+        symbol: "2222", providerId: "gloomberb-cloud", dataSource: "delayed", price: 25.74, currency: "SAR",
+        change: -0.1, changePercent: -0.39, lastUpdated: Date.parse("2026-10-08T12:19:54Z"),
+        listingExchangeName: "TADAWUL", marketState: "CLOSED", sessionConfidence: "explicit", stale: true,
+      };
+      let answer: Quote = thursday;
+      const provider = createTestDataProvider({ id: "gloomberb-cloud", getQuote: async () => answer });
+      const coordinator = new MarketDataCoordinator(new AssetDataRouter(provider, []));
+      const instrument = { symbol: "2222", exchange: "TADAWUL" };
+
+      const loaded = await coordinator.loadQuote(instrument);
+      expect(loaded.error).toBeNull();
+      expect(loaded.data).toMatchObject({ price: 25.74, lastUpdated: thursday.lastUpdated, stale: true });
+      const [batched] = await coordinator.loadQuotesBatch([instrument], { forceRefresh: true });
+      expect(batched?.data).toMatchObject({ price: 25.74, stale: true });
+
+      // A current quote takes over.
+      answer = { ...thursday, price: 26.1, lastUpdated: fixedNow - 60_000, marketState: "REGULAR", stale: false };
+      const current = await coordinator.loadQuote(instrument, { forceRefresh: true });
+      expect(current.data).toMatchObject({ price: 26.1, stale: false });
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
   it("hydrates ticker financials synchronously from primed cached data", () => {
     const coordinator = new MarketDataCoordinator(createProvider());
     const instrument = { symbol: "AAPL", exchange: "NASDAQ" };
@@ -1179,5 +1211,45 @@ describe("MarketDataCoordinator", () => {
     expect(crypto?.phase).toBe("error");
     expect(singleCalls).toBe(0);
     expect(batchSymbols).toEqual([["VWCE.DE", "HYPE32196-USD"]]);
+  });
+
+  it("does not repeat one by one a quote the router's batch already tried one by one", async () => {
+    let singleCalls = 0;
+    // The batch source is down, so the router asks for each symbol on its own,
+    // and each of those fails too.
+    const provider = createTestDataProvider({
+      id: "cloud",
+      getQuote: async (symbol) => {
+        singleCalls += 1;
+        throw new Error(`Quote unavailable for ${symbol}`);
+      },
+      getQuotesBatch: async () => {
+        throw new Error("Cloud is unreachable");
+      },
+    });
+    const coordinator = new MarketDataCoordinator(new AssetDataRouter(provider, []));
+    const instruments = Array.from({ length: 50 }, (_, index) => ({ symbol: `SYM${index}`, exchange: "NASDAQ" }));
+
+    const entries = await coordinator.loadQuotesBatch(instruments, { forceRefresh: true });
+
+    expect(singleCalls).toBe(50);
+    expect(entries.every((entry) => entry?.phase === "error")).toBe(true);
+  });
+
+  it("still asks one by one for a quote the provider's batch left out without a reason", async () => {
+    const singleSymbols: string[] = [];
+    const provider = createProvider({
+      getQuote: async (symbol) => {
+        singleSymbols.push(symbol);
+        return { symbol, price: 10, currency: "USD", change: 0, changePercent: 0, lastUpdated: Date.now() };
+      },
+      getQuotesBatch: async (targets) => targets.map((target) => ({ target, quote: null })),
+    });
+    const coordinator = new MarketDataCoordinator(provider);
+
+    const [entry] = await coordinator.loadQuotesBatch([{ symbol: "MSFT", exchange: "NASDAQ" }]);
+
+    expect(singleSymbols).toEqual(["MSFT"]);
+    expect(entry?.data?.price).toBe(10);
   });
 });

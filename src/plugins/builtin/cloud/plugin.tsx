@@ -14,12 +14,17 @@ import { askgConversationListStore } from "./askg/conversation-store";
 import { ASKG_PANE_ID, ASKGPane } from "./askg/pane";
 import { askGloomQuestion } from "./askg/pending-question";
 import { registerCloudAuthCommands } from "./auth-commands";
+import { registerMcpConnectCommand } from "./mcp-connect/command";
 import { registerCloudUpgradeCommand } from "./upgrade-command";
 import { CloudUpgradeStatusWidget } from "./upgrade-status-widget";
 import { registerTrialOfferCommand, TrialOfferStatusWidget } from "./trial-offer-status-widget";
 import { CloudVerificationStatusWidget } from "./verification-status-widget";
 import { createPublicPaneShare } from "../shared/public-pane";
 import { teamModule } from "./team/module";
+import { registerMcpConnectSection } from "./mcp-connect/sections";
+import { TerminalControlSection } from "./terminal-relay/connect-section";
+import { terminalRelayGrants } from "./terminal-relay/grants";
+import { TerminalRelayStatusWidget } from "./terminal-relay/indicator";
 import { thesisModule } from "./thesis/module";
 
 function createCloudDataModule(): PluginModule {
@@ -39,7 +44,7 @@ function createCloudDataModule(): PluginModule {
   };
 }
 
-/** Sign-in and upgrade commands, and the email verification, upgrade and trial prompts. */
+/** Sign-in, upgrade and MCP setup commands, and the email verification, upgrade and trial prompts. */
 const cloudAccountModule: PluginModule = {
   slots: {
     "status:widget": () => (
@@ -54,6 +59,7 @@ const cloudAccountModule: PluginModule = {
     registerCloudAuthCommands(ctx);
     registerCloudUpgradeCommand(ctx);
     registerTrialOfferCommand(ctx);
+    registerMcpConnectCommand(ctx);
   },
 };
 
@@ -93,6 +99,34 @@ const askgModule: PluginModule = {
       return { placement: "floating", instanceId: "askg:main" };
     },
   }],
+};
+
+/**
+ * Remote control from the Gloom Cloud MCP: which assistants were approved
+ * live with the profile, and the status chip shows one at work. The relay
+ * itself is mounted by the app (terminal-relay/host.tsx) and stays off while
+ * this plugin is.
+ */
+let removeTerminalControlSection: (() => void) | null = null;
+
+const terminalRelayModule: PluginModule = {
+  slots: {
+    "status:widget": () => <TerminalRelayStatusWidget />,
+  },
+  setup(ctx) {
+    terminalRelayGrants.attach(ctx.persistence);
+    removeTerminalControlSection?.();
+    removeTerminalControlSection = registerMcpConnectSection({
+      id: "terminal-control",
+      order: 10,
+      Component: TerminalControlSection,
+    });
+  },
+  dispose() {
+    removeTerminalControlSection?.();
+    removeTerminalControlSection = null;
+    terminalRelayGrants.detach();
+  },
 };
 
 const congressTradesModule: PluginModule = {
@@ -141,6 +175,7 @@ export function createGloomberbCloudPlugin(extraModules: readonly PluginModule[]
       accountManagementModule,
       cloudAccountModule,
       askgModule,
+      terminalRelayModule,
       ...extraModules,
       congressTradesModule,
       cloudTweetsModule,

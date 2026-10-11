@@ -3,7 +3,10 @@ import { createDefaultConfig } from "../../types/config";
 import type { Quote } from "../../types/financials";
 import type { CliCommandContext } from "../../types/plugin";
 import { createTestCliContext } from "../../test-support/cli-context";
+import { quoteNotes } from "./crypto-hints";
 import { marketDataCliCommands } from "./market";
+import { serializeCliResult } from "../result";
+import { setCliColorEnabledOverride } from "../../utils/cli-output";
 
 const config = createDefaultConfig("/tmp/gloom-crypto-hints-test");
 const HINT = "Crypto prices may be briefly unavailable; the CRYP function (gloomberb fn CRYP) shows the crypto board.";
@@ -45,6 +48,13 @@ test("a failed quote says why in text mode, and points crypto pairs at the crypt
   expect((json.data as Array<{ error: string }>)[0]!.error).toBe(`${none} for BTC-USD`);
 });
 
+test("a sentence the data service wrote keeps its own ending, before the crypto board pointer too", () => {
+  const note = (symbol: string, error: string) => quoteNotes([{ target: { symbol }, quote: null, error }]);
+  expect(note("XAU/USD", "Spot gold is not quoted; GC=F is the front-month future.")).toEqual(["XAU/USD: Spot gold is not quoted; GC=F is the front-month future."]);
+  expect(note("BTC-USD", "Not listed on this feed.")).toEqual([`BTC-USD: Not listed on this feed. ${HINT}`]);
+  expect(note("BTC-USD", "Not listed on this feed")).toEqual([`BTC-USD: Not listed on this feed. ${HINT}`]);
+});
+
 test("history keeps its error and adds the crypto board pointer only for crypto pairs in text mode", async () => {
   const history = async (symbol: string, format: "text" | "json" = "text") => {
     const cli = createTestCliContext({ config, store: { loadTicker: async () => null }, dataProvider: {
@@ -80,4 +90,30 @@ test("a bare coin ticker that resolves to a fund says it is not the coin", async
   const named = createTestCliContext({ config, dataProvider: { getQuotesBatch: async () => [{ target: { symbol: "BTC", exchange: "NYSE" }, quote: etf }] } });
   await marketDataCliCommands.find((command) => command.name === "quote")!.execute(["BTC", "--exchange", "NYSE"], named.context);
   expect(named.printed[0]!.result.warnings).toBeUndefined();
+});
+
+test("a symbol no listing carries reads as not a ticker in the table and the notes, an outage as unavailable", async () => {
+  const cli = createTestCliContext({ config, dataProvider: {
+    getQuotesBatch: async (targets: Array<{ symbol: string; exchange: string }>) => targets.map((target) => ({
+      target,
+      quote: null,
+      error: new Error(target.symbol === "APPLE" ? "Not a ticker: APPLE." : `No quote provider available for ${target.symbol}`),
+    })),
+  } });
+  await marketDataCliCommands.find((command) => command.name === "quote")!.execute(["Apple", "TSLA"], cli.context);
+  const { result, options } = cli.printed[0]!;
+  expect(result.warnings).toEqual(["Not a ticker: APPLE.", "TSLA: No quote provider available"]);
+  setCliColorEnabledOverride(false);
+  try {
+    const rows = serializeCliResult(result, cli.context.cliOptions, options).split("\n");
+    expect(rows.find((row) => row.startsWith("APPLE"))).toContain("not a ticker");
+    expect(rows.find((row) => row.startsWith("TSLA"))).toContain("unavailable");
+  } finally {
+    setCliColorEnabledOverride(null);
+  }
+  // JSON keeps the error as thrown, per row.
+  const json = createTestCliContext({ config, dataProvider: { getQuotesBatch: async (targets: Array<{ symbol: string; exchange: string }>) => targets.map((target) => ({ target, quote: null, error: new Error("Not a ticker: APPLE.") })) } }, { format: "json" });
+  await marketDataCliCommands.find((command) => command.name === "quote")!.execute(["Apple"], json.context);
+  expect(json.printed[0]!.result.warnings).toBeUndefined();
+  expect((json.printed[0]!.result.data as Array<{ error: string }>)[0]!.error).toBe("Not a ticker: APPLE.");
 });

@@ -8,8 +8,9 @@ import type { Portfolio, TickerRecord, Watchlist } from "../../../types/ticker";
 import { AmbiguousTickerError, resolveTickerSearch, upsertTickerFromSearchResult } from "../../../tickers/search";
 import { parseTickerListInput } from "../../../tickers/list";
 import { resolveTickerOpenTarget, type TickerOpenTarget } from "../../../tickers/open-target";
+import { settleTypedListingKey } from "../../../tickers/listing-venues";
 import { tickerHasListingSuffix } from "../../../sources/listing-symbols";
-import { parsePublicTickerKey, publicTickerKey } from "../../../utils/exchanges";
+import { isSharedExchangeCode, parsePublicTickerKey, publicTickerKey, typedExchangeCode } from "../../../utils/exchanges";
 import { captureAttentionAction } from "../../../telemetry/attention-counts";
 
 export interface SharedWorkflowDeps {
@@ -46,7 +47,8 @@ function getTickerSearchContext(state: AppState, collectionId: string | null) {
   };
 }
 
-async function materializeResolvedTicker(
+/** Saves a provider listing as a ticker record, as the command bar does before a collection command. */
+export async function materializeResolvedTicker(
   resolvedTicker: NonNullable<Awaited<ReturnType<typeof resolveTickerSearch>>>,
   deps: SharedWorkflowDeps,
 ): Promise<ResolvedTickerInput> {
@@ -147,8 +149,16 @@ export async function resolveTickerInput(
   const state = deps.getState();
   let resolvedTicker;
   try {
-    const query = rawInput?.trim() || activeTicker || "";
-    if (options.preserveListingKey && (parsePublicTickerKey(query).exchange || tickerHasListingSuffix(query.toUpperCase()))) {
+    let query = rawInput?.trim() || activeTicker || "";
+    if (options.preserveListingKey) {
+      // 7203:TSE is the venue its symbol trades on among those TSE names, kept as 7203:JPX would be.
+      query = await settleTypedListingKey(query, {
+        store: { loadTicker: (key) => deps.tickerRepository.loadTicker(key), loadAllTickers: async () => [...state.tickers.values()] },
+        dataProvider: deps.dataProvider,
+      });
+    }
+    const namedVenue = !!parsePublicTickerKey(query).exchange && !isSharedExchangeCode(typedExchangeCode(query));
+    if (options.preserveListingKey && (namedVenue || tickerHasListingSuffix(query.toUpperCase()))) {
       // Commands and incoming layouts must preserve the same validated listing
       // key, including when the repository already stores a bare-symbol holding.
       const target = await resolveTickerOpenTarget({

@@ -14,6 +14,12 @@ interface PaneWrapperProps {
   windowModeSelected?: boolean;
   width?: number;
   height?: number | `${number}%` | "auto";
+  /**
+   * Desktop: fill the box it sits in instead of taking `width` and `height`,
+   * so a box restyled by a drag (a divider) sizes the pane without a render.
+   * `width` still fits the header and footer.
+   */
+  stretch?: boolean;
   flexGrow?: number;
   locked?: boolean;
   showActions?: boolean;
@@ -28,6 +34,7 @@ interface PaneWrapperProps {
   onHeaderMouseDragEnd?: (event: any) => void;
   onHeaderContextMenu?: (event: any) => void;
   onActionMouseDown?: (event: any) => void;
+  onHelpMouseDown?: (event: any) => void;
   onRestoreMouseDown?: (event: any) => void;
   fullscreen?: boolean;
   footer?: CombinedPaneFooter | null;
@@ -41,6 +48,7 @@ export function PaneWrapper({
   windowModeSelected = false,
   width = 0,
   height,
+  stretch = false,
   flexGrow,
   locked = false,
   showActions = false,
@@ -54,6 +62,7 @@ export function PaneWrapper({
   onHeaderMouseDragEnd,
   onHeaderContextMenu,
   onActionMouseDown,
+  onHelpMouseDown,
   onRestoreMouseDown,
   fullscreen = false,
   footer,
@@ -76,8 +85,8 @@ export function PaneWrapper({
   return (
     <Box
       flexDirection="column"
-      width={width}
-      height={height}
+      width={stretch ? "100%" : width}
+      height={stretch ? "100%" : height}
       flexGrow={flexGrow}
       backgroundColor={bg}
       overflow="hidden"
@@ -111,6 +120,7 @@ export function PaneWrapper({
           onHeaderMouseDragEnd={onHeaderMouseDragEnd}
           onHeaderContextMenu={onHeaderContextMenu}
           onActionMouseDown={onActionMouseDown}
+          onHelpMouseDown={onHelpMouseDown}
           fullscreen={fullscreen}
           onRestoreMouseDown={onRestoreMouseDown}
         />

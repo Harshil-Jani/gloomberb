@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef } from "react";
+import { QUICK_ADD_KEY } from "./quick-add";
 import {
   TickerListTableView,
   type DataTableKeyEvent,
@@ -8,14 +9,15 @@ import { useDataTableSortMenu } from "../../../components/data-table/sort-menu";
 import { followLiveSparklinePrice } from "../../../components/price-sparkline/model";
 import { PRICE_SPARKLINE_COLUMN_ID } from "../../../components/price-sparkline/view";
 import type { QuoteFlashDirection } from "../../../components/quote-flash";
+import type { TickerTableCell } from "../../../components/ticker/list-table-view";
 import { createRowValueCache } from "../../../components/ui/row-value-cache";
 import type { ColumnConfig } from "../../../types/config";
 import type { PricePoint, TickerFinancials } from "../../../types/financials";
 import type { TickerRecord } from "../../../types/ticker";
 import { objectVersion } from "../../../utils/object-version";
-import { columnContextVersion } from "./cell-version";
+import { columnContextVersion, PERPETUAL_COLUMN_IDS } from "./cell-version";
 import { getColumnValue, type ColumnContext } from "./metrics";
-import { portfolioPnlLabel } from "./position-metrics";
+import { portfolioPnlLabel } from "../../../portfolio/position-metrics";
 import { PORTFOLIO_ROW_MENU_KEYS } from "./row-actions";
 
 export type { QuoteFlashDirection };
@@ -98,6 +100,8 @@ export function PortfolioTickerTable({
   visibleRangeBuffer,
   resetScrollKey,
   onRowActivate,
+  onAddTicker,
+  onOpenPerpetual,
   rootHeight,
 }: {
   columns: ColumnConfig[];
@@ -117,18 +121,26 @@ export function PortfolioTickerTable({
   visibleRangeBuffer?: number;
   resetScrollKey?: unknown;
   onRowActivate?: (ticker: TickerRecord) => void;
+  /** Opens the add row; the empty table offers it as a button. */
+  onAddTicker?: () => void;
+  /** Opens PERP on a row's stock perpetual: its PERP% and FUND 8H cells link to it. */
+  onOpenPerpetual?: (marketId: string) => void;
   rootHeight?: number;
 }) {
-  const cellCacheRef = useRef(createRowValueCache<string, ReturnType<typeof getColumnValue>>(5000));
+  const cellCacheRef = useRef(createRowValueCache<string, ReturnType<typeof getColumnValue> & TickerTableCell>(5000));
+  const openPerpetualRef = useRef(onOpenPerpetual);
+  openPerpetualRef.current = onOpenPerpetual;
   const sparklineVisible = columns.some((column) => column.id === PRICE_SPARKLINE_COLUMN_ID);
   const tableFinancialsMap = useLiveSparklineFinancials(financialsMap, sortedTickers, sparklineVisible);
   const resolveCell = useCallback(
     (column: ColumnConfig, ticker: TickerRecord, financials: TickerFinancials | undefined) => {
       const key = `${ticker.metadata.ticker}:${column.id}`;
       const version = buildCellVersion(column, ticker, financials, columnContext);
-      return cellCacheRef.current.get(key, version, () => (
-        getColumnValue(column, ticker, financials, columnContext)
-      ));
+      return cellCacheRef.current.get(key, version, () => {
+        const cell = getColumnValue(column, ticker, financials, columnContext);
+        const marketId = PERPETUAL_COLUMN_IDS.has(column.id) ? columnContext.perpetuals?.get(ticker.metadata.ticker)?.marketId : undefined;
+        return marketId ? { ...cell, onPress: () => openPerpetualRef.current?.(marketId) } : cell;
+      });
     },
     [columnContext],
   );
@@ -175,6 +187,8 @@ export function PortfolioTickerTable({
       resetScrollKey={resetScrollKey}
       onRowActivate={onRowActivate}
       rowMenuAccelerators={PORTFOLIO_ROW_MENU_KEYS}
+      onAddTicker={onAddTicker}
+      addTickerShortcut={onAddTicker ? QUICK_ADD_KEY : undefined}
       rootHeight={rootHeight}
     />
   );

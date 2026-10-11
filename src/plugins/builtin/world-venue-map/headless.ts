@@ -4,9 +4,23 @@
  * linked tickers, for JSON and CSV.
  */
 import { getGeoEntities, loadGeoCatalog, type GeoLayerInfo, type GeoRequest } from "../../../api-client/geo";
-import type { HeadlessPaneColumn, HeadlessPaneContext, HeadlessPaneDefinition, HeadlessPaneRow, HeadlessRowsResult } from "../../../types/headless";
-import { columnValue, parseLayerTokens, plainGeoValue, resolveActiveLayers, tickerLinkKey } from "./layers";
+import type { HeadlessPaneColumn, HeadlessPaneContext, HeadlessPaneDefinition, HeadlessPaneFreshness, HeadlessPaneRow, HeadlessRowsResult } from "../../../types/headless";
+import { REFERENCE_DATA } from "../shared/report-freshness";
+import { columnValue, layerCoverageNote, parseLayerTokens, plainGeoValue, resolveActiveLayers, tickerLinkKey } from "./layers";
 import { filterWorldVenues, formatVenueLocalTime } from "./model";
+
+/**
+ * A layer's status from its own cadence, as the pane's footer shows it. The
+ * server says when a layer falls behind its source (`status`), so a daily
+ * layer is not judged by age here: some sources publish a week late. A layer
+ * that cannot serve has no data to describe; its error says why.
+ */
+function layerFreshness(layer: GeoLayerInfo): HeadlessPaneFreshness | undefined {
+  if (layer.status === "unavailable") return undefined;
+  if (layer.cadence === "live") return { status: "live" };
+  if (layer.cadence === "daily") return { status: "not-a-feed", basis: "daily data" };
+  return REFERENCE_DATA;
+}
 
 function contextRequest(context: HeadlessPaneContext): GeoRequest {
   return <T>(path: string, init?: RequestInit) => context.apiClient.geo<T>(path, { ...init, signal: init?.signal ?? context.signal });
@@ -45,6 +59,7 @@ async function venueRows(context: HeadlessPaneContext, query: string): Promise<H
       lon: venue.longitude,
       lat: venue.latitude,
     })),
+    freshness: REFERENCE_DATA,
     metadata: { layer: "venues", stale: response.stale === true },
   };
 }
@@ -111,9 +126,13 @@ export const mapHeadless = {
       lon: row.lon,
       lat: row.lat,
     }));
+    const coverage = layerCoverageNote(layer);
     return {
       columns: layerColumns({ ...layer, columns }),
       rows,
+      // A search outside a one-country layer finds nothing because the layer has nothing there.
+      ...(query.trim() && coverage ? { empty: `No ${layer.name.toLowerCase()} match "${query.trim()}". ${coverage}` } : {}),
+      freshness: layerFreshness(layer),
       complete: layer.status === "ok",
       errors: layer.status === "unavailable" ? [`${layer.name}: ${layer.statusNote ?? "unavailable"}`] : [],
       metadata: {

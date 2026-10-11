@@ -96,17 +96,57 @@ test("the report and its compact form state what the basket covers and why each 
     const full = await portfolioRiskHeadless.load(args, context);
     expect(full.complete).toBe(false);
     expect(full.metadata?.coverage).toMatchObject({ holdings: 94, covered: 85, estimated: true, shareIsUpperBound: false });
-    expect(full.errors).toContain("TWD1 (4.0% of market value): Foreign holdings: daily FX closes unavailable");
+    // What the estimate leaves out is a note; the report itself did not fail.
+    expect(full.errors).toEqual([]);
+    expect(full.notes).toContain("TWD1 (4.0% of market value) is excluded from the risk estimate: foreign holdings: daily FX closes unavailable.");
     // Every risk row is a number, not a dash.
     expect(full.sections.find((section) => section.title === "risk")!.rows!.every((row) => row.value !== "--")).toBe(true);
 
     const compact = portfolioRiskHeadless.compact!(full, args);
-    expect(compact.errors).toEqual(["Basket covers 78% of market value \u00b7 9 holdings left out; metadata.coverage lists each with its reason."]);
+    expect(compact.notes).toEqual(["Basket covers 78% of market value \u00b7 9 holdings left out; metadata.coverage lists each with its reason."]);
+    expect(compact.errors).toBeUndefined();
     const coverage = compact.metadata?.coverage as { share: number; leftOut: Array<{ symbol: string; reason: string; share: number }> };
     expect(coverage.share).toBeCloseTo(365_500 / 468_560, 10);
     expect(coverage.leftOut[0]).toMatchObject({ symbol: "EUR2", reason: "Foreign holdings: daily FX closes unavailable" });
     expect(coverage.leftOut[0]!.share).toBeCloseTo(20_020 / 468_560, 10);
     expect(coverage.leftOut.at(-1)).toMatchObject({ symbol: "UNQ3", reason: "Daily history unavailable" });
+
+    // With nothing but crypto the basket views have no estimate: a failure the report states, beside the note naming the holding.
+    const crypto = brokerFixtureTickers([{ symbol: "ETH-USD", exchange: "CCC", currency: "USD", quantity: 2, price: 2_500, brokerValue: 5_000 }]);
+    const cryptoOnly = await portfolioRiskHeadless.load(args, { ...context, resolvePortfolio: async () => ({ portfolio: BROKER_PORTFOLIO, tickers: crypto }) } as unknown as HeadlessPaneContext);
+    expect(cryptoOnly.errors).toEqual([expect.stringContaining("Basket estimates unavailable: No holding qualifies")]);
+    expect(cryptoOnly.notes).toEqual(["ETH-USD (100.0% of market value) is excluded from the risk estimate: crypto is not covered by the equity basket."]);
+  } finally {
+    setSystemTime();
+  }
+});
+
+test("--since filed measures the risk rows from a 13F import's filing date, and says so when the portfolio has none", async () => {
+  setSystemTime(now);
+  try {
+    const tickers = brokerFixtureTickers();
+    const imported = { ...BROKER_PORTFOLIO, importedFrom: { kind: "13f" as const, cik: "0001067983", name: "Fund", period: "2026-06-30", filed: "2026-08-14" } };
+    const context = (portfolio: typeof BROKER_PORTFOLIO) => ({
+      config: { ...createDefaultConfig("/unused/risk-headless"), portfolios: [portfolio] },
+      signal: new AbortController().signal,
+      apiClient: brokerRiskClient(now),
+      resolvePortfolio: async () => ({ portfolio, tickers }),
+    } as unknown as HeadlessPaneContext);
+    const args = { rawArgument: BROKER_PORTFOLIO.id, argument: BROKER_PORTFOLIO.id, symbols: [], options: { view: "risk", since: "filed" } };
+
+    const since = await portfolioRiskHeadless.load(args, context(imported));
+    expect(since.sections.map((section) => section.title)).toEqual(["risk"]);
+    const labels = since.sections[0]!.rows!.map((row) => row.label);
+    expect(labels).toContain("Basket return since 2026-08-14");
+    expect(labels).toContain("Benchmark return (SPY) since 2026-08-14");
+    // Sessions from the 14 August close to the last completed one, 21 September.
+    expect(since.metadata).toMatchObject({ benchmark: "SPY", window: { kind: "since-filed", filed: "2026-08-14", start: "2026-08-14", sessions: 25 } });
+    expect(since.metadata?.notices).toEqual(["Risk rows since the 13F filing on 2026-08-14, against SPY"]);
+
+    const fallback = await portfolioRiskHeadless.load(args, context(BROKER_PORTFOLIO));
+    expect(fallback.sections[0]!.rows!.map((row) => row.label)).toContain("60D benchmark return (SPY)");
+    expect(fallback.metadata?.notices).toEqual([`"Broker account" was not imported from a 13F, so it has no filing date; the risk rows cover the trailing 60 sessions.`]);
+    expect(fallback.notes?.some((note) => note.includes("not imported from a 13F"))).toBe(false);
   } finally {
     setSystemTime();
   }

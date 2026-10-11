@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from "react";
 import { isAccessDenied } from "../../../api-client/errors";
 import { usePlanAccess } from "../../../api-client/plan-access";
 import type { KpiObservation } from "../../../api-client/company-kpis";
+import { listingAbroad } from "../../../api-client/paths";
 import { ChartTableHeader, DataTableStackView, DetailScrollBody, EmptyState, KeyValueRow, PaneStatusBody, QueryBar, SectionHeading,
   useChartTableSelection, usePaneMenuItems, usePaneNoticeFooter, usePaneStatusFooter, usePaneTabs, type DataTableCell, type PaneHint } from "../../../components";
 import { usePaneRefreshKey } from "../../../components/data-table/table-pane";
@@ -12,6 +13,7 @@ import type { PaneProps } from "../../../types/plugin";
 import { Box, Text, useRendererHost, useUiCapabilities, type ScrollBoxRenderable } from "../../../ui";
 import { SignInWall } from "../cloud/auth-actions";
 import { CLOUD_PLAN_KEY, useCloudUpgradeAction } from "../shared/cloud-upgrade";
+import { useOpenDescription } from "../shared/open-description";
 import { Blurred, LockedOverlay, UpgradeLabel } from "../shared/locked-rows";
 import { isCloudSessionRequired, useResearchCloudSession } from "../shared/research-cloud-session";
 import { cachedCompanyData, loadCompanyData, KPI_UNAVAILABLE, validateCompanyData, type CompanyDataset, type CompanyMode } from "./client";
@@ -57,27 +59,35 @@ function DisclosureEvidence({ row, sourceId, onSource, width }: { row: CompanyRo
   </Box>;
 }
 
+/** The pane's ticker, with the venue and company a listing abroad is asked about by. */
+function useCompanyListing() {
+  const { symbol, ticker } = usePaneTickerIdentity();
+  const abroad = symbol ? listingAbroad(symbol, ticker?.metadata.exchange, ticker?.metadata.name) : null;
+  return { symbol, exchange: abroad?.exchange, name: abroad?.name, key: JSON.stringify([symbol, abroad?.exchange, abroad?.name]) };
+}
 export function CompanyKpisPane(props: PaneProps) {
-  const { symbol } = usePaneTickerIdentity();
-  return <CompanyView key={`${symbol}:kpis`} {...props} symbol={symbol} mode="kpis" />;
+  const { key, ...listing } = useCompanyListing();
+  return <CompanyView key={`${key}:kpis`} {...props} {...listing} mode="kpis" />;
 }
 export function CompanyGuidancePane(props: PaneProps) {
-  const { symbol } = usePaneTickerIdentity();
-  return <CompanyView key={`${symbol}:guidance`} {...props} symbol={symbol} mode="guidance" />;
+  const { key, ...listing } = useCompanyListing();
+  return <CompanyView key={`${key}:guidance`} {...props} {...listing} mode="guidance" />;
 }
-function CompanyView({ symbol, mode, width, height, focused }: PaneProps & { symbol: string | null; mode: CompanyMode }) {
+function CompanyView({ symbol, exchange, name, mode, width, height, focused }: PaneProps & { symbol: string | null; exchange?: string; name?: string; mode: CompanyMode }) {
   const colors = useThemeColors();
   const host = useRendererHost();
   const desktop = !!useUiCapabilities().nativePaneChrome;
   const { createPaneFromTemplate } = usePluginAppActions();
+  const openDescription = useOpenDescription();
   const session = useResearchCloudSession();
   const access = usePlanAccess();
   const accessKey = `${session.requestKey}:${access.hasProAccess ? "full" : "preview"}`;
   const openUpgrade = useCloudUpgradeAction(mode === "kpis" ? "kpis" : "guide");
   const [snapshotSetting] = usePaneSettingValue<CompanyDataset | null>("companySnapshot", null);
   const snapshot = useMemo(() => { try { return snapshotSetting ? validateCompanyData(snapshotSetting) : null; } catch { return null; } }, [snapshotSetting]);
-  const loader = useCallback((force: boolean) => snapshot ? Promise.resolve({ payload: snapshot, stale: false, refreshError: null }) : loadCompanyData(mode, symbol!, accessKey, force), [mode, symbol, accessKey, snapshot]);
-  const resource = useAsyncResource(symbol ? loader : null, { initialData: () => symbol ? cachedCompanyData(mode, symbol, accessKey) : null, clearOnError: isAccessDenied });
+  const loader = useCallback((force: boolean) => snapshot ? Promise.resolve({ payload: snapshot, stale: false, refreshError: null })
+    : loadCompanyData(mode, symbol!, accessKey, force, { exchange, name }), [mode, symbol, exchange, name, accessKey, snapshot]);
+  const resource = useAsyncResource(symbol ? loader : null, { initialData: () => symbol ? cachedCompanyData(mode, symbol, accessKey, { exchange, name }) : null, clearOnError: isAccessDenied });
   const data = resource.data?.payload;
   const kpis = data && "series" in data ? data : null;
   const guidance = data && "guidance" in data ? data : null;
@@ -157,10 +167,10 @@ function CompanyView({ symbol, mode, width, height, focused }: PaneProps & { sym
     ...(preview ? [{ id: "upgrade", key: CLOUD_PLAN_KEY, label: "upgrade", title: "Upgrade to Pro", onPress: openUpgrade }] : []),
   ];
   usePaneMenuItems("company-disclosures:research", () => symbol ? [
-    { id: "description", label: "Description (DES)", onSelect: () => createPaneFromTemplate("new-ticker-detail-pane", { symbol }) },
+    { id: "description", label: "Description (DES)", onSelect: () => openDescription(symbol) },
     { id: "financials", label: "Financial Analysis (FA)", onSelect: () => createPaneFromTemplate("financial-analysis-pane", { symbol }) },
     { id: "price-chart", label: "Price Chart (G)", onSelect: () => createPaneFromTemplate("chart-composer-pane", { arg: symbol }) },
-  ] : null, [symbol, createPaneFromTemplate]);
+  ] : null, [symbol, createPaneFromTemplate, openDescription]);
   usePaneStatusFooter({ registrationId: "company-kpis", loading: resource.loading, error: data ? resource.error : null, stale: resource.data?.stale,
     info: data?.asOf ? [{ id: "as-of", parts: [{ text: `as of ${data.asOf.slice(0, 10)}`, tone: "muted" as const }] }] : [], hints });
   usePaneNoticeFooter({ registrationId: "company-kpis:notices", focused, notices: [resource.data?.refreshError,

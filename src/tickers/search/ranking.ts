@@ -3,8 +3,10 @@ import type {
   TickerSearchRankableItem,
 } from "./types";
 import { getListingSymbol, tickerHasListingSuffix } from "../../sources/listing-symbols";
-import { canonicalExchange, parsePublicTickerKey } from "../../utils/exchanges";
+import { currencyPairCode } from "../../utils/currency-pair";
+import { canonicalExchange, exchangeCodeVenues, parsePublicTickerKey, typedExchangeCode } from "../../utils/exchanges";
 import { assetClassKeeps, assetClassMarketSymbol, instrumentClassCode, parseAssetClassQuery } from "./asset-classes";
+import { futuresContractByCode } from "../../market-data/futures-board";
 
 const FUND_TYPES = new Set(["ETF", "ETN", "ETP", "FUND", "MUTUALFUND", "CEF", "CLOSEDEND"]);
 const DERIVATIVE_TYPES = new Set(["OPT", "OPTION", "OPTIONS", "FUT", "FUTURE", "FUTURES", "WARRANT", "WARRANTS", "RIGHT", "RIGHTS"]);
@@ -28,15 +30,15 @@ const COMPANY_NAME_SUFFIXES = new Set([
   "SE",
 ]);
 
-const EXCHANGE_HINT_ALIASES: Record<string, string[]> = {
+/** Words in a search that say where to look ("toyota tokyo"), each with the venue labels it matches. */
+const VENUE_HINT_ALIASES: Record<string, string[]> = {
   NASDAQ: ["NASDAQ", "NMS"],
   NYSE: ["NYSE", "NYSE ARCA", "ARCA"],
   AMEX: ["AMEX"],
   TSX: ["TSX", "TORONTO"],
   TORONTO: ["TORONTO", "TSX"],
   XETRA: ["XETRA"],
-  TSE: ["TOKYO STOCK EXCHANGE", "TOKYO", "JPX", "TSE"],
-  TOKYO: ["TOKYO STOCK EXCHANGE", "TOKYO", "JPX", "TSE"],
+  TOKYO: ["TOKYO STOCK EXCHANGE", "TOKYO", "JPX"],
   JPX: ["JPX", "TOKYO STOCK EXCHANGE", "TOKYO"],
   LSE: ["LSE", "LONDON"],
   HKEX: ["HKEX", "HONG KONG"],
@@ -45,6 +47,13 @@ const EXCHANGE_HINT_ALIASES: Record<string, string[]> = {
   BUENOS: ["BUENOS AIRES", "BUE"],
   AIRES: ["BUENOS AIRES", "BUE"],
 };
+
+/** A code the venue list reads as several venues (TSE: Toronto or Tokyo) ranks a row on any of them. */
+function sharedCodeHint(code: string): string[] {
+  return [code, ...exchangeCodeVenues(code).flatMap((venue) => VENUE_HINT_ALIASES[venue] ?? [venue])];
+}
+
+const EXCHANGE_HINT_ALIASES: Record<string, string[]> = { ...VENUE_HINT_ALIASES, TSE: sharedCodeHint("TSE") };
 
 const ASSET_HINT_MAP: Record<string, TickerSearchInstrumentClass> = {
   STOCK: "equity",
@@ -121,15 +130,8 @@ export function isExplicitMarketSymbol(symbol: string): boolean {
   return /[=^]/.test(symbol) || /^[A-Z]{3}\/[A-Z]{3}$/i.test(symbol.trim());
 }
 
-function forexPair(symbol: string): string | null {
-  if (/^[A-Z]{3}\/[A-Z]{3}$/.test(symbol)) return symbol.replace("/", "");
-  if (/^[A-Z]{6}=X$/.test(symbol)) return symbol.slice(0, -2);
-  if (/^[A-Z]{3}=X$/.test(symbol)) return `USD${symbol.slice(0, -2)}`;
-  return null;
-}
-
 export function getForexQuoteCurrency(symbol: string): string | undefined {
-  return forexPair(parsePublicTickerKey(normalizeTickerSymbol(symbol)).symbol)?.slice(3);
+  return currencyPairCode(normalizeTickerSymbol(symbol))?.slice(3);
 }
 
 /** Venue and market syntax must survive exact matching. Only explicit FX forms are equivalent. */
@@ -145,12 +147,16 @@ function matchesQualifiedTicker(
   const exchanges = [candidate.exchange, item.exchangeLabel, item.primaryExchangeLabel, item.right]
     .filter((value): value is string => !!value);
   if (requested.exchange) {
-    return candidate.symbol === requested.symbol
-      && exchanges.some((exchange) => canonicalExchange(exchange) === requested.exchange);
+    // EURUSD:CCY and EURUSD:FX name the pair listed as EURUSD=X on CCY.
+    const pair = currencyPairCode(requested.symbol, requested.exchange);
+    // A code that names several venues (TSE: Toronto or Tokyo) matches a row on any of them.
+    const venues = exchangeCodeVenues(typedExchangeCode(normalized));
+    return (candidate.symbol === requested.symbol || (pair != null && currencyPairCode(candidate.symbol) === pair))
+      && exchanges.some((exchange) => venues.includes(canonicalExchange(exchange)));
   }
   if (isExplicitMarketSymbol(requested.symbol)) {
-    const pair = forexPair(requested.symbol);
-    return candidate.symbol === requested.symbol || (pair != null && forexPair(candidate.symbol) === pair);
+    const pair = currencyPairCode(requested.symbol);
+    return candidate.symbol === requested.symbol || (pair != null && currencyPairCode(candidate.symbol) === pair);
   }
   return exchanges.some((exchange) => getListingSymbol(candidate.symbol, exchange).toUpperCase() === normalized);
 }
@@ -216,7 +222,12 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
       const aliases = getItemSearchAliases(item);
       const aliasScore = (exactListingSymbol ? [...aliases, exactListingSymbol] : aliases)
         .reduce((best, alias) => Math.max(best, scoreSearchAlias(intent, alias)), 0);
-      const textScore = labelScore + detailScore + aliasScore
+      // Several words match on all of them, in any order, across the name, type,
+      // venue and the themes the row answers to; a theme alone ranks after a name.
+      const keywordScore = scoreAllWords(intent, [...(item.searchKeywords ?? [])]) > 0 ? KEYWORD_MATCH_SCORE : 0;
+      const wordsScore = labelScore + detailScore + aliasScore > 0 ? 0
+        : scoreAllWords(intent, [item.label, item.detail, item.right ?? "", ...(item.searchKeywords ?? [])]);
+      const textScore = labelScore + detailScore + aliasScore + Math.max(keywordScore, wordsScore)
         + (isQualifiedTickerQuery(query) && matchesQualifiedTicker(item, query) ? 100_000 : 0);
       const saved = isSavedSearchItem(item);
       const explicitIntentScore = scoreAssetPreference(intent, item.instrumentClass)
@@ -285,6 +296,13 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
     const aSaved = isSavedSearchItem(a.item);
     const bSaved = isSavedSearchItem(b.item);
     if (aSaved !== bSaved) return aSaved ? -1 : 1;
+    // Rows that answer to the same typed name (GOOGL and GOOG for "Google")
+    // keep the order the server gave them rather than the shorter symbol first.
+    if (a.symbolMatchRank === 2) {
+      const aProviderRank = a.item.providerRank ?? Number.POSITIVE_INFINITY;
+      const bProviderRank = b.item.providerRank ?? Number.POSITIVE_INFINITY;
+      if (aProviderRank !== bProviderRank) return aProviderRank - bProviderRank;
+    }
     if (a.item.label.length !== b.item.label.length) return a.item.label.length - b.item.label.length;
     return a.index - b.index;
   };
@@ -396,6 +414,16 @@ export function rankTickerSearchItems<T extends Pick<TickerSearchRankableItem, "
     ? deduped.findIndex((item) => parsePublicTickerKey(item.symbol || item.label).symbol === marketSymbol)
     : -1;
   if (marketIndex > 0) deduped.unshift(...deduped.splice(marketIndex, 1));
+  // A futures board code's future ranks with its code, not with the derivatives
+  // the word ranking puts last: first where no security uses the code (TTF),
+  // right after the security that keeps it otherwise (NovaGold, then NG=F).
+  const boardFuture = assetClass ? null : futuresContractByCode(query);
+  const futureIndex = boardFuture
+    ? deduped.findIndex((item) => normalizeTickerSymbol(item.symbol || item.label) === boardFuture.symbol)
+    : -1;
+  if (boardFuture && futureIndex >= 0) {
+    deduped.splice(boardFuture.bareCode ? 0 : Math.min(1, futureIndex), 0, ...deduped.splice(futureIndex, 1));
+  }
   return deduped;
 }
 
@@ -420,7 +448,7 @@ export function buildSymbolAliases(symbol: string): string[] {
   const normalizedSymbol = normalizeTickerSymbol(symbol);
   if (!normalizedSymbol) return [];
   if (isExplicitMarketSymbol(normalizedSymbol)) {
-    const pair = forexPair(normalizedSymbol);
+    const pair = currencyPairCode(normalizedSymbol);
     return pair
       ? [...new Set([normalizedSymbol, `${pair}=X`, `${pair.slice(0, 3)}/${pair.slice(3)}`])]
       : [normalizedSymbol];
@@ -485,6 +513,38 @@ function getItemSearchAliases(item: Pick<TickerSearchRankableItem, "label"> & Pa
     ? item.searchAliases
     : buildSymbolAliases(item.symbol || item.label);
   return aliases.length > 0 ? aliases : [item.label];
+}
+
+/** A row that answers only to a theme it was sent with (`searchKeywords`), below any name match. */
+const KEYWORD_MATCH_SCORE = 500;
+/** Every query word found somewhere in the row, in any order. */
+const ALL_WORDS_SCORE = 2_200;
+
+/**
+ * ALL_WORDS_SCORE when every word of the query (exchange and asset words
+ * aside) starts a word of some field: "miners copper" finds "Copper Miners
+ * ETF", "lithium" finds a row sent with the lithium theme. Zero otherwise.
+ */
+function scoreAllWords(intent: SearchQueryIntent, fields: readonly string[]): number {
+  const terms = intent.companyQuery.split(" ").filter(Boolean);
+  if (terms.length === 0) return 0;
+  const words = fields.flatMap((field) => normalizeSearchText(field).split(" ").filter(Boolean));
+  return terms.every((term) => words.some((word) => word.startsWith(term))) ? ALL_WORDS_SCORE : 0;
+}
+
+/**
+ * Whether a row is in an answer for a theme it was sent with, not for its
+ * name: the name lacks some of the query's words (Albemarle for "lithium",
+ * Southern Copper for "copper miners").
+ */
+export function answersOnlyByKeyword(
+  item: Pick<TickerSearchRankableItem, "label" | "detail"> & Partial<TickerSearchRankableItem>,
+  query: string,
+): boolean {
+  if (!item.searchKeywords?.length) return false;
+  const terms = analyzeSearchQuery(query).companyQuery.split(" ").filter(Boolean);
+  const words = [item.label, item.detail].flatMap((field) => normalizeSearchText(field).split(" ").filter(Boolean));
+  return terms.length > 0 && !terms.every((term) => words.some((word) => word.startsWith(term)));
 }
 
 function maxScoreForQueries(
