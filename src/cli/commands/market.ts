@@ -127,6 +127,7 @@ import { windowRows } from "../row-window";
 import { crossRate, describeFxRate, isUsableRate, parseFxRequest } from "../fx-pair";
 import {
   holderListFacts,
+  holderListPeriod,
   holderShareBasisMarker,
   holderShareBasisNote,
   holderValueBasis,
@@ -134,8 +135,17 @@ import {
   nonUsHolderCaveat,
   sharedReportDate,
 } from "../../plugins/builtin/holders/report-header";
-import { formatHolderOwnershipPercent, holderValueCurrency } from "../../plugins/builtin/holders/format";
+import { formatPercentHeld, holderStakeMarketCap, holderValueCurrency } from "../../plugins/builtin/holders/format";
+import {
+  holderReportColumns,
+  holderReportDates,
+  holderReportNotices,
+  holderReportRows,
+  holderReportUnits,
+  unvaluedHoldersNote,
+} from "../../plugins/builtin/holders/report-rows";
 import { fetchBeneficialOwners } from "../../plugins/builtin/holders/beneficial-client";
+import { classSharesToday } from "../../plugins/builtin/holders/client";
 import { filingFormMatches, SEC_FILING_FETCH_LIMIT } from "../../plugins/builtin/sec/forms";
 import {
   BENEFICIAL_REPORT_COLUMNS,
@@ -143,6 +153,7 @@ import {
   beneficialListComplete,
   beneficialListFacts,
   beneficialListUnreadable,
+  beneficialReportLegend,
   beneficialRouteForm,
   buildBeneficialReportRows,
   HOLDER_FORMS,
@@ -381,22 +392,6 @@ function filingRows(filings: SecFilingItem[]) {
     companyName: filing.companyName ?? "",
     accessionNumber: filing.accessionNumber,
     url: filing.primaryDocumentUrl ?? filing.filingUrl,
-  }));
-}
-
-function holderRows(data: HolderData, ownerTypes?: Set<string>) {
-  const holders = ownerTypes
-    ? data.holders.filter((holder) => ownerTypes.has(holder.ownerType))
-    : data.holders;
-  return holders.map((holder) => ({
-    type: holder.ownerType,
-    name: holder.name,
-    reportDate: holder.reportDate ?? "",
-    shares: holder.shares ?? null,
-    value: holder.value ?? null,
-    percentHeld: holder.percentHeld ?? null,
-    changeShares: holder.changeShares ?? null,
-    shareBasis: holder.shareBasis ?? null,
   }));
 }
 
@@ -1011,14 +1006,18 @@ async function printBeneficialOwners(
   const quotePromise = loadListingQuote(market.dataProvider, listing);
   const abroad = nonUsSecListingVenue(symbol, exchange) ? listingIdentity(listing, await quotePromise) : null;
   const request = { form: beneficialRouteForm(form), history, listing: { exchange, name: abroad?.name ?? undefined } };
-  const [payload, holders, quote] = await Promise.all([
+  const [payload, holders, quote, financials] = await Promise.all([
     loadForListing(listing, market, ctx, () => fetchBeneficialOwners(symbol, request)),
     market.dataProvider.getHolders?.(symbol, exchange).catch(() => null) ?? null,
     quotePromise,
+    // Today's share count, which the filed percents are set against.
+    market.dataProvider.getTickerFinancials(symbol, exchange).catch(() => null),
   ]);
   const identity = listingIdentity(listing, quote);
-  const rows = buildBeneficialReportRows(payload, { history, holders });
+  const sharesOutstanding = classSharesToday(financials);
+  const rows = buildBeneficialReportRows(payload, { history, holders, sharesOutstanding });
   const notices = beneficialCoverageNotices(payload.coverage);
+  const legend = beneficialReportLegend(rows, sharesOutstanding);
   ctx.printResult({
     data: rows,
     ...(notices.length ? { warnings: notices } : {}),
@@ -1031,12 +1030,16 @@ async function printBeneficialOwners(
       asOf: payload.asOf,
       coverage: payload.coverage,
       complete: beneficialListComplete(payload),
+      sharesOutstanding,
     },
   }, {
     heading: `${listingHeading(identity)}${cliStyles.muted(beneficialListFacts(payload, form, rows.length, history).map((fact) => `  ·  ${fact}`).join(""))}`,
-    textColumns: BENEFICIAL_REPORT_COLUMNS,
+    // Text draws each column as the HDS report does; CSV and JSON keep the raw values.
+    textColumns: BENEFICIAL_REPORT_COLUMNS.map((column) => ({ ...column, format: column.textFormat ?? column.format })),
+    ...(legend ? { footnote: legend } : {}),
     columns: [
-      ...BENEFICIAL_REPORT_COLUMNS,
+      ...BENEFICIAL_REPORT_COLUMNS.map(({ key, header, align }) => ({ key, header, ...(align ? { align } : {}) })),
+      { key: "otherPersons", header: "Other persons" },
       { key: "status", header: "Status" },
       { key: "filerCik", header: "Filer CIK" },
       { key: "accessionNumber", header: "Accession" },
@@ -1075,29 +1078,52 @@ async function runHolders(
       loadListingQuote(market.dataProvider, listing),
     ]);
     const identity = listingIdentity(listing, quote);
-    const rows = holderRows(data, ownerTypes);
-    const shown = windowRows(rows, ctx.cliOptions).rows.length;
+    // A London line's values can be dollars from the 13F filings; the listing's currency is not their unit.
+    const valueCurrency = holderValueCurrency(data, "USD")!;
+    // The rows, their units and their order are HDS's, so `holders --csv` and `fn HDS --csv` agree.
+    const rows = holderReportRows(data, {
+      marketCap: holderStakeMarketCap(quote?.marketCap, quote?.currency, valueCurrency),
+      ownerTypes,
+    });
+    const shownRows = windowRows(rows, ctx.cliOptions).rows;
+    const shown = shownRows.length;
     const institutional = !ownerTypes?.has("insider");
     const total = institutional ? data.summary?.institutionsCount ?? null : null;
     const reportDate = sharedReportDate(rows);
-    // A London line's values can be dollars from the 13F filings; the listing's currency is not their unit.
-    const valueCurrency = holderValueCurrency(data);
     const valueBasis = rows.length > 0 ? holderValueBasis(reportDate, data.valueBasis, valueCurrency) : null;
     const positionsBasis = rows.length > 0 ? nonUsHolderCaveat(identity.exchange || data.exchange, data.currency) : null;
     const shareBasisNote = holderShareBasisNote(data, rows);
     const markedRows = rows.some((row) => holderShareBasisMarker(row));
     // The heading names the listing; its unit, date and how much of the list follows on the same line.
+    // One "as of" only when every row shown is of that date; each row carries its own.
     const facts = holderListFacts({
-      currency: valueCurrency, listingCurrency: data.currency, asOf: data.asOf, shown, reported: rows.length, total,
+      currency: valueCurrency,
+      listingCurrency: data.currency,
+      period: holderListPeriod(shownRows, data.asOf),
+      shown,
+      reported: rows.length,
+      total,
+      ranked: !positionsBasis,
     });
+    const unvaluedNote = unvaluedHoldersNote(shownRows);
+    const columns = holderReportColumns(shownRows, valueCurrency);
+    // Dated as HDS dates it: by the list's as-of.
+    const freshness = rowsFreshness(shownRows, { ...SEC_FILINGS, basis: "13F filings" }, { asOf: data.asOf ?? null });
+    // Named as fn HDS takes it, so the closing notes point to the same listing.
+    const requested = exchangeOption && !raw.includes(":") ? `${raw}:${exchangeOption.toUpperCase()}` : raw;
+    const { notices } = holderReportNotices({ data, requested, shown: shownRows, reported: rows.length, total });
     ctx.printResult({
-      data,
+      data: rows,
+      ...(freshness ? { freshness } : {}),
       metadata: {
         ...listingMetadata(identity),
-        summary: data.summary,
+        summary: data.summary ?? null,
         currency: data.currency ?? null,
-        valueCurrency: valueCurrency ?? null,
+        valueCurrency,
+        units: holderReportUnits(valueCurrency),
         asOf: data.asOf ?? null,
+        // Each holder's latest period; several when the list mixes quarters.
+        reportDates: holderReportDates(shownRows),
         shown,
         reported: rows.length,
         total,
@@ -1107,9 +1133,9 @@ async function runHolders(
       },
     }, {
       heading: `${listingHeading(identity)}${cliStyles.muted(facts.map((fact) => `  ·  ${fact}`).join(""))}`,
-      rows: () => rows,
-      columns: [
-        { key: "type", header: "Type" },
+      columns,
+      textColumns: [
+        { key: "ownerType", header: "Type" },
         { key: "name", header: "Holder" },
         { key: "reportDate", header: "Date" },
         { key: "shares", header: "Shares", align: "right", format: formatCountCell },
@@ -1125,12 +1151,17 @@ async function runHolders(
           key: "percentHeld",
           header: "% Held",
           align: "right",
-          format: (value) => isFiniteNumber(value) ? formatHolderOwnershipPercent(value) : "",
+          format: (value) => isFiniteNumber(value) ? formatPercentHeld(value) : "",
         },
       ],
-      summary: (holderData: HolderData) => [
-        [valueBasis ? `Value = ${valueBasis}.` : "", positionsBasis ?? "", shareBasisNote ?? ""].filter(Boolean).join(" "),
-        commandName === "insider" && ownerTypes ? insiderSummary(holderData, ownerTypes) : "",
+      // CSV and NDJSON are the HDS report's table and closing lines.
+      tables: {
+        tables: [exportRowsTable("Holders", columns, shownRows)],
+        footer: reportFooterLines({ freshness, notes: notices }),
+      },
+      summary: () => [
+        [valueBasis ? `Value = ${valueBasis}.` : "", positionsBasis ?? "", shareBasisNote ?? "", unvaluedNote ?? ""].filter(Boolean).join(" "),
+        commandName === "insider" && ownerTypes ? insiderSummary(data, ownerTypes) : "",
       ].filter(Boolean).join("\n"),
       empty: `No holders reported for ${listingTitle(identity)}.`,
     });
@@ -1609,7 +1640,13 @@ export const marketDataCliCommands: BuiltinCliCommandDef[] = [
         { flags: "--history", description: "With --form 13d, 13g or all, every report newest first instead of the latest per filer" },
         EXCHANGE_OPTION,
       ],
-      examples: ["holders AAPL", "holders SAN:EPA", "holders CAR --form all", "holders CAR --form 13g --history --json"],
+      sections: [{
+        title: "Output",
+        lines: [
+          "Holders run largest value first, as in fn HDS. --csv and --json carry the HDS report's columns: values in the currency the header names, shares, and the quarter's change and the stake in percent (0.59 is 0.59%).",
+        ],
+      }],
+      examples: ["holders AAPL", "holders SAN:EPA", "holders SAN --csv", "holders CAR --form all", "holders CAR --form 13g --history --json"],
     },
     execute: (args, ctx) => runHolders(args, ctx, "holders"),
   },
