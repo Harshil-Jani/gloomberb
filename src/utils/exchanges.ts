@@ -145,6 +145,12 @@ export const CANONICAL_EXCHANGE_ALIASES: Record<string, string> = {
   XKUW: "KUWAIT",
   BOURSA: "KUWAIT",
   "BOURSA KUWAIT": "KUWAIT",
+  // The Egyptian Exchange, which Gloom Cloud names EGX.
+  EGX: "EGX",
+  CAI: "EGX",
+  XCAI: "EGX",
+  EGYPT: "EGX",
+  CAIRO: "EGX",
   CCC: "CCC",
   // The currency venue: EURUSD:CCY and EURUSD:FX are the pair EURUSD=X. Pairs
   // saved from an older search answer are on PHYSICAL CURRENCY.
@@ -243,6 +249,7 @@ export const EXCHANGE_TIME_ZONES: Record<string, string> = {
   QE: "Asia/Qatar",
   DFM: "Asia/Dubai",
   KUWAIT: "Asia/Kuwait",
+  EGX: "Africa/Cairo",
   CCC: "UTC",
 };
 
@@ -300,6 +307,7 @@ const EXCHANGE_NAMES: Record<string, string> = {
   QE: "Qatar Stock Exchange",
   DFM: "Dubai Financial Market",
   KUWAIT: "Boursa Kuwait",
+  EGX: "Egyptian Exchange",
 };
 
 const KNOWN_EXCHANGE_CODES: ReadonlySet<string> = new Set([
