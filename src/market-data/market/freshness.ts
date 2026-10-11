@@ -70,6 +70,7 @@ const REGULAR_OPEN_MINUTES: Record<string, number> = {
   TASE: 9 * 60 + 59,
   TADAWUL: 10 * 60,
   QE: 9 * 60 + 30,
+  BHB: 9 * 60 + 30,
   DFM: 10 * 60,
   MSX: 10 * 60,
   KUWAIT: 9 * 60,
@@ -98,6 +99,8 @@ const REGULAR_CLOSE_MINUTES: Record<string, number> = {
   // Continuous trading to 13:00, the closing auction to 13:10 and trading at
   // last to 13:15. A complete 5-minute copy ends with its 13:05 or 13:10 bar.
   QE: 13 * 60 + 15,
+  // Bahrain Bourse trades continuously to 13:00, with no closing auction.
+  BHB: 13 * 60,
   // Continuous trading to 14:45, the closing auction to 14:55 and trading at
   // the close to 15:00. A complete 5-minute copy ends with its 14:55 bar.
   DFM: 15 * 60,
@@ -121,6 +124,8 @@ const REGULAR_CLOSE_MINUTES: Record<string, number> = {
 // venues not listed here.
 const WEEKEND_DAYS: Record<string, readonly number[]> = {
   TADAWUL: [5, 6],
+  // Bahrain Bourse trades Sunday to Thursday.
+  BHB: [5, 6],
   QE: [5, 6],
   // The Muscat Stock Exchange trades Sunday to Thursday.
   MSX: [5, 6],

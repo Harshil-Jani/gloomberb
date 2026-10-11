@@ -23,6 +23,7 @@ const EXCHANGE_SUFFIX_MAP: Record<string, string> = {
   TASE: ".TA",
   MSX: ".OM",
   JSE: ".JO",
+  BHB: ".BH",
   BVMF: ".SA", MEXI: ".MX", BYMA: ".BA", BCS: ".SN",
   TADAWUL: ".SR", QE: ".QA", DFM: ".AE", KUWAIT: ".KW",
   EGX: ".CA",

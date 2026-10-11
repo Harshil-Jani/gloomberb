@@ -138,6 +138,11 @@ export const CANONICAL_EXCHANGE_ALIASES: Record<string, string> = {
   QE: "QE",
   QSE: "QE",
   DSMD: "QE",
+  // Bahrain Bourse, which Gloom Cloud names BHB.
+  BHB: "BHB",
+  XBAH: "BHB",
+  BAHRAIN: "BHB",
+  "BAHRAIN BOURSE": "BHB",
   DFM: "DFM",
   XDFM: "DFM",
   // The Muscat Stock Exchange, which Gloom Cloud names MSX.
@@ -253,6 +258,7 @@ export const EXCHANGE_TIME_ZONES: Record<string, string> = {
   TASE: "Asia/Jerusalem",
   TADAWUL: "Asia/Riyadh",
   QE: "Asia/Qatar",
+  BHB: "Asia/Bahrain",
   DFM: "Asia/Dubai",
   MSX: "Asia/Muscat",
   KUWAIT: "Asia/Kuwait",
@@ -312,6 +318,7 @@ const EXCHANGE_NAMES: Record<string, string> = {
   TASE: "Tel Aviv Stock Exchange",
   TADAWUL: "Saudi Exchange",
   QE: "Qatar Stock Exchange",
+  BHB: "Bahrain Bourse",
   DFM: "Dubai Financial Market",
   MSX: "Muscat Stock Exchange",
   KUWAIT: "Boursa Kuwait",
