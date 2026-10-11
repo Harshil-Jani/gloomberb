@@ -191,6 +191,14 @@ export interface HeadlessPaneFreshness {
    */
   ignoreStaleFlags?: boolean;
   /**
+   * The observations the rows are computed from, when that is not the rows
+   * themselves: FXC's crosses come from its USD legs. The report reads these in
+   * place of the rows for times, feed, delay, stale flags and venue sessions,
+   * as a rendered pane's published observations are read, so the report and
+   * the pane date the same data alike.
+   */
+  observations?: readonly HeadlessPaneRow[];
+  /**
    * `daily`: one observation per US trading day, stale once more than one
    * completed session has passed after the newest (a day's lag is allowed).
    */

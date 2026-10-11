@@ -134,7 +134,7 @@ export interface PaneDef {
    */
   reportFreshness?: Pick<HeadlessPaneFreshness, "source" | "status" | "basis">;
   /**
-   * Options a rendered-view report takes (`fn FXC --currencies USD,ZAR`):
+   * Options a rendered-view report takes (`fn OMON AAPL --strikes 10`):
    * each sets the pane setting of its key, is checked by its `normalize`, and
    * is listed with its example by `gloomberb catalog`.
    */

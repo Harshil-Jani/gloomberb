@@ -171,7 +171,7 @@ export function buildDomPaneReportFromRender(
     || (result.render.reportTruncationReasons ? false : result.render.truncated);
   const failureReason = renderedFailureReason(result, rows);
   const unavailableSymbols = failureReason && result.symbols.length > 0 ? result.symbols : [];
-  // What the view leaves out and how to see more: FXC's other currencies, OMON's strikes outside its window.
+  // What the view leaves out and how to see more, such as OMON's strikes outside its window.
   const rendered = renderedReportNotices(result.render.semanticUi ?? []);
   const notices = [...(resolved.pane.reportNotices?.(resolved.instance.settings ?? {}) ?? []), ...rendered.notices];
   const textLines = [resolved.label, "", ...notices, ...(notices.length > 0 ? [""] : [])];
