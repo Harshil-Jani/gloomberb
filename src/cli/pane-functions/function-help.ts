@@ -796,6 +796,14 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     access: "preview",
     bloomberg: [],
   },
+  EPWR: {
+    summary: "Day-ahead power prices for 32 European markets in EUR/MWh, and the EU carbon allowance (EUA) auction price in EUR/tCO2. Each market shows its latest delivery day, the change on the day before, 7- and 30-day averages, a year ago and where it sits in its 52-week range, with its year charted and its history from 2015; the EUA shows its latest auction day, how the auction was covered, and its auctions since 2020. The Prices tab of POWER.",
+    usage: ["EPWR", "EPWR DE", "EPWR UK", "EPWR EUA"],
+    keys: [key("o", "pen Ember"), key("g", "raph"), key("c", "arbon")],
+    data: same("Daily; each market as of its latest published delivery day, usually a few days back; the EUA on each auction day"),
+    bloomberg: [],
+    docs: "POWER",
+  },
   NGS: {
     summary: "Lower 48 working gas in storage and each region's, the week's injection or withdrawal against a year ago and the five-year average, charted over the year. The Gas Storage tab of DOE.",
     usage: ["NGS"],

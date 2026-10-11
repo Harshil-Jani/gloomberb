@@ -37,6 +37,7 @@ import type { SocialMentionDayPosts, SocialMentionsPayload, SocialMentionsRange 
 import type { FuturesContractTermsPayload, FuturesCurveAsOfPayload, FuturesCurvePayload } from "./futures-curve";
 import type { CotBoardPayload, CotContractPayload, CotFamily, CotClass } from "./cot";
 import type { DoeBoardPayload } from "./doe";
+import type { CarbonBoard, CarbonHistory, EuropePowerBoard, EuropePowerHistory } from "./europe-energy";
 import type { GpuBoardPayload, GpuEventsPayload, GpuHistoryPayload, GpuHistoryQuery } from "./gpu";
 import type { CpiBoardPayload } from "./cpi";
 import type { TapeSnapshot } from "./tape";
@@ -592,6 +593,31 @@ export class CloudDataApi {
   async getCloudPowerProject(id: string, query: Pick<PowerFilter, "offset" | "limit"> = {}, signal?: AbortSignal): Promise<PowerDetail> {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
     return this.request<PowerDetail>(`/cloud/power/projects/${encodeURIComponent(id)}?${params}`, { signal });
+  }
+
+  /** European day-ahead power prices by country, latest day first per market. */
+  async getCloudEuropePower(): Promise<EuropePowerBoard> {
+    return this.request<EuropePowerBoard>("/cloud/europe-energy/power", { signal: AbortSignal.timeout(30_000) });
+  }
+
+  /** One market's daily day-ahead prices from `from` (all of them without one), oldest first. */
+  async getCloudEuropePowerHistory(code: string, from?: string | null): Promise<EuropePowerHistory> {
+    const query = from ? `?${new URLSearchParams({ from })}` : "";
+    return this.request<EuropePowerHistory>(
+      `/cloud/europe-energy/power/${encodeURIComponent(code)}/history${query}`,
+      { signal: AbortSignal.timeout(30_000) },
+    );
+  }
+
+  /** The EU carbon allowance (EUA) auction price as of its latest auction day, with the latest auctions. */
+  async getCloudEuropeCarbon(): Promise<CarbonBoard> {
+    return this.request<CarbonBoard>("/cloud/europe-energy/carbon", { signal: AbortSignal.timeout(30_000) });
+  }
+
+  /** The daily EUA auction price from `from` (every auction day since 2020 without one), oldest first. */
+  async getCloudEuropeCarbonHistory(from?: string | null): Promise<CarbonHistory> {
+    const query = from ? `?${new URLSearchParams({ from })}` : "";
+    return this.request<CarbonHistory>(`/cloud/europe-energy/carbon/history${query}`, { signal: AbortSignal.timeout(30_000) });
   }
 
   async getCloudGpuBoard(): Promise<GpuBoardPayload> {
