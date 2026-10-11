@@ -27,7 +27,7 @@ import { useLiveStreamingSetting } from "../../../state/hooks/live-streaming";
 import { fxLegQuoteKey, fxLegReferenceRate, fxLegTargets, fxLegs, fxLegsBehind, liveFxLegEntry } from "./live-legs";
 import { CURRENCY_FLAG_REGIONS, FX_CURRENCIES, formatRate, resolveCurrencies, type FxCurrency } from "./pairs";
 import { crossMovePercent, directionTint, nextTintLevel } from "./direction";
-import { FX_MATRIX_REPORT_OPTIONS, fxMatrixReportNotices, fxMatrixSettings } from "./settings";
+import { fxMatrixSettings } from "./settings";
 import { createFxExportMetadata } from "./export";
 import { fxMatrixHeadless } from "./headless";
 
@@ -273,8 +273,6 @@ export const fxMatrixModule: PluginModule = {
       defaultFloatingSize: { width: 105, height: 14 },
       tableExport: true,
       settings: fxMatrixSettings,
-      reportOptions: FX_MATRIX_REPORT_OPTIONS,
-      reportNotices: fxMatrixReportNotices,
     },
   ],
 

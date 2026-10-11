@@ -199,12 +199,12 @@ function collect(
   definition: Pick<HeadlessPaneDefinition, "shape">,
   result: HeadlessPaneResult,
   now: number,
-  { observedKey, ignoreStaleFlags }: Pick<HeadlessPaneFreshness, "observedKey" | "ignoreStaleFlags">,
+  { observedKey, ignoreStaleFlags, observations: declaredObservations }: Pick<HeadlessPaneFreshness, "observedKey" | "ignoreStaleFlags" | "observations">,
 ): { signals: FeedSignals; observations: Observations } {
   const signals = emptySignals();
   const observations: Observations = { units: [], extra: [] };
   const rowKeys = observedKey ? [observedKey] : OBSERVATION_KEYS;
-  for (const row of resultRecords(definition, result)) {
+  for (const row of declaredObservations ?? resultRecords(definition, result)) {
     if (!isRecord(row)) continue;
     readFeedSignals(row, signals);
     const time = observedTime(row, now, rowKeys)
@@ -213,7 +213,7 @@ function collect(
     readSession(row, time, signals);
     if (time) observations.units.push(time);
   }
-  if (definition.shape === "series") {
+  if (definition.shape === "series" && !declaredObservations) {
     for (const series of (result as HeadlessSeriesResult).series) {
       const record = series as unknown as Record<string, unknown>;
       readFeedSignals(record, signals);
