@@ -85,6 +85,7 @@ declare global {
       >;
       /** Panes whose `?` asked for their docs, in order. */
       docs: string[];
+      shares: number;
       /** Panes handed to Ask Gloom (its button, menu entry or key), in order. */
       asks: string[];
       /** What each of those handed over: its text as drawn and its arguments. */
@@ -451,7 +452,9 @@ function registry(): PluginRegistry {
     brokers: new Map(),
     allPlugins: new Map(),
     getEnabledTickerActions: () => [],
+    getTermSize: () => ({ width: window.innerWidth / WEB_CELL_WIDTH, height: window.innerHeight / WEB_CELL_HEIGHT }),
     getPluginPaneIds: () => [],
+    getPanePluginId: () => undefined,
     getPluginPaneTemplateIds: () => [],
     getContextMenuItems: () => [],
     resolvePaneQuickSettings: () => [],
@@ -470,6 +473,13 @@ function registry(): PluginRegistry {
     // The shell binds its actions here as it mounts (togglePaneFullscreen among them).
     bindHost(actions: object) {
       Object.assign(this, actions);
+      if ("promptDialog" in actions) {
+        const prompt = actions.promptDialog as PluginRegistry["promptDialog"];
+        Object.assign(this, { promptDialog: (options: Parameters<typeof prompt>[0]) => {
+          window.__paneChrome.shares++;
+          return prompt(options);
+        } });
+      }
       return () => {};
     },
   } as unknown as PluginRegistry;
@@ -614,6 +624,7 @@ window.__paneChrome = {
   registry: paneRegistry,
   windowControls: [],
   docs: [],
+  shares: 0,
   asks: [],
   attachments: [],
   clipboardImages: [],
