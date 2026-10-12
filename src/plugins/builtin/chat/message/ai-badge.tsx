@@ -1,18 +1,37 @@
 import { Badge } from "../../../../components/ui";
 import { Box } from "../../../../ui";
-
-/** What the badge takes of a terminal line: the cell before it, then "AI" with a cell of padding either side. */
-export const CHAT_AI_BADGE_WIDTH = 5;
+import { useThemeColors } from "../../../../theme/theme-context";
+import { CHAT_BOT_BADGE, chatNameBadgeColor, chatNameBadgeWidth, type ChatNameBadge } from "../people";
 
 /**
- * "AI" and a cell of space before it, beside the name of a managed assistant.
- * The neutral badge is the quietest the kit has; a selected row passes its own
- * text color so the chip stays legible on the selection.
+ * What the Bot badge takes of a terminal line: the cell before it, then "Bot"
+ * (as the reader's language writes it) with a cell of padding either side.
+ * Six cells in English.
  */
-export function ChatAiBadge({ selectedColor }: { selectedColor?: string }) {
+export function chatBotBadgeWidth(): number {
+  return chatNameBadgeWidth(CHAT_BOT_BADGE);
+}
+
+/**
+ * The badges beside a name, each with a cell of space before it: Bot in the
+ * bot colour, Team in the theme's other accent, Pro in the quietest tone the
+ * kit has. A selected row passes its own text color so the chips stay
+ * legible on the selection.
+ */
+export function ChatNameBadges({ badges, selectedColor }: { badges: readonly ChatNameBadge[]; selectedColor?: string }) {
+  const palette = useThemeColors();
   return (
-    <Box flexShrink={0} paddingLeft={1} data-gloom-role="chat-ai-badge">
-      <Badge label="AI" color={selectedColor} />
-    </Box>
+    <>
+      {badges.map((badge) => (
+        <Box key={badge.id} flexShrink={0} paddingLeft={1} data-gloom-role={`chat-${badge.id}-badge`}>
+          <Badge label={badge.label} color={selectedColor ?? chatNameBadgeColor(badge, palette)} />
+        </Box>
+      ))}
+    </>
   );
+}
+
+/** "Bot" beside the name of a managed assistant, where only that badge is shown: a reply quote, the composer, the inbox. */
+export function ChatAiBadge({ selectedColor }: { selectedColor?: string }) {
+  return <ChatNameBadges badges={[CHAT_BOT_BADGE]} selectedColor={selectedColor} />;
 }
