@@ -1158,7 +1158,7 @@ export interface CloudSearchResponse {
   tookMs: number;
 }
 
-export interface CloudSearchDocumentChunk {
+interface CloudSearchDocumentChunk {
   id: string;
   chunkIndex: number;
   body: string;
