@@ -2,7 +2,7 @@ import type { Portfolio, Watchlist } from "./ticker";
 import type { BrokerContractRef, TickerListingRef } from "./instrument";
 import type { LanguagePreference } from "../i18n/languages";
 
-export const CURRENT_CONFIG_VERSION = 25;
+export const CURRENT_CONFIG_VERSION = 26;
 
 type ChartRendererPreference = "auto" | "kitty" | "braille";
 
@@ -354,8 +354,10 @@ export const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "latency", label: "AGE", width: 6, align: "right" },
 ];
 
+// A portfolio dates each row by the price its value uses (AS OF), where a
+// watchlist shows the quote's age (AGE).
 export const DEFAULT_PORTFOLIO_COLUMN_IDS = [
-  ...DEFAULT_COLUMNS.map((column) => column.id),
+  ...DEFAULT_COLUMNS.map((column) => column.id === "latency" ? "as_of" : column.id),
   "sparkline",
   "shares",
   "avg_cost",
