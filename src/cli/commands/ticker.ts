@@ -1,6 +1,6 @@
 import { formatShortDate, parseDisplayDate } from "../../utils/datetime-format";
 import { formatReportedMoney } from "../../utils/reported-money";
-import { convertedPriceEarningsNote, epsConversionNote, fundamentalsCurrency, reportedEnterpriseValue, ttmConversionNote } from "../../utils/fundamentals";
+import { convertedPriceEarningsNote, enterpriseValueLabel, enterpriseValueReconciliationNote, epsConversionNote, fundamentalsCurrency, reportedEnterpriseValue, ttmConversionNote } from "../../utils/fundamentals";
 import { latestFinancialPeriod } from "../../utils/latest-financial-period";
 import { exportedFundamentals, formatPriceEarnings, priceEarningsOnEarnings } from "../../utils/price-earnings";
 import { describeFundamentalMarketCap, selectMarketCapitalization } from "../../utils/market-capitalization";
@@ -336,6 +336,13 @@ function reportedMoney(value: number | undefined, currency: string | undefined, 
   return { text: formatReportedMoney(value, currency, perShare), value, unit: currency?.trim() || "ccy?" };
 }
 
+/** The EV line: labelled "(provider)" when it is more than 5% from market cap + debt - cash, "unavailable" when withdrawn. */
+function enterpriseValueFigure(figure: MetricFigure, fundamentals: TickerFinancials["fundamentals"]): MetricFigure {
+  const label = enterpriseValueLabel(fundamentals);
+  if (label === "unavailable") return { text: "unavailable", value: null, unit: figure.unit };
+  return label === "provider" && figure.text !== "—" ? { ...figure, text: `${figure.text} (provider)` } : figure;
+}
+
 function percentFigure(fraction: number | null | undefined, format: (value: number) => string): MetricFigure {
   return fraction != null ? { text: format(fraction), value: fraction * 100, unit: "%" } : { text: "—" };
 }
@@ -366,7 +373,7 @@ function fundamentalsMetrics(
   const receipt = fundamentals?.sharesOutstanding != null && sharesOutstandingInReceipts(quote, fundamentals, profile?.description);
   return [
     { label: "Market Cap", ...marketCap },
-    { label: "Enterprise Value", ...enterpriseValue },
+    { label: "Enterprise Value", ...enterpriseValueFigure(enterpriseValue, fundamentals) },
     // A multiple over a loss is N/M, even beside a positive one the source served from an older period.
     { label: "P/E (TTM)", ...multipleFigure(priceEarningsOnEarnings(fundamentals?.trailingPE, fundamentals?.eps)) },
     { label: "Forward P/E", ...multipleFigure(priceEarningsOnEarnings(fundamentals?.forwardPE, fundamentals?.forwardEps)) },
@@ -404,10 +411,11 @@ function metricLines(metrics: readonly FundamentalsMetric[]): Array<[string, str
 const TRAILING_MONEY_METRICS = new Set(["EPS (TTM)", "Revenue (TTM)", "Net Income (TTM)", "Operating Cash Flow (TTM)", "Free Cash Flow (TTM)"]);
 
 /**
- * The unit notes under shown fundamentals: what a converted TTM block was converted from, an EPS in another
- * currency than the amounts beside it, and what a P/E on such an EPS divides.
+ * The notes under shown fundamentals: how a labelled or withdrawn EV compares with market cap + debt - cash, what a
+ * converted TTM block was converted from, an EPS in another currency than the amounts beside it, and what a P/E on
+ * such an EPS divides.
  */
-function trailingConversionNotes(
+function fundamentalsNotes(
   fundamentals: TickerFinancials["fundamentals"],
   metrics: readonly FundamentalsMetric[],
   quoteCurrency: string | undefined,
@@ -418,7 +426,8 @@ function trailingConversionNotes(
   const priceEarnings = metrics.some((metric) => metric.label === "P/E (TTM)" && typeof metric.value === "number")
     ? convertedPriceEarningsNote(fundamentals, quoteCurrency)
     : undefined;
-  return [conversion, eps, priceEarnings].filter((note): note is string => !!note);
+  const enterpriseValue = shown("Enterprise Value") ? enterpriseValueReconciliationNote(fundamentals) : undefined;
+  return [enterpriseValue, conversion, eps, priceEarnings].filter((note): note is string => !!note);
 }
 
 const VALUATION_METRICS = new Set(["Market Cap", "Enterprise Value", "P/E (TTM)", "Forward P/E", "PEG", "EPS (TTM)"]);
@@ -523,7 +532,7 @@ export function renderFundamentalsReport(
   const fund = fundFactsNote(symbol, financials.exchange || quote?.exchangeName, financials);
   if (lines.length === before) lines.push("", cliStyles.muted([`No ${view} reported for ${financials.symbol}.`, fund].filter(Boolean).join(" ")));
   else if (fund) lines.push(cliStyles.muted(fund));
-  for (const note of trailingConversionNotes(financials.fundamentals, metrics, quote?.currency)) lines.push(cliStyles.muted(note));
+  for (const note of fundamentalsNotes(financials.fundamentals, metrics, quote?.currency)) lines.push(cliStyles.muted(note));
   if (view === "fundamentals") appendTextSection(lines, "Description", profile?.description);
   return lines.join("\n");
 }
@@ -563,7 +572,7 @@ export function fundamentalsReportTables(
       notes: [
         ...metrics.length === 0
           ? [`No ${view} reported for ${financials.symbol}.`]
-          : trailingConversionNotes(financials.fundamentals, metrics, financials.quote?.currency),
+          : fundamentalsNotes(financials.fundamentals, metrics, financials.quote?.currency),
         ...fund ? [fund] : [],
       ],
     }),
@@ -726,7 +735,7 @@ export async function buildTickerReport({
   const metrics = fundamentalsMetrics(quote, priced.fundamentals, profile, { text: marketCapText }, priceReturns, fundamentalsCurrency(financials), { text: enterpriseValueText });
   const beforeFundamentals = lines.length;
   appendMetricSection(lines, "Fundamentals", metricLines(metrics));
-  for (const note of trailingConversionNotes(fundamentals, metrics, quote?.currency)) lines.push(cliStyles.muted(note));
+  for (const note of fundamentalsNotes(fundamentals, metrics, quote?.currency)) lines.push(cliStyles.muted(note));
   // Where a fund's facts would go: under its fundamentals, or in their place.
   const fund = fundFactsNote(quote?.symbol ?? symbol,
     quote?.tradingExchangeName || listingExchange || quote?.listingExchangeName || quote?.exchangeName || tickerFile?.metadata.exchange, financials, tickerFile);
