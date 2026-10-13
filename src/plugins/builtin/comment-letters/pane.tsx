@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DataTableStackView,
   DetailScrollBody,
+  InlineTickerBadge,
   KeyValueRow,
   Notice,
   PaneStatusBody,
@@ -22,6 +23,7 @@ import {
 import { usePaneRefreshKey } from "../../../components/data-table/table-pane";
 import { getSharedMarketDataCoordinator, resolveEntryValue } from "../../../market-data/coordinator";
 import { useResolvedEntryValue, useSecFilingContent } from "../../../market-data/hooks";
+import type { InlineTickerCatalogEntry } from "../../../state/hooks/inline-tickers";
 import { instrumentFromTicker } from "../../../market-data/request-types";
 import {
   useDebouncedPluginPaneState,
@@ -30,11 +32,13 @@ import {
   usePluginPaneState,
 } from "../../../public/react";
 import { extractFilingContent, PDF_FALLBACK_MESSAGE } from "../../../sources/sec-edgar/content";
-import { colors } from "../../../theme/colors";
+import { useThemeColors } from "../../../theme/theme-context";
 import type { PaneProps } from "../../../types/plugin";
 import { Box, Text, type ScrollBoxRenderable } from "../../../ui";
 import { isPlainArrowUp, stopSearchFocusNavigation } from "../../../utils/search-focus-navigation";
 import { SEC_FILING_FETCH_LIMIT } from "../sec/forms";
+import { useOpenDescription } from "../shared/open-description";
+import { toneColor, type StateTone } from "../shared/research-cells";
 import {
   createCommentLettersLoader,
   isPdfLetter,
@@ -55,6 +59,8 @@ type ColumnId = "filed" | "from" | "form" | "company" | "ticker";
 type LetterColumn = DataTableColumn & { id: ColumnId };
 
 const AUTHOR_LABEL = { staff: "SEC staff", company: "Company" } as const;
+/** A staff letter is the regulator asking; the company's answer reads as plain text. */
+const AUTHOR_TONE: Record<CommentLetter["author"], StateTone> = { staff: "warning", company: "text" };
 
 function letterColumns(width: number, issuerView: boolean): LetterColumn[] {
   return [
@@ -65,9 +71,36 @@ function letterColumns(width: number, issuerView: boolean): LetterColumn[] {
       : []),
     ...(issuerView ? [] : [
       { id: "company" as const, label: "Company", width: 16, align: "left" as const, flexGrow: 1 },
-      ...(width >= 52 ? [{ id: "ticker" as const, label: "Ticker", width: 6, align: "left" as const }] : []),
+      ...(width >= 52 ? [{ id: "ticker" as const, label: "Ticker", width: 8, align: "left" as const }] : []),
     ]),
   ];
+}
+
+/**
+ * EDGAR lists the filer's tickers, so the symbol is drawn as a badge as it is.
+ * A badge list looks each symbol up first and prints the ones whose lookup
+ * fails (often only a burst of lookups throttled) as plain text, so one
+ * column mixed chips and bare symbols.
+ */
+const LISTED_TICKER: InlineTickerCatalogEntry = { status: "ready", ticker: null, quote: null };
+
+function LetterTickerBadge({ symbol, width, onOpen }: { symbol: string; width: number; onOpen: (symbol: string) => void }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Box flexDirection="row" width={width} height={1} overflow="hidden">
+      <InlineTickerBadge
+        entry={LISTED_TICKER}
+        symbol={symbol}
+        liveQuote={false}
+        hovered={hovered}
+        maxTextWidth={Math.max(1, width - 2)}
+        trailingGap={false}
+        onHoverStart={() => setHovered(true)}
+        onHoverEnd={() => setHovered(false)}
+        onOpen={onOpen}
+      />
+    </Box>
+  );
 }
 
 const formatDate = (date: Date): string =>
@@ -106,6 +139,8 @@ function useLetterText(letter: CommentLetter | null) {
 
 export function CommentLettersPane({ width, height, focused }: PaneProps) {
   const client = useMemo(() => new CommentLettersClient(), []);
+  const colors = useThemeColors();
+  const openDescription = useOpenDescription();
   const [storedQuery] = usePaneSettingValue("query", "");
   const initialQuery = String(storedQuery ?? "").trim();
   const [query, setQuery] = usePluginPaneState("query", initialQuery);
@@ -154,10 +189,12 @@ export function CommentLettersPane({ width, height, focused }: PaneProps) {
     ...(letters.loadingMore ? [{ id: "loading-more", parts: [{ text: "loading more", tone: "muted" as const }] }] : []),
     ...(letters.moreError ? [{ id: "more-error", parts: [{ text: letters.moreError.message, tone: "warning" as const }] }] : []),
   ], [letters.loadingMore, letters.moreError]);
-  const hints = useMemo<PaneHint[]>(
-    () => (openItemId ? [] : [{ id: "search", key: "/", label: "search", onPress: focusSearch }]),
-    [focusSearch, openItemId],
-  );
+  // Funds and BDCs file without a ticker; their rows have nothing to open.
+  const linkTicker = linkLetter?.tickers[0] ?? null;
+  const hints = useMemo<PaneHint[]>(() => [
+    ...(openItemId ? [] : [{ id: "search", key: "/", label: "search", onPress: focusSearch }]),
+    ...(linkTicker ? [{ id: "description", key: "d", label: "es", title: `Open ${linkTicker}`, onPress: () => openDescription(linkTicker) }] : []),
+  ], [focusSearch, linkTicker, openDescription, openItemId]);
   usePaneStatusLinkFooter({
     registrationId: COMMENT_LETTERS_PANE_ID,
     focused,
@@ -193,15 +230,24 @@ export function CommentLettersPane({ width, height, focused }: PaneProps) {
       case "filed":
         return { text: formatDate(letter.filingDate), value: letter.filingDate, color: colors.textMuted };
       case "from":
-        return { text: AUTHOR_LABEL[letter.author], color: letter.author === "staff" ? colors.textBright : colors.text };
+        return { text: AUTHOR_LABEL[letter.author], color: toneColor(AUTHOR_TONE[letter.author], colors) };
       case "form":
         return { text: letter.form, color: colors.textDim };
       case "company":
-        return { text: companyLabel(letter), color: colors.text };
-      case "ticker":
-        return { text: letter.tickers[0] ?? "", color: colors.textDim };
+        return { text: companyLabel(letter), color: colors.textBright };
+      case "ticker": {
+        const ticker = letter.tickers[0] ?? "";
+        // The badge opens the company's DES on click, like a ticker anywhere else; so does the rest of the cell.
+        return ticker
+          ? {
+            text: ticker,
+            onMouseDown: () => openDescription(ticker),
+            content: <LetterTickerBadge symbol={ticker} width={column.width} onOpen={openDescription} />,
+          }
+          : { text: "" };
+      }
     }
-  }, []);
+  }, [colors, openDescription]);
 
   const searchBar = (
     <QueryBar
