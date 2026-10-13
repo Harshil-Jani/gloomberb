@@ -641,9 +641,9 @@
     },
     {
       "id": "futures-commodities",
-      "name": "Futures & Commodities",
-      "description": "Futures board and curves, CFTC positioning, and EIA petroleum and gas storage.",
-      "tagline": "Futures, curves, positioning, energy data.",
+      "name": "Commodities & Energy",
+      "description": "Futures markets, curves, CFTC positioning, EIA inventories, and crop and oil and gas balances.",
+      "tagline": "Futures, curves, positioning, inventories and balances.",
       "categories": [
         "markets",
         "macro"
@@ -657,18 +657,15 @@
       ],
       "contributes": {
         "panes": [
-          "cot",
-          "doe",
-          "futures",
-          "futures-curve"
+          "commodities-energy"
         ],
         "capabilities": [],
         "broker": false,
         "shortcuts": [
           {
             "code": "FUT",
-            "name": "Futures Board",
-            "description": "Front-month futures across equity index, rates, energy, metals, agriculture, livestock, and FX with last price, session change, search, and collapsible sectors."
+            "name": "Commodities & Energy",
+            "description": "Futures markets, curves, positioning, inventories, crop balances, and oil and gas balances."
           },
           {
             "code": "CTM",
@@ -689,6 +686,16 @@
             "code": "NGS",
             "name": "Natural Gas Storage",
             "description": "EIA weekly working gas in storage, lower 48 and by region, against a year ago and the five-year range."
+          },
+          {
+            "code": "PSD",
+            "name": "Crop Balances",
+            "description": "World balances for wheat, corn, soybeans and cotton, with season-average price forecasts when a table is published."
+          },
+          {
+            "code": "JODI",
+            "name": "Oil and Gas Balances",
+            "description": "Latest monthly crude oil and natural gas production, demand, trade and stocks for the largest countries."
           }
         ]
       },

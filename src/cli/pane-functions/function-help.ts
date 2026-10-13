@@ -781,6 +781,22 @@ export const FUNCTION_HELP: Readonly<Record<string, FunctionHelp>> = {
     data: same("Weekly, on release"),
     bloomberg: ["DOE"],
   },
+  PSD: {
+    summary: "World production, use, trade and ending stocks for wheat, corn, soybeans and cotton, by country and latest market year. Season-average price forecasts appear when USDA publishes them. The Crops tab of Commodities & Energy.",
+    usage: ["PSD"],
+    keys: [TABS],
+    data: same("Monthly, as USDA updates the market-year tables"),
+    bloomberg: [],
+    docs: "https://gloom.sh/docs/functions",
+  },
+  JODI: {
+    summary: "Latest monthly crude oil and natural gas balances for countries: production, imports, exports and stocks, and demand for natural gas. The Oil & Gas tab of Commodities & Energy.",
+    usage: ["JODI"],
+    keys: [TABS],
+    data: same("Monthly, as the latest country reports arrive"),
+    bloomberg: [],
+    docs: "https://gloom.sh/docs/functions",
+  },
   POWER: {
     summary: "Pro: global power interconnection queues, recorded MW history, completion and withdrawal cohorts, large-load requests and approvals, utility exposure and generation capacity. Open a project for primary evidence and revisions; mapped companies link to DES, FA, G and SPLC.",
     usage: ["POWER", "POWER NEE"],
