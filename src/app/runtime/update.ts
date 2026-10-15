@@ -7,13 +7,17 @@ import {
   canRestartToApply,
   canSelfUpdate,
   checkForUpdateDetailed,
+  discardStagedUpdate,
   performUpdate,
   type ReleaseInfo,
   type UpdateCheckResult,
   type UpdateProgress,
 } from "../../updater";
+import { resolveUpdateChannel, stagedUpdateFitsChannel } from "../../updater/channel";
+import type { UpdateChannel } from "../../types/config";
 import { VERSION } from "../../version";
 import { debugLog } from "../../utils/debug-log";
+import { isPrereleaseVersion } from "../../utils/semver";
 import { reportCrash } from "../../telemetry/crash-reports";
 import { runAutomated } from "../../telemetry/usage-counts";
 
@@ -41,6 +45,7 @@ export function useAppUpdateRuntime({
   pluginRegistry,
   stateRef,
   updateAvailable,
+  updateChannel = "stable",
   updateCheckInProgress,
   updateProgress,
 }: {
@@ -50,6 +55,8 @@ export function useAppUpdateRuntime({
   pluginRegistry: PluginRegistry;
   stateRef: { current: AppState };
   updateAvailable: ReleaseInfo | null;
+  /** The channel in effect (`resolveUpdateChannel`); a change checks again at once. */
+  updateChannel?: UpdateChannel;
   updateCheckInProgress: boolean;
   updateProgress: unknown;
 }): {
@@ -97,7 +104,8 @@ export function useAppUpdateRuntime({
     // failed check like any other: the hourly one must not end as an
     // unhandled rejection, and a manual one must clear its progress state.
     // The timeout is still reported, as it was when it went unhandled.
-    const result = await checkForUpdateDetailed(VERSION).catch((error: unknown): UpdateCheckResult => {
+    const channel = resolveUpdateChannel(stateRef.current.config);
+    const result = await checkForUpdateDetailed(VERSION, channel).catch((error: unknown): UpdateCheckResult => {
       const message = error instanceof Error ? error.message : "";
       if (message.startsWith("RPC request timed out")) {
         reportCrash(error, { kind: "unhandled-rejection" });
@@ -123,7 +131,7 @@ export function useAppUpdateRuntime({
 
     if (result.kind === "current") {
       dispatch({ type: "SET_UPDATE_AVAILABLE", release: null });
-      dispatch({ type: "SET_UPDATE_NOTICE", notice: `Already on v${VERSION}` });
+      dispatch({ type: "SET_UPDATE_NOTICE", notice: result.notice ?? `Already on v${VERSION}` });
       return;
     }
 
@@ -147,6 +155,44 @@ export function useAppUpdateRuntime({
     return () => { clearInterval(interval); };
   }, [enabled, isDetachedWindow, runUpdateCheck]);
 
+  // A channel switch checks again at once and says what it found: nightly
+  // starts on today's build, stable says when this nightly build stays. An
+  // update already downloading or waiting for a restart is left to the effect
+  // below, which takes it back once it is ready if the channel rules it out.
+  const checkedChannelRef = useRef(updateChannel);
+  useEffect(() => {
+    if (!enabled || isDetachedWindow || checkedChannelRef.current === updateChannel) return;
+    checkedChannelRef.current = updateChannel;
+    if (updateInFlight(stateRef.current.updateProgress)) return;
+    // What the other channel offered, or how its download failed, is not this one's answer.
+    if (stateRef.current.updateProgress) dispatch({ type: "SET_UPDATE_PROGRESS", progress: null });
+    dispatch({ type: "SET_UPDATE_AVAILABLE", release: null });
+    void runUpdateCheck(true);
+  }, [dispatch, enabled, isDetachedWindow, runUpdateCheck, stateRef, updateChannel]);
+
+  // A downloaded update the channel does not allow (a nightly build waiting
+  // for a restart after the switch back to stable, or one that finished
+  // downloading after it) is taken back rather than installed by the restart,
+  // and stable checks again.
+  const discardingRef = useRef(false);
+  useEffect(() => {
+    if (!enabled || isDetachedWindow || discardingRef.current) return;
+    const { updateProgress: progress, updateAvailable: staged } = stateRef.current;
+    if (progress?.phase !== "ready" || stagedUpdateFitsChannel(staged, updateChannel)) return;
+    discardingRef.current = true;
+    void discardStagedUpdate().then((error) => {
+      discardingRef.current = false;
+      if (error) {
+        updateLog.warn("could not take back the staged update", { error, version: staged?.version });
+        dispatch({ type: "SET_UPDATE_NOTICE", notice: `Could not take back v${staged?.version ?? "?"}: ${error}` });
+        return;
+      }
+      dispatch({ type: "SET_UPDATE_PROGRESS", progress: null });
+      dispatch({ type: "SET_UPDATE_AVAILABLE", release: null });
+      void runUpdateCheck(true);
+    });
+  }, [dispatch, enabled, isDetachedWindow, runUpdateCheck, stateRef, updateAvailable, updateChannel, updateProgress]);
+
   // First launch on a new version: show that release's notes, then remember the version.
   useEffect(() => {
     if (!enabled || isDetachedWindow) return;
@@ -156,7 +202,8 @@ export function useAppUpdateRuntime({
     const nextConfig = { ...config, lastLaunchedVersion: VERSION };
     dispatch({ type: "SET_CONFIG", config: nextConfig });
     void saveConfigImmediately(nextConfig).catch(() => {});
-    if (!isUpgrade) return;
+    // Nightly builds come daily and the changelog lists stable releases only.
+    if (!isUpgrade || isPrereleaseVersion(VERSION)) return;
     // Opened by the app, not the user: usage counts leave it out.
     void runAutomated(() => pluginRegistry.createPaneFromTemplateAsync("changelog-pane", {
       values: { version: VERSION },
