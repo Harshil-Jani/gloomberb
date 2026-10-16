@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { renderHeadlessPaneText } from "../../../cli/pane-functions/headless";
+import { deriveHeadlessFreshness } from "../../../cli/pane-functions/freshness";
+import { headlessReportTables, renderHeadlessPaneText } from "../../../cli/pane-functions/headless";
+import { renderReportCsv } from "../../../cli/report-tables";
 import { createTestHeadlessArgs, createTestHeadlessContext } from "../../../test-support/headless";
 import type { HeadlessPaneContext } from "../../../types/headless";
 import { catalystsHeadless, litigationHeadless } from "./headless";
@@ -26,4 +28,13 @@ test("a Pro report holds nothing back", async () => {
   const { result } = await report(catalystsHeadless, { pro: true, lockedRows: 0 });
   expect(result.complete).not.toBe(false);
   expect(result.errors).toBeUndefined();
+});
+
+test("the text reads like the pane while exports keep the service's codes", async () => {
+  const { result, text } = await report(catalystsHeadless, { pro: true, lockedRows: 0 });
+  // The fixture's date is a deadline, its party Pfizer Inc, its status RECRUITING.
+  expect(text).toMatch(/Deadline +PFE\S* +Pfizer +Primary completion date updated +Clinical +Recruiting/);
+  const csv = renderReportCsv(headlessReportTables(catalystsHeadless, result, createTestHeadlessArgs({ argument: "PFE" }), "CATL",
+    deriveHeadlessFreshness(catalystsHeadless, result), { complete: true, unavailableSymbols: [] }));
+  expect(csv).toContain("clinical,RECRUITING,FDA");
 });
