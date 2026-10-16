@@ -37,6 +37,10 @@ export interface TickerTableCell {
   color?: string;
   /** The full-precision number behind a rounded `text`, which exports and rendered-view reports keep. */
   value?: number | null;
+  /** Text attributes, such as DIM for a marker fading out. A quote flash dims the cell regardless. */
+  attributes?: number;
+  /** A tint behind a cell that stands out for a moment, such as a move since last seen. */
+  backgroundColor?: string;
   /**
    * Makes the cell a link: a click selects the row and calls this instead of
    * the row's own click. The pane gives the same action a key (its menu).
@@ -288,14 +292,15 @@ export function TickerListTableView({
       };
     }
 
-    const { text, color, onPress, value } = resolveCellRef.current.resolve(column, ticker, financials);
+    const { text, color, onPress, value, attributes, backgroundColor } = resolveCellRef.current.resolve(column, ticker, financials);
     const shouldFlash = flashSymbolsRef.current.has(ticker.metadata.ticker)
       && flashesOnQuoteTick(column.id, financials?.quote);
     return {
       text,
       ...(value !== undefined ? { value } : {}),
       color: color || (rowState.selected ? colors.selectedText : undefined),
-      attributes: shouldFlash ? TextAttributes.DIM : TextAttributes.NONE,
+      attributes: shouldFlash ? TextAttributes.DIM : attributes ?? TextAttributes.NONE,
+      ...(backgroundColor ? { backgroundColor } : {}),
       // Any other button falls through to the row, so a right click still opens its menu.
       onMouseDown: onPress ? (event: TableMouseEvent) => {
         if ((event.button ?? 0) !== 0) return;

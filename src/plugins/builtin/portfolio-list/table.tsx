@@ -18,7 +18,10 @@ import { objectVersion } from "../../../utils/object-version";
 import { columnContextVersion, PERPETUAL_COLUMN_IDS } from "./cell-version";
 import { getColumnValue, type ColumnContext } from "./metrics";
 import { tickerDisplayName } from "./column-values";
-import { displayWidth } from "../../../utils/format";
+import { displayWidth, formatPercentRaw } from "../../../utils/format";
+import { blendHex, colors, priceColor } from "../../../theme/colors";
+import { TextAttributes } from "../../../ui";
+import type { SinceLastSeenRecap } from "./since-last-seen";
 import { portfolioPnlLabel } from "../../../portfolio/position-metrics";
 import { PORTFOLIO_ROW_MENU_KEYS } from "./row-actions";
 
@@ -105,6 +108,7 @@ export function PortfolioTickerTable({
   financialsMap,
   columnContext,
   flashSymbols,
+  sinceLastSeen,
   onRootKeyDown,
   onVisibleRangeChange,
   visibleRangeBuffer,
@@ -126,6 +130,8 @@ export function PortfolioTickerTable({
   financialsMap: Map<string, TickerFinancials>;
   columnContext: ColumnContext;
   flashSymbols: Map<string, QuoteFlashDirection>;
+  /** For a few seconds after coming back to the pane, LAST shows each row's move since the user left. */
+  sinceLastSeen?: SinceLastSeenRecap | null;
   onRootKeyDown?: (event: DataTableKeyEvent) => boolean | void;
   onVisibleRangeChange?: (range: TickerListVisibleRange) => void;
   visibleRangeBuffer?: number;
@@ -146,13 +152,24 @@ export function PortfolioTickerTable({
     (column: ColumnConfig, ticker: TickerRecord, financials: TickerFinancials | undefined) => {
       const key = `${ticker.metadata.ticker}:${column.id}`;
       const version = buildCellVersion(column, ticker, financials, columnContext);
-      return cellCacheRef.current.get(key, version, () => {
+      const cell = cellCacheRef.current.get(key, version, () => {
         const cell = getColumnValue(column, ticker, financials, columnContext);
         const marketId = PERPETUAL_COLUMN_IDS.has(column.id) ? columnContext.perpetuals?.get(ticker.metadata.ticker)?.marketId : undefined;
         return marketId ? { ...cell, onPress: () => openPerpetualRef.current?.(marketId) } : cell;
       });
+      const move = column.id === "price" ? sinceLastSeen?.moves.get(ticker.metadata.ticker) : undefined;
+      if (move == null) return cell;
+      // Tinted, so the move reads apart from a price and from CHG%, then dimmed as it settles.
+      const tone = priceColor(move);
+      return {
+        ...cell,
+        text: formatPercentRaw(move),
+        color: tone,
+        backgroundColor: blendHex(colors.bg, tone, sinceLastSeen?.fading ? 0.08 : 0.2),
+        attributes: sinceLastSeen?.fading ? TextAttributes.DIM : undefined,
+      };
     },
-    [columnContext],
+    [columnContext, sinceLastSeen],
   );
   const pnlColumn = columns.find((column) => column.id === "pnl" || column.id === "pnl_pct");
   // Reads the same cached P&L cells the rows show; only changed rows recompute.
