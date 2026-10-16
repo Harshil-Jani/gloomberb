@@ -315,3 +315,14 @@ export function priceColor(value: number, palette: ThemeColors = colors): string
   if (value < 0) return palette.negative;
   return palette.neutral;
 }
+
+const TONE_TINT = 0.18;
+
+/**
+ * The background a tone tints, such as a ticker badge in its day's move or a
+ * price that moved since the user last looked. A `strength` under 1 lightens
+ * it, for a tint on its way out.
+ */
+export function toneTintBg(tone: string, strength = 1, palette: ThemeColors = colors): string {
+  return blendHex(palette.bg, tone, TONE_TINT * strength);
+}

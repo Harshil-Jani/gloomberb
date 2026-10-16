@@ -16,7 +16,7 @@ export interface PortfolioPaneSettings {
   hideCash: boolean;
   /** Value a portfolio at the regular close rather than the latest print (`fn PF --close`). */
   valueAtClose: boolean;
-  /** How long the pane is away before coming back shows each row's move since then. */
+  /** How long the pane is out of sight before coming back tints LAST by each row's move since then. */
   sinceLastSeen: SinceLastSeenAfter;
 }
 
@@ -352,7 +352,7 @@ export function buildPortfolioPaneSettingsDef(
   fields.push({
     key: "sinceLastSeen",
     label: "Moves Since Last Seen",
-    description: "Back in this pane after this long, LAST shows each row's move since you left for a few seconds.",
+    description: "Back after this long out of sight, LAST is tinted green or red for a few seconds on rows that moved since you left.",
     type: "select",
     options: SINCE_LAST_SEEN_OPTIONS,
   });

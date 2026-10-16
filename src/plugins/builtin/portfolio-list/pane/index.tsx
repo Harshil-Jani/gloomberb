@@ -318,7 +318,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     [orderedSymbols, tickerBySymbol],
   );
 
-  // What LAST shows for each row, snapshotted when the user stops looking at the table.
+  // What LAST shows for each row, snapshotted when the table goes out of sight.
   const priceColumn = viewMode === "table" ? columns.find((column) => column.id === "price") : undefined;
   const lastSeenInputsRef = useRef({ tickers, financialsMap, columnContext });
   lastSeenInputsRef.current = { tickers, financialsMap, columnContext };
@@ -334,11 +334,14 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
   }, [priceColumn]);
   const appFocused = useAppActive();
   const paneVisible = usePaneVisible();
+  // Away is out of sight, not out of focus: a PF beside the focused pane is still watched.
   const { recap: sinceLastSeen, dismiss: dismissSinceLastSeen } = useSinceLastSeen({
     paneKey: paneInstance?.instanceId,
-    present: focused && appFocused && paneVisible,
+    present: appFocused && paneVisible,
     afterMs: priceColumn ? sinceLastSeenAfterMs(paneSettings.sinceLastSeen) : null,
     readPrices: readLastPrices,
+    pricesVersion: financialsMap,
+    resetKey: `${activeCollectionId}|${viewMode}`,
   });
 
   const selectedIdx = sortedTickers.findIndex((ticker) => ticker.metadata.ticker === cursorSymbol);
@@ -466,7 +469,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
   // bind their own keys in both views; the table only adds Shift+Enter.
   const handleTableKeyDown = useCallback((event: DataTableKeyEvent) => {
     if (!focused) return;
-    // The next key settles the moves since last seen back to prices.
+    // The next key clears the moves since last seen, as a click in the table does.
     dismissSinceLastSeen();
 
     const key = event.name;
@@ -739,6 +742,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
           flashSymbols={flashSymbols}
           sinceLastSeen={sinceLastSeen}
           onRootKeyDown={handleTableKeyDown}
+          onTableMouseDown={dismissSinceLastSeen}
           onVisibleRangeChange={handleVisibleRangeChange}
           visibleRangeBuffer={3}
           resetScrollKey={activeCollectionId}

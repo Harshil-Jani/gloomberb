@@ -3,7 +3,7 @@ import {
   formatMarketPriceWithCurrency,
   liveQuoteFormatOptions,
 } from "../../../market-data/market/format";
-import { blendHex, colors, hoverText, type ThemeColors } from "../../../theme/colors";
+import { blendHex, colors, hoverText, toneTintBg, type ThemeColors } from "../../../theme/colors";
 import type { Quote } from "../../../types/financials";
 import { displayWidth } from "../../../utils/format";
 
@@ -29,7 +29,7 @@ const MAX_FITTED_PRICE_ROUNDING = 0.01;
  * with text lit the way every hovered control's is.
  */
 export function tickerBadgeColors(tone: string, hovered: boolean, palette: ThemeColors = colors): { fg: string; bg: string } {
-  if (!hovered) return { fg: tone, bg: blendHex(palette.bg, tone, 0.18) };
+  if (!hovered) return { fg: tone, bg: toneTintBg(tone, 1, palette) };
   const bg = blendHex(palette.bg, tone, 0.42);
   return { fg: hoverText(bg, palette), bg };
 }

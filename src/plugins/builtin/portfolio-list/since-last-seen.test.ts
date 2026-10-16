@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { movesSince, noteDeparture, takeReturnMoves } from "./since-last-seen";
+import { movesSince, noteDeparture, returnMoves, takeReturn } from "./since-last-seen";
 
 const AWAY_MS = 120_000;
 
@@ -18,10 +18,27 @@ test("coming back recaps only after the away threshold, and a short glance reset
   const after = new Map([["AAPL", 210]]);
 
   noteDeparture("pane", 0, before);
-  expect(takeReturnMoves("pane", AWAY_MS - 1, after, AWAY_MS)).toBeNull();
+  expect(takeReturn("pane", AWAY_MS - 1, AWAY_MS)).toBeNull();
   // The glance used up the departure: a later return without a new one shows nothing.
-  expect(takeReturnMoves("pane", AWAY_MS * 2, after, AWAY_MS)).toBeNull();
+  expect(takeReturn("pane", AWAY_MS * 2, AWAY_MS)).toBeNull();
 
   noteDeparture("pane", 0, before);
-  expect(takeReturnMoves("pane", AWAY_MS, after, AWAY_MS)?.get("AAPL")).toBeCloseTo(5);
+  const back = takeReturn("pane", AWAY_MS, AWAY_MS)!;
+  expect(returnMoves(back, AWAY_MS, after)?.get("AAPL")).toBeCloseTo(5);
+});
+
+test("a pane remounted on stale prices still recaps the quotes that land just after, and keeps each row's first move", () => {
+  noteDeparture("pane", 0, new Map([["AAPL", 200], ["BTC", 100]]));
+  const back = takeReturn("pane", AWAY_MS, AWAY_MS)!;
+
+  // Remounted from a hidden layout tab, it first draws what it had when it left.
+  expect(returnMoves(back, AWAY_MS, new Map([["AAPL", 200], ["BTC", 100]]))).toBeNull();
+  const first = returnMoves(back, AWAY_MS + 300, new Map([["AAPL", 202], ["BTC", 100]]))!;
+  expect([...first.keys()]).toEqual(["AAPL"]);
+  // A later tick adds the row that moved and does not flip the one already shown.
+  const next = returnMoves(back, AWAY_MS + 900, new Map([["AAPL", 198], ["BTC", 101]]), first)!;
+  expect(next.get("AAPL")).toBeCloseTo(1);
+  expect(next.get("BTC")).toBeCloseTo(1);
+  // Ticks after the first moments back are ones the user watched.
+  expect(returnMoves(back, AWAY_MS + 60_000, new Map([["AAPL", 220], ["BTC", 90]]))).toBeNull();
 });

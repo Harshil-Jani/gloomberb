@@ -358,6 +358,7 @@ exports[`the runtime exports of every public subpath are the reviewed ones 1`] =
     "previewTheme",
     "priceColor",
     "syncTheme",
+    "toneTintBg",
   ],
   "./tickers": [
     "emitTickerAdded",
