@@ -2,7 +2,7 @@ import type { SearchRequestContext, DataProvider } from "../../types/data-provid
 import type { InstrumentSearchResult } from "../../types/instrument";
 import type { TickerRecord } from "../../types/ticker";
 import { canonicalExchange, isSharedExchangeCode, isUsListingExchange, parsePublicTickerKey, publicTickerKey, typedExchangeCode } from "../../utils/exchanges";
-import { getListingSymbol, tickerHasListingSuffix } from "../../sources/listing-symbols";
+import { getListingSymbol, listingSuffixConflictsWithExchange, tickerHasListingSuffix } from "../../sources/listing-symbols";
 import { parseOptionSymbol } from "../../utils/options";
 import { resolveCurrencyUnit } from "../../utils/currency-units";
 import { currencyPairSpelling } from "../../utils/currency-pair";
@@ -33,6 +33,7 @@ import {
 } from "./result";
 
 import { typedPerpetualListing } from "../perpetual-listing";
+import { settleWithin } from "../../utils/async-deadline";
 export type {
   ResolvedTickerSearch,
   TickerSearchCandidate,
@@ -319,16 +320,57 @@ export function resolveTickerSearch(options: ResolveTickerSearchOptions): Promis
   const symbol = future?.symbol ?? (pair && !pair.ambiguous ? pair.symbol : typed);
   const literal = resolveTickerSymbol(symbol, options, pickListing ? requested : null);
   const alternatives = pickListing ? [] : [...dottedVenueQueries(symbol), ...pair?.ambiguous ? [pair.symbol] : []];
+  // A listing suffix search does not carry (CEZ.PR) is read from its own quote, as `quote` reads it.
+  const quoted = !pickListing && tickerHasListingSuffix(symbol) && !parsePublicTickerKey(symbol).exchange;
   // Most input has no venue code to retry: hand back the literal lookup
   // itself, so it settles no later than it did before the retry existed.
-  if (alternatives.length === 0) return literal;
+  if (alternatives.length === 0 && !quoted) return literal;
   return literal.then(async (resolved) => {
     for (const alternative of resolved ? [] : alternatives) {
       const match = await resolveTickerSymbol(alternative, options, null);
       if (match) return match;
     }
-    return resolved;
+    return resolved ?? (quoted ? quotedSuffixListing(symbol, options) : null);
   });
+}
+
+/** As long as a search source gets: past it, the key reads as unmatched. */
+const SUFFIX_QUOTE_TIMEOUT_MS = 5_000;
+
+/**
+ * A suffixed listing (CEZ.PR, PETR4.SA, VOLV-B.ST) that search does not list,
+ * vouched for by its own quote: the quote answers for that key, prices it, and
+ * names a venue the suffix belongs to. This is how `quote` and opening the
+ * key from the command bar read it, so adding it to a watchlist, a portfolio
+ * or the first-run positions takes the same listing.
+ */
+async function quotedSuffixListing(
+  symbol: string,
+  { dataProvider, searchContext }: ResolveTickerSearchOptions,
+): Promise<ResolvedTickerSearch | null> {
+  // No source prices the key, or none answers in time: it stays unmatched.
+  const quote = await settleWithin(dataProvider.getQuote(symbol, "", {
+    brokerId: searchContext?.brokerId,
+    brokerInstanceId: searchContext?.brokerInstanceId,
+  }), SUFFIX_QUOTE_TIMEOUT_MS);
+  if (!quote) return null;
+  const exchange = canonicalExchange(quote.listingExchangeName || quote.exchangeName);
+  if (!exchange || normalizeTickerSymbol(quote.symbol || "") !== symbol
+    || !Number.isFinite(quote.price) || quote.price === 0
+    || listingSuffixConflictsWithExchange(symbol, exchange)) return null;
+  return {
+    kind: "provider",
+    symbol,
+    result: {
+      providerId: dataProvider.id,
+      symbol,
+      name: quote.name?.trim() || symbol,
+      exchange,
+      currency: quote.currency || undefined,
+      type: quote.instrumentType || "",
+    },
+    quote,
+  };
 }
 
 async function resolveTickerSymbol(
