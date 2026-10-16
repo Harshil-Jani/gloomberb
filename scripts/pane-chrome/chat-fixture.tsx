@@ -49,10 +49,12 @@ export interface ChatFake {
   historyRequests: number;
   /** Messages the view sent. */
   sent: string[];
+  holdSends(): void;
+  finishSend(fail?: boolean): void;
   /** Whether the view has its live connection to the channel. */
   connected(): boolean;
   /** Another member writes: the message arrives over the socket. */
-  deliver(content: string, options?: { user?: string; attachment?: boolean }): ChatMessage;
+  deliver(content: string, options?: { user?: string; attachment?: boolean; imageUrl?: string; replyToId?: string }): ChatMessage;
   /** The server changes a message (an edit, a reaction count): a fresh copy arrives. */
   update(id: string, change: (message: ChatMessage) => ChatMessage): void;
   /** Holds history pages until `release()`, instead of `latency` ms. */
@@ -111,8 +113,13 @@ function invented(index: number, extra: Partial<ChatMessage> = {}): ChatMessage 
     // Two minutes apart, so a run by one author groups and a change of author does not.
     createdAt: new Date(BASE_TIME + index * 120_000).toISOString(),
     user: MEMBERS[author]!,
+    ...(params.get("reactions") === "1" ? { reactions: [{ emoji: "👍", count: 1, me: false, users: [MEMBERS.quill!] }] } : {}),
     ...extra,
   };
+}
+
+function quoteOf(message: ChatMessage | undefined): ChatMessage["replyTo"] {
+  return message ? { content: message.content, user: { id: message.user.id, username: message.user.username ?? "" }, attachmentCount: message.attachments?.length } : null;
 }
 
 const count = Number(params.get("count") ?? 90);
@@ -170,8 +177,10 @@ const fake: ChatFake = {
       ...invented(index),
       content,
       user: MEMBERS[options.user ?? "quill"]!,
+      replyToId: options.replyToId ?? null,
+      replyTo: quoteOf(fake.messages.find((message) => message.id === options.replyToId)),
       createdAt: new Date(BASE_TIME + index * 120_000).toISOString(),
-      ...(options.attachment ? { attachments: [{ id: `img${index}`, mime: "image/svg+xml", width: 320, height: 180, size: 1000, url: IMAGE }] } : {}),
+      ...(options.attachment ? { attachments: [{ id: `img${index}`, mime: "image/svg+xml", width: 320, height: 180, size: 1000, url: options.imageUrl ?? IMAGE }] } : {}),
     };
     fake.messages.push(message);
     for (const onMessage of sockets.get(message.channelId) ?? []) onMessage(message);
@@ -182,6 +191,12 @@ const fake: ChatFake = {
     if (index < 0) return;
     fake.messages[index] = change(fake.messages[index]!);
     for (const onMessage of sockets.get("everyone") ?? []) onMessage(fake.messages[index]!);
+  },
+  holdSends() { heldSend = Promise.withResolvers<void>(); },
+  finishSend(fail = false) {
+    if (fail) heldSend?.reject(new Error("Fixture send failed."));
+    else heldSend?.resolve();
+    heldSend = null;
   },
   holdHistory() { held = Promise.withResolvers<void>(); },
   release() { held?.resolve(); held = null; },
@@ -244,6 +259,7 @@ attachChatPaneLinkPanes((paneId) => ({
   "news-story": { name: "Story", icon: "A" },
 })[paneId]);
 let held: PromiseWithResolvers<void> | null = null;
+let heldSend: PromiseWithResolvers<void> | null = null;
 const sockets = new Map<string, Set<(message: ChatMessage) => void>>();
 const latency = Number(params.get("latency") ?? 400);
 
@@ -282,6 +298,11 @@ apiClient.getMessages = async (channelId, options) => {
   }
   return all.slice(-Math.max(limit, Number(params.get("loaded") ?? 0)));
 };
+apiClient.setChatReaction = async (channelId, messageId, emoji, reacted) => {
+  const reactions = [{ emoji, count: reacted ? 2 : 1, me: reacted, users: reacted ? [MEMBERS.quill!, MEMBERS.ada!] : [MEMBERS.quill!] }];
+  fake.update(messageId, (message) => ({ ...message, reactions }));
+  return { channelId, messageId, reactions };
+};
 apiClient.connectChannel = ((channelId: string, onMessage: (message: ChatMessage) => void) => {
   const listeners = sockets.get(channelId) ?? new Set();
   sockets.set(channelId, listeners);
@@ -289,8 +310,9 @@ apiClient.connectChannel = ((channelId: string, onMessage: (message: ChatMessage
   return {
     send: async (content: string, replyToId?: string) => {
       fake.sent.push(content);
+      if (heldSend) await heldSend.promise;
       const index = fake.messages.length;
-      const message: ChatMessage = { ...invented(index), content, replyToId: replyToId ?? null, user: MEMBERS.ada! };
+      const message: ChatMessage = { ...invented(index), content, replyToId: replyToId ?? null, replyTo: quoteOf(fake.messages.find((message) => message.id === replyToId)), user: MEMBERS.ada! };
       fake.messages.push(message);
       return message;
     },

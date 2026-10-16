@@ -140,6 +140,8 @@ export const DesktopChatMessage = memo(function DesktopChatMessage({
           height={1}
           paddingLeft={2}
           onMouseDown={() => {
+            // The thread handles background clearing in capture, before this
+            // jump. Keep bubbling so the pane shell also receives the focus.
             if (msg.replyToId) jumpToMessage(msg.replyToId);
           }}
           style={{ minWidth: 0, alignItems: "flex-start", cursor: "pointer", overflow: "hidden" }}
