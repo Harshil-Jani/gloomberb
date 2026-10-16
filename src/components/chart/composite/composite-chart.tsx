@@ -460,9 +460,11 @@ function ThemedCompositeChart({
 
   const leftPadding = leftAxisWidth + (leftAxisWidth ? axisGap : 0);
   const rightPadding = rightAxisWidth + (rightAxisWidth ? axisGap : 0);
-  const timeAxisLayout = scene && showTimeAxis
-    ? buildCompositeTimeAxisLayout(scene, plotWidth)
-    : null;
+  // The axis's ticks do not move with the cursor, so they are laid out once per chart, not per move.
+  const timeAxisLayout = useMemo(
+    () => baseScene && showTimeAxis ? buildCompositeTimeAxisLayout(baseScene, plotWidth) : null,
+    [baseScene, plotWidth, showTimeAxis],
+  );
   const emptyTimeAxisLayout = !scene && showTimeAxis && effectiveViewport
     ? buildCompositeViewportTimeAxisLayout(effectiveViewport, plotWidth)
     : null;

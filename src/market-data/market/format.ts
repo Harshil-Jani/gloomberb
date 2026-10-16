@@ -454,12 +454,22 @@ export function formatMarketChangeWithCurrency(
 }
 
 /** Decimals the currency's minor unit has: two for GBP, none for JPY. */
+// A chart reads every series' price at the crosshair on each pointer move, so
+// building a formatter per call is what the readout spent its time on.
+const currencyMinorDigitsByCode = new Map<string, number>();
+
 export function currencyMinorDigits(currency: string | undefined): number {
+  const code = currency || "USD";
+  const cached = currencyMinorDigitsByCode.get(code);
+  if (cached !== undefined) return cached;
+  let digits = 2;
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: currency || "USD" }).resolvedOptions().maximumFractionDigits ?? 2;
+    digits = new Intl.NumberFormat("en-US", { style: "currency", currency: code }).resolvedOptions().maximumFractionDigits ?? 2;
   } catch {
-    return 2;
+    // A code Intl rejects reads with two decimals.
   }
+  currencyMinorDigitsByCode.set(code, digits);
+  return digits;
 }
 
 /** Decimals a money price is padded to: its minor unit up to two (USD 2, JPY 0), three for the thousandth currencies (OMR, KWD). */

@@ -1516,6 +1516,28 @@ describe("CompositeChart", () => {
     expect(row).not.toContain("$108.2");
   });
 
+  // The terminal's kitty surface uploads the whole plot again whenever its
+  // raster changes, so a cursor, its own or a linked chart's, must not repaint it.
+  test("moving the cursor over a chart with a level keeps its plot raster", async () => {
+    const levels = { seriesId: "price", items: [{ id: "a", value: 102, color: "#f5a524", editable: false, actionable: false }] };
+    await tui.render(
+      <InputHostProvider host={chartInputHost}>
+        <CaptureChartSurfaceProvider>
+          <CompositeChart width={60} height={12} focused series={[series("price", "main", "left", "USD", [100, 103, 101])]} panels={[{ id: "main" }]} levels={levels} />
+        </CaptureChartSurfaceProvider>
+      </InputHostProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => tui.setup().renderOnce());
+    const raster = capturedSurfaceProps!.bitmaps[0];
+    for (const _ of [1, 2]) {
+      await act(async () => chartShortcut?.(keyEvent("left")));
+      await act(async () => tui.setup().renderOnce());
+    }
+    expect(capturedSurfaceProps!.crosshair).not.toBeNull();
+    expect(capturedSurfaceProps!.bitmaps[0]).toBe(raster);
+  });
+
   test("arms and disarms a chart tool from the toolbar", async () => {
     await tui.render(
       <CaptureChartSurfaceProvider>

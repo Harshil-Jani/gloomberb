@@ -300,6 +300,10 @@ export function CompositePanelSurface({
     () => levels && levelDomain ? projectLevels(levels.items, levelDomain, levelDraft) : NO_LEVELS,
     [levelDomain, levelDraft, levels],
   );
+  // Drawings project through the time scale alone: the crosshair moving,
+  // here or on a linked chart, must not repaint the plot, which the terminal's
+  // kitty surface would upload whole again.
+  const drawingProjection = useMemo(() => ({ timeScale: scene.timeScale }), [scene.timeScale]);
   const bitmapLayers = useMemo(() => {
     if (!bitmap) return null;
     // The desktop composites overlays as vectors, so the plot raster stays put
@@ -316,7 +320,7 @@ export function CompositePanelSurface({
         draw: drawColor,
       },
       toolReadout?.direction ?? "up",
-      { scene, panel, items: panelDrawings, selectedId: selectedDrawingId },
+      { scene: drawingProjection, panel, items: panelDrawings, selectedId: selectedDrawingId },
     );
     return [projectedLevels.length > 0 ? paintLevels(base, projectedLevels, selectedLevelId) : base];
   }, [
@@ -325,11 +329,11 @@ export function CompositePanelSurface({
     colors.crosshair,
     colors.negative,
     drawColor,
+    drawingProjection,
     isDesktopWeb,
     panel,
     panelDrawings,
     projectedLevels,
-    scene,
     selectedDrawingId,
     selectedLevelId,
     toolReadout?.direction,
