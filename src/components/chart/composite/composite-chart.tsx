@@ -31,6 +31,7 @@ import {
   allocateCompositePanelHeights,
   applyCompositeChartCursor,
   buildCompositeChartScene,
+  compositeCursorAsOf,
   resizeCompositePanel,
 } from "./scene";
 import { buildCompositeTimeAxisLayout, buildCompositeViewportTimeAxisLayout } from "./time-axis";
@@ -100,6 +101,7 @@ function ThemedCompositeChart({
   height,
   focused = false,
   cursorDate,
+  cursorLink,
   viewport,
   clipToViewport = false,
   viewportResetKey,
@@ -337,14 +339,19 @@ function ThemedCompositeChart({
   const normalizedCursorTimestamp = resolvedCursorTimestamp !== null && Number.isFinite(resolvedCursorTimestamp)
     ? resolvedCursorTimestamp
     : null;
-  const scene = useMemo(() => (
-    baseScene
-      ? applyCompositeChartCursor(
-        baseScene,
-        normalizedCursorTimestamp === null ? null : new Date(normalizedCursorTimestamp),
-      )
-      : null
-  ), [baseScene, normalizedCursorTimestamp]);
+  const linkedCursorTimestamp = cursorLink?.time ?? null;
+  const publishCursor = cursorLink?.publish;
+  // The chart's own cursor wins; without one it shows where another chart's is.
+  const scene = useMemo(() => {
+    if (!baseScene) return null;
+    if (normalizedCursorTimestamp === null && linkedCursorTimestamp !== null) {
+      return applyCompositeChartCursor(baseScene, new Date(linkedCursorTimestamp), "linked");
+    }
+    return applyCompositeChartCursor(
+      baseScene,
+      normalizedCursorTimestamp === null ? null : new Date(normalizedCursorTimestamp),
+    );
+  }, [baseScene, linkedCursorTimestamp, normalizedCursorTimestamp]);
   const lastCursorTimestampRef = useRef<number | null>(normalizedCursorTimestamp);
   const renderedCursorTimestampRef = useRef<number | null>(normalizedCursorTimestamp);
   if (renderedCursorTimestampRef.current !== normalizedCursorTimestamp) {
@@ -359,7 +366,8 @@ function ThemedCompositeChart({
     lastCursorTimestampRef.current = nextTimestamp;
     if (cursorDate === undefined) setInternalCursorDate(date);
     onCursorDateChange?.(date);
-  }, [cursorDate, onCursorDateChange]);
+    publishCursor?.(date && baseScene && nextTimestamp !== null ? compositeCursorAsOf(baseScene, date) : null);
+  }, [baseScene, cursorDate, onCursorDateChange, publishCursor]);
 
   const {
     armedTool,

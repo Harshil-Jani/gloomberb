@@ -222,6 +222,17 @@ export interface CompositeChartXAxis {
   formatCursor?: (xRatio: number) => string;
 }
 
+/** A crosshair shared between charts, as the last instant of the bar it is on. */
+interface CompositeCursorLink {
+  /**
+   * Another chart's cursor, shown while this chart has none of its own: on
+   * the last bar at or before it, and not at all outside the view.
+   */
+  time: number | null;
+  /** Reports this chart's cursor, or null when it leaves. */
+  publish: (time: number | null) => void;
+}
+
 export interface CompositeChartProps {
   series: ResolvedSeries[];
   /** Optional legend model; can include hidden series that are not plotted. */
@@ -248,6 +259,8 @@ export interface CompositeChartProps {
   /** Permit panning into an older unloaded window so the owner can backfill it. */
   allowHistoricalBackfill?: boolean;
   cursorDate?: Date | null;
+  /** A crosshair shared with other charts, such as the others in a layout tab. */
+  cursorLink?: CompositeCursorLink;
   viewport?: {
     start: Date;
     end: Date;
