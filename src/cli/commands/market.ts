@@ -16,7 +16,9 @@ import {
   getExtendedSessionDisplay,
   getQuoteSessionFields,
   getRegularSessionDisplay,
+  quoteHeadlineTime,
   quoteSessionLabel,
+  quoteSessionStateLabel,
   type ExtendedSession,
 } from "../../market-data/market/status";
 import { formatCompact, formatCurrency, formatDistributionAmount, formatNumber, formatPercent, formatPercentRaw } from "../../utils/format";
@@ -81,6 +83,7 @@ import {
   type CliReportTables,
 } from "../report-tables";
 import {
+  formingPeriodBar,
   historyBarStatusNote,
   historyCoverageWarning,
   historyFacts,
@@ -277,7 +280,8 @@ const QUOTE_LEAD_COLUMNS = [
   extendedColumn("PRE"),
   extendedColumn("POST"),
   extendedColumn("OVERNIGHT"),
-  { key: "session", header: "Session", shrink: false },
+  // An export keeps the market state (PRE-MKT); the table names the close a pre-market with no trade stands at (Thu close).
+  { key: "session", header: "Session", shrink: false, format: (_value: unknown, row: QuoteRow) => row.sessionLabel },
 ];
 
 type QuoteRow = ReturnType<typeof quoteRows>[number];
@@ -399,7 +403,8 @@ function quoteRows(results: QuoteCliRecord[], now = Date.now()) {
       extendedChangePercent: roundedPercent(extended?.changePercent),
       // The extended price is the session's bid and ask midpoint, nothing having traded in it.
       extendedMark: extended?.mark === true,
-      session: quoteSessionLabel(quote) ?? "",
+      session: quoteSessionStateLabel(quote, now) ?? "",
+      sessionLabel: quoteSessionLabel(quote, now) ?? "",
       // The close the shown move is measured from: the one before the session Last is.
       previousClose: price(display?.change != null ? display.price - display.change : quote?.previousClose),
       dayRange: quote?.low != null && quote.high != null
@@ -410,7 +415,8 @@ function quoteRows(results: QuoteCliRecord[], now = Date.now()) {
       providerId: quote?.providerId ?? "",
       source: quote?.dataSource ?? quote?.providerId ?? "",
       feed: quoteFeedState(quote, now),
-      updatedAt: quote?.lastUpdated ? new Date(quote.lastUpdated).toISOString() : "",
+      // When the price Last shows was observed: in a pre-market nothing has traded in, the close it stands at.
+      updatedAt: quote?.lastUpdated ? new Date(quoteHeadlineTime(quote)).toISOString() : "",
       error: result.error ?? "",
     };
   });
@@ -878,7 +884,12 @@ async function runHistory(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
     };
     // A coin's volume is traded value in its quote currency: said in every row and on the status line.
     const volume = historyVolume(unit, traded);
-    const data = historyRows(points, resolution, unit.currency, unit.unit, volume);
+    const served = historyRows(points, resolution, unit.currency, unit.unit, volume);
+    // Bars stop arriving on the listing's own trading days, not New York's.
+    const venue = quote?.listingExchangeName || exchange || undefined;
+    // October's monthly bar on 16 Oct runs through the 15th: marked partial, and the status line says how far.
+    const forming = formingPeriodBar(served, venue);
+    const data = forming?.rows ?? served;
     const interval = data[0]?.interval ?? null;
     const decimals = historyPriceDecimals(data, listing.saved?.metadata.assetCategory);
     const price = (value: unknown) => typeof value === "number" ? value.toFixed(decimals) : "";
@@ -889,8 +900,8 @@ async function runHistory(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
       ...barHistoryFreshness(intraday ? null : barResolutionFromDates(data.map((row) => row.date))),
       observedKey: "date",
       oldest: null,
-      // Bars stop arriving on the listing's own trading days, not New York's.
-      cadenceExchange: quote?.listingExchangeName || exchange || undefined,
+      cadenceExchange: venue,
+      ...(forming ? { periodToDate: forming.periodToDate } : {}),
       ...(volume ? { note: historyVolumeText(volume, interval) } : {}),
     });
     const gaps = historyGapNote(data, traded);
@@ -899,7 +910,8 @@ async function runHistory(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
       ...listingFateNotes(await fate(), { served: data.length > 0, firstDate: data[0]?.date }),
       ...await listingChoiceNotes(listing, market, quote, venues),
       ...historyNotes(range, interval, data[0]?.date), historyCoverageWarning(range, loaded) ?? [],
-      gaps ?? [], historyJumpNote(data) ?? [], historyFlagNote(data) ?? [], historyBarStatusNote(data) ?? [],
+      // The status line says how far a bar still forming runs; the note is for the bars it does not name.
+      gaps ?? [], historyJumpNote(data) ?? [], historyFlagNote(data) ?? [], historyBarStatusNote(forming ? served : data) ?? [],
     ].flat();
     const priceColumns: CliResultColumn[] = [
       intraday

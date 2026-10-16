@@ -26,6 +26,7 @@ import {
 } from "../../utils/cli-output";
 import { renderGlossaryEntries, type GlossaryLookup } from "../glossary";
 import { renderSeriesMatches, type SeriesMatch } from "../series-search";
+import { typoDistance } from "../../utils/typo-distance";
 
 export interface PaneFunctionCatalog {
   panes: ReadonlyMap<string, PaneDef>;
@@ -150,6 +151,55 @@ export function findFunctionCode(registry: PaneFunctionCatalog, token: string): 
       argPlaceholder: headless?.argument.placeholder ?? found.shortcut?.argPlaceholder,
     }),
   };
+}
+
+/** A function code a typed one is a slip away from: what to type, and the function's name. */
+export interface NearFunctionCode {
+  code: string;
+  label: string;
+}
+
+/** Typed names shorter than this are too short for one slip to leave them recognisable (`HQ` is a slip from a dozen codes). */
+const MIN_CODE_TYPO_LENGTH = 3;
+/**
+ * A word typed as a command is as likely a ticker as a slip from a code
+ * (`PLTR`, `META`, `QQQ`): it is read as a slip only from this length and
+ * when its first letter is the code's.
+ */
+const MIN_COMMAND_WORD_TYPO_LENGTH = 4;
+/** Near codes an unknown one is answered with; more than this many is no suggestion. */
+const NEAR_CODE_LIMIT = 3;
+
+/**
+ * The function codes one slip of the keys from a name that opens no function
+ * (a letter swapped, missing, extra or wrong: `RCDF` for RDCF, `HPP` for HP),
+ * among the mnemonics the command bar takes, each named by the code it is
+ * near (`DES` for Ticker Research, whose code is T). Empty when none is that
+ * close, the name is too short to tell, or so many are that none stands out.
+ * A word typed as a command (`commandWord`, `gloomberb RCDF PLTR`) is held to
+ * MIN_COMMAND_WORD_TYPO_LENGTH and the code's first letter, so a ticker typed
+ * there is not taken for a code.
+ */
+export function nearFunctionCodes(
+  registry: PaneFunctionCatalog,
+  name: string,
+  { commandWord = false }: { commandWord?: boolean } = {},
+): NearFunctionCode[] {
+  const wanted = normalizeLookupToken(name);
+  if (wanted.length < (commandWord ? MIN_COMMAND_WORD_TYPO_LENGTH : MIN_CODE_TYPO_LENGTH)) return [];
+  const near = new Map<PaneTemplateDef, string>();
+  for (const template of registry.paneTemplates.values()) {
+    const prefix = template.shortcut?.prefix;
+    if (!prefix) continue;
+    const code = [prefix, ...template.shortcut?.aliases ?? []].find((candidate) => {
+      const known = normalizeLookupToken(candidate);
+      return (!commandWord || known[0] === wanted[0]) && typoDistance(wanted, known) === 1;
+    });
+    if (code) near.set(template, code.toUpperCase());
+  }
+  if (near.size > NEAR_CODE_LIMIT) return [];
+  return [...near].map(([template, code]) => ({ code, label: template.label }))
+    .sort((left, right) => left.code.localeCompare(right.code));
 }
 
 function sampleArgForTemplate(template: PaneTemplateDef): string {

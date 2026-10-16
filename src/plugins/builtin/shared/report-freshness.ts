@@ -2,6 +2,8 @@ import type { HeadlessPaneFreshness } from "../../../types/headless";
 import type { Quote, QuoteIndexSession } from "../../../types/financials";
 import { isQuoteBeforeLatestSession, isQuoteStaleForCurrentSession } from "../../../market-data/quotes/freshness";
 import { delayedFeedLagMs, readIndexSession } from "../../../market-data/market/freshness";
+import { quoteHeadlineTime } from "../../../market-data/market/status";
+import { barSizeFromGap, medianBarGap } from "../../../time-series/bar-spacing";
 import { apiClient } from "../../../api-client";
 import { isPerpetualExchange } from "../../../tickers/perpetual-listing";
 import { CLOUD_NEWS_DELAY_HOURS, hasProAccess } from "../../../api-client/plan-rules";
@@ -29,11 +31,14 @@ export function barHistoryFreshness(resolution: string | null | undefined): Head
   return { status: "not-a-feed", basis: "intraday bars", cadence: "daily" };
 }
 
-/** The bar size of a dated history, read from the gap between its last two bars. */
+/**
+ * The bar size of a dated history, read from the typical gap between its bars
+ * (medianBarGap), as `history` reads it, so a holiday's gap before the last
+ * daily bar does not make them weekly. Daily when there is no gap to read.
+ */
 export function barResolutionFromDates(dates: readonly (string | number | Date)[]): "1d" | "1wk" | "1mo" {
-  const times = dates.slice(-2).map((date) => new Date(date).getTime());
-  const gapDays = times.length === 2 && times.every(Number.isFinite) ? (times[1]! - times[0]!) / 86_400_000 : 1;
-  return gapDays >= 25 ? "1mo" : gapDays >= 6 ? "1wk" : "1d";
+  const gap = medianBarGap(dates.map((date) => new Date(date).getTime()));
+  return gap == null ? "1d" : barSizeFromGap(gap);
 }
 
 /** Company filings read from EDGAR. Old filings are not stale; there is no schedule to miss. */
@@ -88,11 +93,13 @@ export function quoteFreshnessFields(
 
 /**
  * One quote as a report reads it among the observations behind a view: its
- * freshness fields and when it was updated. A board publishes one per quote
- * it shows, so `fn` and `shot` date it as `quote` dates the same quotes.
+ * freshness fields and when the price it headlines was observed
+ * (quoteHeadlineTime: in a pre-market nothing has traded in, the close it
+ * stands at). A board publishes one per quote it shows, so `fn` and `shot`
+ * date it as `quote` dates the same quotes.
  */
 export function quoteObservation(quote: Quote, now = Date.now()): QuoteFreshnessFields & { updatedAt: number } {
-  return { ...quoteFreshnessFields(quote, now), updatedAt: quote.lastUpdated };
+  return { ...quoteFreshnessFields(quote, now), updatedAt: quoteHeadlineTime(quote) };
 }
 
 /**
