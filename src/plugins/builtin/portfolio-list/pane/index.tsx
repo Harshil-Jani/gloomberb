@@ -13,7 +13,7 @@ import {
 import { useTickerSourceActivate } from "../../../../react/ticker-source";
 import { useFxRatesMap, useTickerFinancialsMap } from "../../../../market-data/hooks";
 import { buildPortfolioFinancialsMap } from "../../../../market-data/portfolio-financials";
-import { useAppVisible } from "../../../../state/app/activity";
+import { useAppActive, useAppVisible, usePaneVisible } from "../../../../state/app/activity";
 import { tf } from "../../../../i18n";
 import { useDialog } from "../../../../ui/dialog";
 import {
@@ -36,6 +36,7 @@ import type { PaneProps } from "../../../../types/plugin";
 import type { InstrumentRef } from "../../../../market-data/request-types";
 import {
   calculatePortfolioSummaryTotals,
+  getSortValue,
   resolveCollectionSortPreference,
   resolvePortfolioTotalsCurrency,
   type ColumnContext,
@@ -61,6 +62,7 @@ import {
   type PortfolioViewMode,
 } from "../settings";
 import { useQuoteFlashMap } from "../../../../components/quote-flash";
+import { sinceLastSeenAfterMs, useSinceLastSeen } from "../since-last-seen";
 import { PortfolioTickerTable } from "../table";
 import { PortfolioGrid } from "../grid";
 import { useThrottledCursorSymbol } from "../use-throttled-cursor-symbol";
@@ -316,6 +318,32 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     [orderedSymbols, tickerBySymbol],
   );
 
+  // What LAST shows for each row, snapshotted when the table goes out of sight.
+  const priceColumn = viewMode === "table" ? columns.find((column) => column.id === "price") : undefined;
+  const lastSeenInputsRef = useRef({ tickers, financialsMap, columnContext });
+  lastSeenInputsRef.current = { tickers, financialsMap, columnContext };
+  const readLastPrices = useCallback(() => {
+    const prices = new Map<string, number>();
+    const inputs = lastSeenInputsRef.current;
+    if (!priceColumn) return prices;
+    for (const ticker of inputs.tickers) {
+      const price = getSortValue(priceColumn, ticker, inputs.financialsMap.get(ticker.metadata.ticker), inputs.columnContext);
+      if (typeof price === "number") prices.set(ticker.metadata.ticker, price);
+    }
+    return prices;
+  }, [priceColumn]);
+  const appFocused = useAppActive();
+  const paneVisible = usePaneVisible();
+  // Away is out of sight, not out of focus: a PF beside the focused pane is still watched.
+  const { recap: sinceLastSeen, dismiss: dismissSinceLastSeen } = useSinceLastSeen({
+    paneKey: paneInstance?.instanceId,
+    present: appFocused && paneVisible,
+    afterMs: priceColumn ? sinceLastSeenAfterMs(paneSettings.sinceLastSeen) : null,
+    readPrices: readLastPrices,
+    pricesVersion: financialsMap,
+    resetKey: `${activeCollectionId}|${viewMode}`,
+  });
+
   const selectedIdx = sortedTickers.findIndex((ticker) => ticker.metadata.ticker === cursorSymbol);
   const safeSelectedIdx = selectedIdx >= 0 ? selectedIdx : 0;
 
@@ -441,6 +469,8 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
   // bind their own keys in both views; the table only adds Shift+Enter.
   const handleTableKeyDown = useCallback((event: DataTableKeyEvent) => {
     if (!focused) return;
+    // The next key clears the moves since last seen, as a click in the table does.
+    dismissSinceLastSeen();
 
     const key = event.name;
     const isEnter = key === "enter" || key === "return";
@@ -454,7 +484,7 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
     }
 
     return false;
-  }, [focused, openTickerInNewPane, safeSelectedIdx, sortedTickers]);
+  }, [dismissSinceLastSeen, focused, openTickerInNewPane, safeSelectedIdx, sortedTickers]);
 
   useEffect(() => {
     if (activeCollectionId !== currentCollectionId) {
@@ -710,7 +740,9 @@ export function PortfolioListPane({ focused, width, height }: PaneProps) {
           financialsMap={financialsMap}
           columnContext={columnContext}
           flashSymbols={flashSymbols}
+          sinceLastSeen={sinceLastSeen}
           onRootKeyDown={handleTableKeyDown}
+          onTableMouseDown={dismissSinceLastSeen}
           onVisibleRangeChange={handleVisibleRangeChange}
           visibleRangeBuffer={3}
           resetScrollKey={activeCollectionId}
