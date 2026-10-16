@@ -44,12 +44,13 @@ import { importSource, notionalPositions, rankThirteenFLines, type ThirteenFImpo
 import { importedFromText } from "../imported-from";
 import { savedListingCoinNote } from "../../../../cli/commands/crypto-hints";
 import { findNamedCollection } from "../../../../portfolio/collection-name";
+import { parseTypedNumber, readCurrencyAmount } from "../../../../utils/decimal-comma";
 import {
   failPortfolioCommand,
   isCashArgument,
   listingFields,
   misplacedSymbolList,
-  parseFiniteNumber,
+  parseAmountArg,
   PortfolioCliError,
   refuseDryRun,
   rejectCashSymbol,
@@ -293,8 +294,8 @@ async function setPositionCommand(
     try {
       const portfolio = requireManualPortfolio(config, portfolioName);
       rejectCashSymbol(symbol, exchange, portfolio.name);
-      const shares = parseFiniteNumber(sharesValue, "Shares");
-      const avgCost = parseFiniteNumber(avgCostValue, "Average cost");
+      const shares = parseAmountArg(sharesValue, "Shares");
+      const avgCost = parseAmountArg(avgCostValue, "Average cost");
       // The notes say which listing a bare symbol went to, and that a bare coin ticker is not the coin, as `portfolio add` does.
       const { ticker, notes } = await resolveCliTicker(symbol, store, dataProvider, exchange);
       const currency = resolveManualPositionCurrency(rawCurrency, ticker, portfolio, config.baseCurrency);
@@ -329,32 +330,35 @@ async function setPositionCommand(
 
 const CURRENCY_CODE = /^[A-Za-z]{3}$/;
 
-/** `<portfolio...> <amount> [currency]`: a portfolio name may have spaces, the amount and currency do not. */
-function parseCashArgs(rest: string[]): { name: string; amount: string; currency?: string } | null {
+/**
+ * `<portfolio...> <amount> [currency]`: a portfolio name may have spaces, the
+ * amount and currency do not. The words before an amount and a code that name
+ * a portfolio make those the amount and currency, even when the amount is
+ * malformed, so its error says so rather than that no portfolio has the name.
+ */
+function parseCashArgs(rest: string[], portfolios: readonly Portfolio[]): { name: string; amount: string; currency?: string } | null {
   const last = rest.at(-1);
   const beforeLast = rest.at(-2);
-  if (rest.length >= 3 && last && CURRENCY_CODE.test(last) && beforeLast && Number.isFinite(parseCashAmount(beforeLast))) {
-    return { name: rest.slice(0, -2).join(" "), amount: beforeLast, currency: last.toUpperCase() };
+  const withCurrency = rest.length >= 3 && last && beforeLast && CURRENCY_CODE.test(last)
+    ? { name: rest.slice(0, -2).join(" "), amount: beforeLast, currency: last.toUpperCase() }
+    : null;
+  // An amount that reads two ways is still the amount here, so its error names both readings.
+  if (withCurrency && (findNamedCollection(portfolios, withCurrency.name) || parseTypedNumber(withCurrency.amount).kind !== "invalid")) {
+    return withCurrency;
   }
   if (rest.length >= 2 && last) return { name: rest.slice(0, -1).join(" "), amount: last };
   return null;
 }
 
-/** 500000, 500,000 and 500_000 are the same amount. */
-function parseCashAmount(raw: string): number {
-  const text = raw.trim().replace(/[,_]/g, "");
-  return text ? Number(text) : Number.NaN;
-}
-
 async function setCashCommand(rest: string[], ctx: CliCommandContext) {
-  const parsed = parseCashArgs(rest);
-  if (!parsed?.name) ctx.fail(CASH_USAGE);
   await withConfigData(ctx, async ({ config, persistence }) => {
+    const parsed = parseCashArgs(rest, config.portfolios);
+    if (!parsed?.name) ctx.fail(CASH_USAGE);
     try {
       const portfolio = requirePortfolio(config, parsed.name);
-      const amount = parseCashAmount(parsed.amount);
-      if (!Number.isFinite(amount)) throw new Error("Cash amount must be a valid number.");
+      // An amount of a currency reads by its units: 500,000 USD is half a million, 1,234 KWD could be either.
       const currency = parsed.currency ?? resolvePortfolioTotalsCurrency(portfolio, config.baseCurrency);
+      const amount = parseAmountArg(parsed.amount, "Cash amount", currency);
       await saveConfig(setPortfolioCash(config, portfolio.id, { amount, currency }));
       console.log(cliStyles.success(`Set cash in "${portfolio.name}" to ${formatAllocationMoney(amount, currency)}.`));
       const account = findCachedPortfolioAccount(config, portfolio, persistence.resources);
@@ -608,7 +612,13 @@ function parseImportOptions(args: string[], ctx: CliCommandContext): ThirteenFIm
   }
   const count = top == null ? IMPORT_DEFAULT_TOP : Number(top);
   if (!Number.isInteger(count) || count < 1 || count > IMPORT_MAX_TOP) ctx.fail(`--top must be a whole number from 1 to ${IMPORT_MAX_TOP}.`);
-  const amount = notional == null ? IMPORT_DEFAULT_NOTIONAL : Number(notional.replace(/[,_]/g, ""));
+  let amount = IMPORT_DEFAULT_NOTIONAL;
+  try {
+    // The notional is in USD, so 250,000 is a quarter million.
+    if (notional != null) amount = readCurrencyAmount(notional, "--notional", "USD");
+  } catch (error) {
+    ctx.fail(error instanceof Error ? error.message : String(error));
+  }
   if (!Number.isFinite(amount) || amount <= 0) ctx.fail("--notional must be an amount above zero, such as --notional 250000.");
   return { query, top: count, name: name || undefined, notional: amount, replace };
 }
@@ -737,6 +747,15 @@ const VALUE_HELP = {
   ],
 };
 
+const AMOUNTS_HELP = {
+  title: "Amounts",
+  lines: [
+    "Numbers take either decimal mark: 1.234,5, 1234,5 and 1,234.5 are 1234.5, and 18,50 is 18.5.",
+    "Cash and --notional are amounts of a currency (cash in the portfolio's unless named, --notional in USD), so 500,000 and 1.234 are thousands, a third decimal being below a cent. In a currency with three decimals (KWD, BHD, OMR) they could be either, and the command asks which.",
+    "Shares and average cost read a lone dot as a decimal point (123.456) and ask which a lone comma before three digits meant (1,234).",
+  ],
+};
+
 /** Actions that change a portfolio: none of them previews, so --dry-run would change it anyway. */
 const MUTATING_ACTIONS = new Set(["create", "delete", "rm", "add", "remove", "position", "cash", "import"]);
 
@@ -785,7 +804,7 @@ export const portfolioCliCommand: CliCommandDef = {
       "portfolio show Research --explain",
       "portfolio import --13f 0001067983 --top 10",
     ],
-    sections: [VALUE_HELP, SYMBOL_LIST_HELP],
+    sections: [VALUE_HELP, AMOUNTS_HELP, SYMBOL_LIST_HELP],
   },
   execute: async (rawArgs, ctx) => {
     const args = [...rawArgs];
