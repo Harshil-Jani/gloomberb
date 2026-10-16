@@ -13,7 +13,9 @@ import { getLoadablePlugins } from "../plugins/catalog";
 import { standaloneSeriesInvoker } from "../series/standalone";
 import type { PluginRegistry } from "../plugins/registry";
 import type { LoadedExternalPlugin } from "../plugins/loader";
+import { apiClient } from "../api-client";
 import { fail } from "./errors";
+import { resolvePersistedCloudSessionToken } from "./pane-functions/cloud-session";
 import type { ConfigContext, MarketContext } from "./types";
 
 export { withCliServices, withConfigData, withMarketData } from "./scoped-context";
@@ -105,8 +107,18 @@ export async function initConfigData(): Promise<ConfigContext> {
   return { config, persistence, store, dataDir };
 }
 
+/**
+ * Market commands (`quote`, `compare`, `history`...) run with the session the
+ * app saved after sign-in, as `fn` does: Gloom Cloud answers a Pro account
+ * with real-time quotes and anyone else with delayed ones.
+ */
+function applyPersistedCloudSession(context: Pick<MarketContext, "persistence">): void {
+  apiClient.setSessionToken(resolvePersistedCloudSessionToken(context));
+}
+
 export async function initMarketData(options: CliContextOptions = {}): Promise<MarketContext> {
   const context = await initConfigData();
+  applyPersistedCloudSession(context);
   const plugins = options.plugins ?? getLoadablePlugins();
   const capabilities = resolveCliCapabilities(context.config, plugins);
   const dataProvider = new AssetDataRouter(null, [], context.persistence.resources);
@@ -131,6 +143,7 @@ export async function initCliServices(options: CliServicesOptions = {}) {
   services.providerRouter.setConfigAccessor(() => config);
   services.providerRouter.setBackgroundRevalidation(false);
   await ensureCliServicesReady(services);
+  applyPersistedCloudSession(services);
   return {
     config,
     dataDir,
