@@ -662,11 +662,6 @@ function buildCursorValues(
 }
 
 /**
- * Applies cursor-only state without rebuilding panel domains or projected
- * series. Keeping those references stable lets renderers reuse the expensive
- * base chart while the cursor moves.
- */
-/**
  * The bar a time from another chart lands on: the last one at or before it,
  * as a bar stands for the time from its open until the next. A time before
  * the first bar in view lands on none, and so does one past the plot's right
@@ -706,8 +701,11 @@ export function compositeCursorAsOf(scene: CompositeChartScene, date: Date): num
 }
 
 /**
- * `linked` places a time another chart's cursor is at (see `linkedCursorDate`);
- * otherwise the cursor goes to the nearest bar.
+ * Applies cursor-only state without rebuilding panel domains or projected
+ * series. Keeping those references stable lets renderers reuse the expensive
+ * base chart while the cursor moves. `linked` places a time another chart's
+ * cursor is at (see `linkedCursorDate`); otherwise the cursor goes to the
+ * nearest bar.
  */
 export function applyCompositeChartCursor(
   scene: CompositeChartScene,

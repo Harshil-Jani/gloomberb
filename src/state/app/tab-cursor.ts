@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo } from "react";
 import type { AppState } from "../../core/state/app/state";
 import { useOptionalAppSelector } from "./context";
 
@@ -18,15 +18,16 @@ interface TabCursor {
 const cursors = new Map<string, TabCursor>();
 const listeners = new Set<() => void>();
 
-function setTabCursorTime(tabKey: string, sourceId: string, time: number | null): void {
+function setTabCursorTime(tabKey: string, sourceId: string | null, time: number | null): void {
   const current = cursors.get(tabKey);
   if (time === null) {
     // Only the pane the cursor is on can take it away: a pane clearing a
-    // cursor it no longer holds must not clear another pane's.
-    if (current?.sourceId !== sourceId) return;
+    // cursor it no longer holds must not clear another pane's. A null source
+    // clears whichever pane holds it.
+    if (!current || (sourceId !== null && current.sourceId !== sourceId)) return;
     cursors.delete(tabKey);
   } else {
-    if (current?.sourceId === sourceId && current.time === time) return;
+    if (sourceId === null || (current?.sourceId === sourceId && current.time === time)) return;
     cursors.set(tabKey, { time, sourceId });
   }
   for (const listener of listeners) listener();
@@ -37,6 +38,20 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+/** A pane's handle on the cursor its layout tab shares. */
+export interface TabCursorLink {
+  /** Calls `listener` whenever a tab's cursor moves. */
+  subscribe(listener: () => void): () => void;
+  /** Where another pane's cursor is in this tab: null when none is, or the cursor is this pane's own. */
+  time(): number | null;
+  /** Whether this pane's cursor is the tab's. */
+  held(): boolean;
+  /** Reports this pane's cursor, or null when it leaves. */
+  publish(time: number | null): void;
+  /** Clears the tab's cursor, whichever pane holds it. */
+  clear(): void;
+}
+
 /** A layout tab is named by its id; older saved tabs have none, and go by position. */
 const selectTabKey = (state: AppState): string => {
   const { layouts, activeLayoutIndex } = state.config;
@@ -45,24 +60,24 @@ const selectTabKey = (state: AppState): string => {
 
 /**
  * Shares this pane's cursor time with the other panes in its layout tab.
- * `time` is where another pane's cursor is (null when none is, or the cursor
- * is this pane's own) and `publish` reports this pane's, or null when it
- * leaves. Outside an app (a test, a screenshot) nothing is shared.
+ * Reading the handle does not re-render the pane when the cursor moves: what
+ * draws the cursor subscribes, so a pointer move on one chart re-renders the
+ * other charts and nothing around them. Outside an app (a test, a
+ * screenshot) nothing is shared.
  */
-export function useTabCursorTime(sourceId: string): {
-  time: number | null;
-  publish: (time: number | null) => void;
-} {
+export function useTabCursorLink(sourceId: string): TabCursorLink | undefined {
   const tabKey = useOptionalAppSelector<string | null>(selectTabKey, null);
-  const time = useSyncExternalStore(subscribe, () => {
-    const cursor = tabKey === null ? undefined : cursors.get(tabKey);
-    return cursor && cursor.sourceId !== sourceId ? cursor.time : null;
-  });
-  const publish = useCallback((next: number | null) => {
-    if (tabKey === null) return;
-    setTabCursorTime(tabKey, sourceId, next !== null && Number.isFinite(next) ? next : null);
+  const link = useMemo<TabCursorLink | undefined>(() => tabKey === null ? undefined : {
+    subscribe,
+    time: () => {
+      const cursor = cursors.get(tabKey);
+      return cursor && cursor.sourceId !== sourceId ? cursor.time : null;
+    },
+    held: () => cursors.get(tabKey)?.sourceId === sourceId,
+    publish: (time) => setTabCursorTime(tabKey, sourceId, time !== null && Number.isFinite(time) ? time : null),
+    clear: () => setTabCursorTime(tabKey, null, null),
   }, [sourceId, tabKey]);
   // A pane closed or switched away from under the cursor takes its cursor with it.
-  useEffect(() => () => publish(null), [publish]);
-  return useMemo(() => ({ time, publish }), [publish, time]);
+  useEffect(() => () => link?.publish(null), [link]);
+  return link;
 }

@@ -101,6 +101,8 @@ interface CompositePanelSurfaceProps {
   onSelectDrawing: (id: string | null) => void;
   onActivate?: () => void;
   onCursorDateChange: (date: Date | null) => void;
+  /** The cursor shown is another chart's, so the pointer's level is not part of it. */
+  sharedCursor: boolean;
   /** Positive positions move toward older observations. A gesture supplies the frame and origin it started from. */
   onPanViewport: (
     deltaPositions: number,
@@ -147,6 +149,7 @@ export function CompositePanelSurface({
   onSelectDrawing,
   onActivate,
   onCursorDateChange,
+  sharedCursor,
   onPanViewport,
   onZoomViewport,
   onSetViewport,
@@ -171,7 +174,7 @@ export function CompositePanelSurface({
   const activeDrag = toolDrag ?? keyboardDrag?.drag ?? null;
   // A keyboard placement's end sits at the level the user put it, so it
   // draws a level line where otherwise only the pointer would.
-  const heldCursorYRatio = keyboardDrag ? keyboardDrag.drag.endYRatio : cursorYRatio;
+  const heldCursorYRatio = keyboardDrag ? keyboardDrag.drag.endYRatio : sharedCursor ? null : cursorYRatio;
   const seriesCursorYRatio = useMemo(
     () => resolveSeriesCursorYRatio(panel, scene),
     [panel, scene],
