@@ -1243,12 +1243,25 @@ function themeLayout(): LayoutConfig {
   };
 }
 
-/** One chart composer pane across the window. */
+/** One chart composer pane across the window; with `linked=1`, a daily one under it that shares its crosshair. */
 function chartComposerLayout(): LayoutConfig {
   const instanceId = "chart-composer:a";
+  const spec = chartComposerSpec(params.get("chart") ?? "pan");
+  if (params.get("linked") === "1") {
+    const daily = buildPriceChartPreset("BRVO:NASDAQ");
+    return {
+      dockRoot: { kind: "split", axis: "vertical", ratio: 0.5, first: leaf(instanceId), second: leaf("chart-composer:b") },
+      instances: [
+        { ...instance(instanceId), settings: { chartSpec: spec } },
+        { ...instance("chart-composer:b"), settings: { chartSpec: { ...daily, viewport: { ...daily.viewport, range: "6M", resolution: "1d" } } } },
+      ],
+      floating: [],
+      detached: [],
+    };
+  }
   return {
     dockRoot: leaf(instanceId),
-    instances: [{ ...instance(instanceId), settings: { chartSpec: chartComposerSpec(params.get("chart") ?? "pan") } }],
+    instances: [{ ...instance(instanceId), settings: { chartSpec: spec } }],
     floating: [],
     detached: [],
   };

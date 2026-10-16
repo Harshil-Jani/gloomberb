@@ -662,15 +662,59 @@ function buildCursorValues(
 }
 
 /**
+ * The bar a time from another chart lands on: the last one at or before it,
+ * as a bar stands for the time from its open until the next. A time before
+ * the first bar in view lands on none, and so does one past the plot's right
+ * edge while the chart is panned back from its newest bar, rather than
+ * pinning the cursor to an edge the time is not at.
+ */
+function linkedCursorDate(scene: CompositeChartScene, requested: Date): Date | null {
+  const target = requested.getTime();
+  const { dates, timeScale } = scene;
+  if (!Number.isFinite(target) || dates.length === 0) return null;
+  const plotEnd = unprojectCompositeTimestamp(timeScale, 1);
+  const newest = timeScale.kind === "market" ? timeScale.anchors.at(-1)?.timestamp : undefined;
+  if (target > plotEnd && (newest === undefined || newest > plotEnd)) return null;
+  let low = 0;
+  let high = dates.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (dates[middle]!.getTime() <= target) low = middle + 1;
+    else high = middle;
+  }
+  return dates[low - 1] ?? null;
+}
+
+/**
+ * The last instant of the bar a cursor is on, which is the time it is shared
+ * at: a bar stands until the next one or its own interval ends, whichever is
+ * first. Another chart then lands on its last bar at or before it, so a daily
+ * cursor shows the day's last intraday bar, whose close is the day's, and an
+ * intraday cursor shows its own day's bar rather than the next one's.
+ */
+export function compositeCursorAsOf(scene: CompositeChartScene, date: Date): number {
+  const start = date.getTime();
+  const next = scene.dates.find((entry) => entry.getTime() > start)?.getTime() ?? Number.POSITIVE_INFINITY;
+  const cadenceEnd = scene.timeScale.kind === "market" ? start + scene.timeScale.cadenceMs : Number.POSITIVE_INFINITY;
+  const end = Math.min(next, cadenceEnd);
+  return Number.isFinite(end) ? end - 1 : start;
+}
+
+/**
  * Applies cursor-only state without rebuilding panel domains or projected
  * series. Keeping those references stable lets renderers reuse the expensive
- * base chart while the cursor moves.
+ * base chart while the cursor moves. `linked` places a time another chart's
+ * cursor is at (see `linkedCursorDate`); otherwise the cursor goes to the
+ * nearest bar.
  */
 export function applyCompositeChartCursor(
   scene: CompositeChartScene,
   requestedCursor: Date | null,
+  snap: "nearest" | "linked" = "nearest",
 ): CompositeChartScene {
-  const cursorDate = requestedCursor ? nearestDate(scene.dates, requestedCursor) : null;
+  const cursorDate = !requestedCursor ? null
+    : snap === "linked" ? linkedCursorDate(scene, requestedCursor)
+      : nearestDate(scene.dates, requestedCursor);
   const currentTimestamp = scene.cursorDate?.getTime() ?? null;
   const nextTimestamp = cursorDate?.getTime() ?? null;
   if (currentTimestamp === nextTimestamp) return scene;

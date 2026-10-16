@@ -222,6 +222,27 @@ export interface CompositeChartXAxis {
   formatCursor?: (xRatio: number) => string;
 }
 
+/**
+ * A crosshair shared between charts, as the last instant of the bar it is
+ * on. The chart subscribes itself, so a move re-renders the charts and not
+ * the panes around them.
+ */
+interface CompositeCursorLink {
+  subscribe(listener: () => void): () => void;
+  /**
+   * Another chart's cursor, shown in place of this chart's own: on the last
+   * bar at or before it, and not at all outside the view. Null while this
+   * chart's cursor is the shared one, or there is none.
+   */
+  time(): number | null;
+  /** Whether this chart's cursor is the shared one. */
+  held(): boolean;
+  /** Reports this chart's cursor, or null when it leaves. */
+  publish(time: number | null): void;
+  /** Clears the shared cursor wherever it is, as Esc on a chart showing it does. */
+  clear(): void;
+}
+
 export interface CompositeChartProps {
   series: ResolvedSeries[];
   /** Optional legend model; can include hidden series that are not plotted. */
@@ -248,6 +269,8 @@ export interface CompositeChartProps {
   /** Permit panning into an older unloaded window so the owner can backfill it. */
   allowHistoricalBackfill?: boolean;
   cursorDate?: Date | null;
+  /** A crosshair shared with other charts, such as the others in a layout tab. */
+  cursorLink?: CompositeCursorLink;
   viewport?: {
     start: Date;
     end: Date;

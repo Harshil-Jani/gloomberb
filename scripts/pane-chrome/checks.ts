@@ -1212,6 +1212,48 @@ const steps: Step[] = [
     },
   },
   {
+    name: "chart composer: a daily and a 30-minute chart in one tab follow each other's crosshair to the same session, and clear with it",
+    scenario: "cmp&linked=1",
+    async run(cdp) {
+      const state = (paneId: string) => `(() => {
+        const pane = __check.pane(${JSON.stringify(paneId)});
+        const line = pane?.querySelector("[data-gloom-role=chart-crosshair-x]");
+        return { line: !!line, x: line ? Math.round(__check.rect(line).x) : null,
+          time: pane?.querySelector("[data-gloom-role=chart-time-axis]")?.getAttribute("data-gloom-cursor") ?? null,
+          legend: [...(pane?.querySelectorAll("[data-gloom-role=composite-chart-legend-series]") ?? [])].map((entry) => entry.textContent).join(" | ") };
+      })()`;
+      type State = { line: boolean; x: number | null; time: string | null; legend: string };
+      await loadedChartPlot(cdp);
+      if (!await waitFor(cdp, `document.querySelectorAll("[data-gloom-role=composite-chart-panel] canvas").length >= 2`, 10_000)) fail("the daily chart did not load its bars");
+      const intraday = await plotRect(cdp, "chart-composer:a");
+      const latest = await evaluate<State>(cdp, state("chart-composer:b"));
+      if (latest.line) fail("the daily chart drew a crosshair before any pointer was on a chart", latest);
+      const day = (label: string | null) => label?.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+      const seen: State[] = [];
+      for (const share of [0.3, 0.7]) {
+        await mouse(cdp, "mouseMoved", intraday.x + intraday.width * share, intraday.y + intraday.height * 0.5, false);
+        const followed = await waitFor<State | null>(cdp, `(() => { const s = ${state("chart-composer:b")}; return s.line && s.time && s.legend !== ${JSON.stringify(latest.legend)} && !${JSON.stringify(seen.map((entry) => entry.x))}.includes(s.x) ? s : null; })()`);
+        if (!followed) fail(`the daily chart did not follow the crosshair at ${share * 100}% of the 30-minute chart`, { latest, now: await evaluate(cdp, state("chart-composer:b")), source: await evaluate(cdp, state("chart-composer:a")) });
+        // The daily bar the cursor lands on is the session the 30-minute bar is in.
+        const source = await evaluate<State>(cdp, state("chart-composer:a"));
+        if (!day(source.time) || day(source.time) !== day(followed.time)) fail("the daily chart's crosshair is not on the 30-minute bar's day", { source: source.time, daily: followed.time });
+        seen.push(followed);
+      }
+      if (seen[0]!.x! >= seen[1]!.x!) fail("the daily chart's crosshair did not move right with the pointer", seen);
+      // The other way, a day's bar lands the 30-minute chart on that session, not the one before it.
+      const daily = await plotRect(cdp, "chart-composer:b");
+      await mouse(cdp, "mouseMoved", daily.x + daily.width * 0.8, daily.y + daily.height * 0.5, false);
+      const reverse = await waitFor<{ daily: string | null; intraday: string | null } | null>(cdp, `(() => { const d = ${state("chart-composer:b")}, i = ${state("chart-composer:a")}; return d.time && i.line && i.time ? { daily: d.time, intraday: i.time } : null; })()`);
+      if (!reverse) fail("the 30-minute chart did not follow the daily chart's crosshair", await evaluate(cdp, state("chart-composer:a")));
+      if (day(reverse.daily) !== day(reverse.intraday)) fail("the 30-minute chart's crosshair is not on the daily bar's session", reverse);
+      // The pointer leaves the plots: both charts clear.
+      await mouse(cdp, "mouseMoved", intraday.x + intraday.width * 0.5, intraday.y - 60, false);
+      if (!await waitFor(cdp, `(() => { const a = ${state("chart-composer:a")}, b = ${state("chart-composer:b")}; return !a.line && !b.line && b.legend === ${JSON.stringify(latest.legend)}; })()`)) {
+        fail("a chart kept the crosshair after the pointer left the plots", { a: await evaluate(cdp, state("chart-composer:a")), b: await evaluate(cdp, state("chart-composer:b")) });
+      }
+    },
+  },
+  {
     name: "idle: a pane with two tables renders nothing while nothing moves",
     scenario: "resize",
     async run(cdp) {
