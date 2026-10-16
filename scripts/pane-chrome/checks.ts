@@ -4,6 +4,7 @@ import { positiveInteger, takeOption } from "../tui-benchmark-harness";
 import { cacheDir, click, drag, evaluate, frames, holdKey, launchBrowser, mouse, pressKey, sleep, waitFor, type Cdp, type Chord, type Point } from "./browser";
 import { serveFixturePage, type FixturePage } from "./page";
 import { chatSteps } from "./chat-checks";
+import { axisSteps } from "./axis-checks";
 import { desSteps } from "./des-checks";
 import { heatSteps } from "./heat-checks";
 import { headerSteps } from "./header-checks";
@@ -376,21 +377,37 @@ const HELD_MS = 1_500;
 const KEY_UP_FOR_MS = 800;
 
 /**
- * Moves the pointer over a pane's chart plot and waits for the crosshair to
- * sit under it: the horizontal line at the pointer, the vertical one on the
- * nearest observation.
+ * Moves the pointer over a pane's chart plot, to the spot `spot` picks in the
+ * plot's box, and waits for the crosshair to sit under it: the vertical line
+ * on the nearest observation and no horizontal line on an ordinary hover.
+ * Then, with the ruler armed, the horizontal line sits at the pointer's
+ * height: the chart reads the pointer back into its columns and rows, down to
+ * the plot's last row. Arming a tool shows its key hint in the footer, which
+ * moves the plot, so the spot is picked again from the plot as it then is.
+ * A chart with no toolbar (`levelTool: false`) has the first check only.
  */
-async function crosshairUnder(cdp: Cdp, paneId: string, at: Point): Promise<void> {
-  await mouse(cdp, "mouseMoved", at.x, at.y, false);
+async function crosshairUnder(cdp: Cdp, paneId: string, spot: (plot: Rect) => Point, { levelTool = true } = {}): Promise<void> {
   const crosshair = `(() => {
     const pane = __check.pane(${JSON.stringify(paneId)});
     const x = pane?.querySelector("[data-gloom-role=chart-crosshair-x]")?.getBoundingClientRect();
     const y = pane?.querySelector("[data-gloom-role=chart-crosshair-y]")?.getBoundingClientRect();
-    return x && y ? { x: Math.round(x.x + x.width / 2), y: Math.round(y.y + y.height / 2) } : null;
+    return x ? { x: Math.round(x.x + x.width / 2), y: y ? Math.round(y.y + y.height / 2) : null } : null;
   })()`;
-  const under = `(() => { const lines = ${crosshair}; return lines && Math.abs(lines.x - ${at.x}) <= 4 && Math.abs(lines.y - ${at.y}) <= 2; })()`;
-  if (!await waitFor(cdp, under)) {
-    fail(`the crosshair in ${paneId} is not under the pointer`, { pointer: { x: Math.round(at.x), y: Math.round(at.y) }, crosshair: await evaluate(cdp, crosshair) });
+  const at = spot(await plotRect(cdp, paneId));
+  await mouse(cdp, "mouseMoved", at.x, at.y, false);
+  if (!await waitFor(cdp, `(() => { const lines = ${crosshair}; return lines && Math.abs(lines.x - ${at.x}) <= 4 && lines.y === null; })()`)) {
+    fail(`the crosshair in ${paneId} is not a vertical line under the pointer`, { pointer: { x: Math.round(at.x), y: Math.round(at.y) }, crosshair: await evaluate(cdp, crosshair) });
+  }
+  if (!levelTool) return;
+  await armTool(cdp, paneId, "Ruler");
+  try {
+    const level = spot(await plotRect(cdp, paneId));
+    await mouse(cdp, "mouseMoved", level.x, level.y, false);
+    if (!await waitFor(cdp, `(() => { const lines = ${crosshair}; return lines && lines.y !== null && Math.abs(lines.x - ${level.x}) <= 4 && Math.abs(lines.y - ${level.y}) <= 2; })()`)) {
+      fail(`the level line in ${paneId} is not under the pointer`, { pointer: { x: Math.round(level.x), y: Math.round(level.y) }, crosshair: await evaluate(cdp, crosshair) });
+    }
+  } finally {
+    await armTool(cdp, paneId, "Pan");
   }
 }
 
@@ -496,10 +513,9 @@ const nestedChartSteps: Step[] = NESTED_CHARTS.flatMap((paneId) => [
     name: `${paneId} chart: the crosshair sits under the pointer across the plot`,
     scenario: "nested",
     async run(cdp: Cdp) {
-      const plot = await plotRect(cdp, paneId);
-      await crosshairUnder(cdp, paneId, { x: plot.x + plot.width * 0.85, y: plot.y + plot.height - 3 });
+      await crosshairUnder(cdp, paneId, (plot) => ({ x: plot.x + plot.width * 0.85, y: plot.y + plot.height - 3 }));
       // Clear of the chart's drawing toolbar at the plot's top left.
-      await crosshairUnder(cdp, paneId, { x: plot.x + plot.width * 0.5, y: plot.y + 3 });
+      await crosshairUnder(cdp, paneId, (plot) => ({ x: plot.x + plot.width * 0.5, y: plot.y + 3 }));
     },
   },
   {
@@ -532,8 +548,7 @@ const nestedChartSteps: Step[] = NESTED_CHARTS.flatMap((paneId) => [
       const latest = await evaluate<string>(cdp, legend);
       const seen = new Set<string>();
       for (const share of [0.12, 0.5, 0.92]) {
-        const at = { x: plot.x + plot.width * share, y: plot.y + plot.height * 0.6 };
-        await crosshairUnder(cdp, paneId, at);
+        await crosshairUnder(cdp, paneId, (rect) => ({ x: rect.x + rect.width * share, y: rect.y + rect.height * 0.6 }), { levelTool: false });
         const geometry = `(() => {
           const pane = ${pane};
           const rect = (selector) => pane?.querySelector(selector)?.getBoundingClientRect();
@@ -618,9 +633,9 @@ nestedChartSteps.push({
   name: "board:dock chart: the crosshair sits under the pointer across the kit's chart band",
   scenario: "nested",
   async run(cdp: Cdp) {
-    const plot = await plotRect(cdp, "board:dock");
-    await crosshairUnder(cdp, "board:dock", { x: plot.x + plot.width * 0.85, y: plot.y + plot.height - 3 });
-    await crosshairUnder(cdp, "board:dock", { x: plot.x + plot.width * 0.5, y: plot.y + 3 });
+    // The kit's chart band has no toolbar to arm a level tool with.
+    await crosshairUnder(cdp, "board:dock", (plot) => ({ x: plot.x + plot.width * 0.85, y: plot.y + plot.height - 3 }), { levelTool: false });
+    await crosshairUnder(cdp, "board:dock", (plot) => ({ x: plot.x + plot.width * 0.5, y: plot.y + 3 }), { levelTool: false });
   },
 });
 
@@ -1057,25 +1072,12 @@ const steps: Step[] = [
     name: "chart: the crosshair sits under the pointer across the plot",
     scenario: "resize",
     async run(cdp) {
-      const plot = await evaluate<Rect | null>(cdp, `__check.rect(__check.pane("chart:dock")?.querySelector("[data-gloom-role=composite-chart-panel]"))`)
-        ?? fail("chart:dock has no plot");
       // Short of the empty offset after the last observation, where the line stays on it.
-      for (const at of [
-        { x: plot.x + plot.width * 0.85, y: plot.y + plot.height - 3 },
-        { x: plot.x + plot.width * 0.5, y: plot.y + plot.height * 0.5 },
+      for (const spot of [
+        (plot: Rect) => ({ x: plot.x + plot.width * 0.85, y: plot.y + plot.height - 3 }),
+        (plot: Rect) => ({ x: plot.x + plot.width * 0.5, y: plot.y + plot.height * 0.5 }),
       ]) {
-        await mouse(cdp, "mouseMoved", at.x, at.y, false);
-        const crosshair = `(() => {
-          const pane = __check.pane("chart:dock");
-          const x = pane?.querySelector("[data-gloom-role=chart-crosshair-x]")?.getBoundingClientRect();
-          const y = pane?.querySelector("[data-gloom-role=chart-crosshair-y]")?.getBoundingClientRect();
-          return x && y ? { x: Math.round(x.x + x.width / 2), y: Math.round(y.y + y.height / 2) } : null;
-        })()`;
-        // The vertical line snaps to the nearest observation; the horizontal one is the pointer's.
-        const under = `(() => { const lines = ${crosshair}; return lines && Math.abs(lines.x - ${at.x}) <= 4 && Math.abs(lines.y - ${at.y}) <= 2; })()`;
-        if (!await waitFor(cdp, under)) {
-          fail("the crosshair is not under the pointer", { pointer: { x: Math.round(at.x), y: Math.round(at.y) }, crosshair: await evaluate(cdp, crosshair) });
-        }
+        await crosshairUnder(cdp, "chart:dock", spot);
       }
     },
   },
@@ -1173,30 +1175,34 @@ const steps: Step[] = [
         const entries = [...document.querySelectorAll("[data-gloom-role=composite-chart-legend-series]")];
         return { entries: entries.length, carried: entries.filter((entry) => entry.dataset.carried === "true").length,
           text: ${legendText},
+          tags: document.querySelectorAll("[data-gloom-role=chart-series-axis-tag]").length,
+          pointerTags: document.querySelectorAll("[data-gloom-role=chart-price-axis-cursor]").length,
           markers: document.querySelectorAll("[data-gloom-role=chart-crosshair-marker]").length,
           hollow: document.querySelectorAll("[data-gloom-role=chart-crosshair-marker][data-hollow=true]").length,
           timeTag: document.querySelector("[data-gloom-role=chart-time-axis]")?.getAttribute("data-gloom-cursor") ?? null,
           floating: ${FLOATING_PLOT_TEXT("document")} };
       })()`;
-      type Readout = { entries: number; carried: number; text: string; markers: number; hollow: number; timeTag: string | null; floating: string[] };
+      type Readout = { entries: number; carried: number; text: string; tags: number; pointerTags: number; markers: number; hollow: number; timeTag: string | null; floating: string[] };
       const byKey = await waitFor<Readout | null>(cdp, `(() => { const r = ${readout}; return r.entries === 6 && r.carried >= 1 && r.text !== ${JSON.stringify(latest)} ? r : null; })()`);
       if (!byKey) fail("the arrow key's crosshair did not read out all six series in the legend with the German close carried", await evaluate(cdp, readout));
       // Price, two closes, the average and the RSI each get a marker; volume is read off its bars.
       if (byKey.markers !== 5 || byKey.hollow < 1) fail("the crosshair did not mark every line, the carried one hollow", byKey);
       if (byKey.floating.length) fail("text floats over the plot", byKey.floating);
       if (!byKey.timeTag) fail("the time axis has no tag under the crosshair", byKey);
-      // Pointer in the price panel, then in the RSI panel: each gets its own horizontal line and price tag.
+      if (byKey.tags !== 6 || byKey.pointerTags !== 0) fail("the keyboard cursor did not read every series on its axis", byKey);
+      // An ordinary hover draws no horizontal pointer line in any panel. Every
+      // series, including volume, reads its observation on its own axis.
       const panels = await evaluate<Rect[]>(cdp, `[...document.querySelectorAll("[data-gloom-role=composite-chart-panel]")].map(__check.rect)`);
       for (const [index, panel] of [[0, panels[0]!], [panels.length - 1, panels.at(-1)!]] as const) {
         const at = { x: panel.x + panel.width * 0.3, y: panel.y + panel.height * 0.4 };
         await mouse(cdp, "mouseMoved", at.x, at.y, false);
+        await frames(cdp, 4);
         const lines = `(() => {
           const ys = [...document.querySelectorAll("[data-gloom-role=composite-chart-panel]")].map((plot) => !!plot.querySelector("[data-gloom-role=chart-crosshair-y]"));
-          const tag = [...document.querySelectorAll("[data-gloom-role=chart-price-axis-cursor]")].some((tag) => { const r = tag.getBoundingClientRect(); return Math.abs(r.y + r.height / 2 - ${at.y}) <= 3; });
-          return { ys, tag, ...${readout} };
+          return { ys, ...${readout} };
         })()`;
-        const state = await waitFor<(Readout & { ys: boolean[]; tag: boolean }) | null>(cdp, `(() => { const r = ${lines}; return r.entries === 6 && r.markers === 5 && r.ys.filter(Boolean).length === 1 && r.ys[${index}] && r.tag ? r : null; })()`);
-        if (!state) fail(`the pointer in panel ${index} did not draw one horizontal line there with its price tag on the axis, and read out every series`, await evaluate(cdp, lines));
+        const state = await waitFor<(Readout & { ys: boolean[] }) | null>(cdp, `(() => { const r = ${lines}; return r.entries === 6 && r.markers === 5 && r.tags === 6 && r.pointerTags === 0 && !r.ys.some(Boolean) ? r : null; })()`);
+        if (!state) fail(`the pointer in panel ${index} did not read every series on its axis without a level line or a pointer-height value`, await evaluate(cdp, lines));
         if (state.floating.length) fail("text floats over the plot", state.floating);
         if (!state.timeTag) fail(`panel ${index}: the time axis has no tag under the crosshair`, state);
       }
@@ -1418,6 +1424,7 @@ const steps: Step[] = [
   ...headerSteps,
   ...layoutSteps,
   ...selectionSteps,
+  ...axisSteps,
 ];
 
 async function openScenario(cdp: Cdp, page: FixturePage, scenario: string): Promise<void> {
