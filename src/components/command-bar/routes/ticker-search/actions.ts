@@ -4,11 +4,12 @@ import type { AppState } from "../../../../state/app/context";
 import type { AppTickerRepositoryPort } from "../../../../core/app-service-ports";
 import type { PluginRegistry } from "../../../../plugins/registry";
 import type { InstrumentSearchResult } from "../../../../types/instrument";
+import type { TickerRecord } from "../../../../types/ticker";
 import type { PinTickerOptions } from "../../../../types/plugin";
 import { publicTickerKey } from "../../../../utils/exchanges";
 import { instrumentFromTicker, type InstrumentRef } from "../../../../market-data/request-types";
-import { hasAmbiguousTickerContracts } from "../../../../core/state/app/instrument";
 import { getSearchResultSymbol } from "../../../../tickers/search/result";
+import { otherListingTickerKey } from "../../../../tickers/search/upsert";
 import {
   rankTickerSearchItems,
   upsertTickerFromSearchResult,
@@ -40,6 +41,9 @@ export function useCommandBarTickerSearchActions({
   tickers,
 }: UseCommandBarTickerSearchActionsOptions) {
   const tickerSearchCacheRef = useRef<Map<string, TickerSearchCandidate[]>>(new Map());
+  // Read when a row is built; a ticker saved meanwhile must not rebuild every row.
+  const tickersRef = useRef(tickers);
+  tickersRef.current = tickers;
 
   const resolveSearchTicker = useCallback(async (result: InstrumentSearchResult, tickerSymbol?: string) => {
     const { ticker, created } = await upsertTickerFromSearchResult(tickerRepository, result, { tickerSymbol });
@@ -85,7 +89,7 @@ export function useCommandBarTickerSearchActions({
         category: candidate.category,
         kind: "ticker",
         resolveTicker: async () => candidate.ticker!,
-        prefetchInstrument: rowPrefetchInstrument(candidate),
+        prefetchInstrument: rowPrefetchInstrument(candidate, tickersRef.current),
         secondaryAction: () => {
           focusTicker(candidate.ticker!.metadata.ticker, { forceNewPane: true, ...tickerSelectionFromSearchResult(candidate.result) });
           closeAll({ revertThemePreview: false });
@@ -115,7 +119,7 @@ export function useCommandBarTickerSearchActions({
         candidate.result!.exchange === "SMART" ? candidate.result!.primaryExchange
           : candidate.result!.exchange || candidate.result!.primaryExchange,
       )),
-      prefetchInstrument: rowPrefetchInstrument(candidate),
+      prefetchInstrument: rowPrefetchInstrument(candidate, tickersRef.current),
       secondaryAction: () => openTickerResearch(candidate.result!, { forceNewPane: true }),
       action: () => openTickerResearch(candidate.result!),
     };
@@ -187,21 +191,27 @@ export function useCommandBarTickerSearchActions({
 }
 
 /**
- * The instrument the pane resolves once this row opens (`resolveInstrumentForPane`):
- * a search listing is pinned by its venue, a saved ticker without one goes by
- * its record. A broker contract or a choice among several stays with the pane.
+ * The instrument the pane reads once this row opens: a search listing is
+ * pinned by its venue, a saved ticker without one goes by its record. A broker
+ * contract, a saved ticker that carries one, or a choice among several stays
+ * with the pane, which resolves the route and its venue.
  */
-function rowPrefetchInstrument(candidate: TickerSearchCandidate): InstrumentRef | undefined {
+function rowPrefetchInstrument(
+  candidate: TickerSearchCandidate,
+  tickers: ReadonlyMap<string, TickerRecord>,
+): InstrumentRef | undefined {
   const { result, ticker } = candidate;
   if (result) {
     if (result.brokerContract) return undefined;
+    // Opened, a listing whose symbol is saved for another venue is saved under its own key.
+    const symbol = getSearchResultSymbol(result);
     return {
-      symbol: ticker?.metadata.ticker ?? getSearchResultSymbol(result),
+      symbol: ticker?.metadata.ticker ?? otherListingTickerKey(result, symbol, tickers.get(symbol)) ?? symbol,
       exchange: result.exchange || ticker?.metadata.exchange || "",
       instrument: null,
     };
   }
-  if (!ticker || hasAmbiguousTickerContracts(ticker)) return undefined;
+  if (!ticker || ticker.metadata.broker_contracts?.length) return undefined;
   return instrumentFromTicker(ticker, ticker.metadata.ticker) ?? undefined;
 }
 
