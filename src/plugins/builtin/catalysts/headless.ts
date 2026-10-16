@@ -38,7 +38,7 @@ function definition(litigation: boolean): HeadlessPaneDefinition<"bundle"> {
       const data = await fetchCatalysts({ ...query, limit: Math.max(1, Math.min(500, Number(args.options.limit) || 100)), offset: Math.max(0, Number(args.options.offset) || 0) }, ctx.apiClient);
       // The free preview's held-back rows are a Pro line, so a report never reads as everything there is.
       const lockedRows = data.access?.pro === false ? data.access.lockedRows : 0;
-      return { ...(lockedRows > 0 ? { complete: false, errors: [`${lockedRows} more ${litigation ? "cases" : "events"} need Gloom Pro`] } : {}), sections: [{ title: litigation ? "Company dockets" : "Catalyst events", columns: [
+      return { ...(lockedRows > 0 ? { complete: false, errors: [`${lockedRows.toLocaleString("en-US")} more ${litigation ? "case" : "event"}${lockedRows === 1 ? " needs" : "s need"} Gloom Pro`] } : {}), sections: [{ title: litigation ? "Company dockets" : "Catalyst events", columns: [
         { key: "date", header: "Date" }, { key: "tickers", header: "Tickers" }, { key: "title", header: "Event" }, { key: "type", header: "Type" },
         ...(args.options.tab === "changes" ? [{ key: "changeSummary", header: "Changes" }] : [{ key: "status", header: "Status" }]),
         { key: "agency", header: "Agency" }, { key: "country", header: "Country" }, { key: "sourceUrl", header: "Primary source" },
