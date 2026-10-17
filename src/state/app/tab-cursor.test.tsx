@@ -66,4 +66,61 @@ describe("a pinned tab cursor", () => {
     await settle();
     expect(links["closed-b"]!.pinned!()).toBe(false);
   });
+  // Tabs without an id are keyed by their place. Closing one must not leave
+  // its pin there for the tab that moves into that place, and a tab that
+  // moves keeps its own.
+  test("a closed tab's pin goes with it, and the tabs that move up keep their own", async () => {
+    const base = createInitialState(createDefaultConfig("/tmp/gloomberb-tab-cursor-close"));
+    const tab = (name: string) => ({ ...base.config.layouts[0]!, id: undefined, name });
+    let state: AppState = { ...base, config: { ...base.config, layouts: [tab("A"), tab("B"), tab("C")], activeLayoutIndex: 1 } };
+    const listeners = new Set<() => void>();
+    const store = {
+      dispatch: () => {},
+      getState: () => state,
+      subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    };
+    const update = (next: AppState) => { state = next; for (const listener of listeners) listener(); };
+    const openPane = state.config.layout.instances[0]!.instanceId;
+    let link: TabCursorLink | undefined;
+    let show: (visible: boolean) => void = () => {};
+    function Chart() {
+      link = useTabCursorLink("chart");
+      return null;
+    }
+    function Tab() {
+      const [visible, setVisible] = useState(true);
+      show = setVisible;
+      return visible ? <PaneInstanceProvider paneId={openPane}><Chart /></PaneInstanceProvider> : null;
+    }
+    await tui.render(<AppContext value={store}><Tab /></AppContext>);
+    const settle = () => act(async () => {
+      await tui.setup().renderOnce();
+      await Promise.resolve();
+    });
+    const switchTo = async (index: number) => {
+      await act(async () => show(false));
+      await settle();
+      await act(async () => update({ ...state, config: { ...state.config, activeLayoutIndex: index } }));
+      await act(async () => show(true));
+      await settle();
+    };
+
+    const atB = Date.parse("2026-10-16T14:00:00Z");
+    const atC = Date.parse("2026-10-16T15:00:00Z");
+    await act(async () => link!.pin!(atB));
+    await switchTo(2);
+    await act(async () => link!.pin!(atC));
+    // B closes while C is open: C moves up to B's place and keeps its pin.
+    await act(async () => update({ ...state, config: { ...state.config, layouts: [tab("A"), tab("C")], activeLayoutIndex: 1 } }));
+    await settle();
+    expect([link!.pinned!(), link!.time()]).toEqual([true, atC]);
+    // A new tab in C's old place starts unpinned, and so does A.
+    await act(async () => update({ ...state, config: { ...state.config, layouts: [tab("A"), tab("C"), tab("D")] } }));
+    await switchTo(2);
+    expect(link!.pinned!()).toBe(false);
+    await switchTo(0);
+    expect(link!.pinned!()).toBe(false);
+    await switchTo(1);
+    await act(async () => link!.pin!(null));
+  });
 });

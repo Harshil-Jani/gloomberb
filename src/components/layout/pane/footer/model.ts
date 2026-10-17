@@ -234,7 +234,8 @@ export function combinePaneFooterRegistrations(registrations: Map<string, PaneFo
     }
   }
 
-  const taken = new Set([...hints, ...keys].flatMap((hint) => hint.yieldsKey ? [] : [hint.key]));
+  // A key a pane holds but has turned off does nothing, so it takes nothing.
+  const taken = new Set([...hints, ...keys].flatMap((hint) => hint.yieldsKey || hint.disabled ? [] : [hint.key]));
   const yielded = hints.filter((hint) => hint.yieldsKey && taken.has(hint.key));
   if (yielded.length > 0) {
     if (menu.length > 0) menu.push({ type: "divider", id: "yielded-hints:divider" });
