@@ -1047,6 +1047,47 @@ describe("CompositeChart", () => {
     expect(cursors()).toEqual({ a: null, b: null, c: "2025-01-01" });
   });
 
+  // A chart that is not interactive shows no pin and cannot lift it, so it
+  // does not keep one alive once the last interactive chart is gone.
+  test("the tab's pin goes with its last interactive chart, whatever static charts stay", async () => {
+    const chartSeries = [series("price", "main", "left", "USD", [100, 103, 101])];
+    const panels = [{ id: "main" }];
+    let probe: ReturnType<typeof useTabCursorLink>;
+    let showInteractive: (shown: boolean) => void = () => {};
+    function Probe() {
+      probe = useTabCursorLink("probe", { viewer: false });
+      return null;
+    }
+    function Tab() {
+      const [shown, setShown] = useState(true);
+      showInteractive = setShown;
+      return (
+        <Box flexDirection="column">
+          <Probe />
+          {shown ? (
+            <PaneInstanceProvider paneId="chart:closing">
+              <CompositeChart width={60} height={8} series={chartSeries} panels={panels} />
+            </PaneInstanceProvider>
+          ) : null}
+          <PaneInstanceProvider paneId="overview:closed">
+            <CompositeChart width={60} height={8} series={chartSeries} panels={panels} interactive={false} />
+          </PaneInstanceProvider>
+        </Box>
+      );
+    }
+    await tui.render(
+      <AppContext value={createStaticAppStore(createInitialState(createDefaultConfig("/tmp/gloomberb-pin-viewers")))}>
+        <Tab />
+      </AppContext>,
+      { width: 62, height: 18 },
+    );
+    await act(async () => tui.setup().renderOnce());
+    await act(async () => probe!.pin!(Date.parse("2025-01-02T23:59:59.999Z")));
+    await act(async () => showInteractive(false));
+    await act(async () => { await tui.setup().renderOnce(); await Promise.resolve(); });
+    expect(probe!.pinned!()).toBe(false);
+  });
+
   test("zooms with plus and resets the interaction viewport with zero", async () => {
     const viewportChanges: Array<{ start: string; end: string } | null> = [];
     const viewportInteractions: string[] = [];
