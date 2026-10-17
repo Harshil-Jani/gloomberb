@@ -41,7 +41,7 @@ function definition(litigation: boolean): HeadlessPaneDefinition<"bundle"> {
       const changes = args.options.tab === "changes";
       // The text reads like the pane's cells; exports keep the service's codes (`clinical`, `ACTIVE_NOT_RECRUITING`).
       const cell = (column: string) => (_value: unknown, row: Record<string, unknown>) => catalystCell(row as unknown as CatalystEvent, column, query.dateField, changes);
-      return { ...(lockedRows > 0 ? { complete: false, errors: [`${lockedRows} more ${litigation ? "cases" : "events"} need Gloom Pro`] } : {}), sections: [{ title: litigation ? "Company dockets" : "Catalyst events", columns: [
+      return { ...(lockedRows > 0 ? { complete: false, errors: [`${lockedRows.toLocaleString("en-US")} more ${litigation ? "case" : "event"}${lockedRows === 1 ? " needs" : "s need"} Gloom Pro`] } : {}), sections: [{ title: litigation ? "Company dockets" : "Catalyst events", columns: [
         { key: "date", header: changes ? "Observed (UTC)" : "Date" }, ...(!changes ? [{ key: "basis", header: "Date basis" }] : []),
         { key: "tickers", header: "Tickers" }, { key: "parties", header: "Parties", format: (_value, row) => catalystParties(row as unknown as CatalystEvent) }, { key: "title", header: litigation ? "Case / docket" : "Event", textFormat: cell("title") },
         { key: "type", header: "Type", textFormat: cell("type") },
