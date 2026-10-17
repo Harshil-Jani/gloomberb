@@ -146,10 +146,13 @@ function prepareChartPaneForShare(
   const spec = parseChartSpec(pane.settings?.[CHART_SPEC_SETTING_KEY]);
   if (!spec) return pane;
   const pinned = pinChartSpecListings(spec, tickers);
-  // A crosshair pinned in the sender's tab travels with the link, so it opens on that moment.
-  if (pinned === spec && pinnedTime === undefined) return pane;
+  // A crosshair pinned in the sender's tab travels with the link, so it opens
+  // on that moment. A moment the pane still holds from a link it was opened
+  // from is never passed on.
+  const { [CHART_PINNED_MOMENT_SETTING_KEY]: held, ...settings } = pane.settings ?? {};
+  if (pinned === spec && pinnedTime === undefined && held === undefined) return pane;
   return { ...pane, settings: {
-    ...pane.settings,
+    ...settings,
     [CHART_SPEC_SETTING_KEY]: pinned,
     ...(pinnedTime !== undefined ? { [CHART_PINNED_MOMENT_SETTING_KEY]: pinnedTime } : {}),
   } };

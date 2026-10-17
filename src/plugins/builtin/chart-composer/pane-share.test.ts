@@ -84,6 +84,11 @@ describe("chart pane sharing", () => {
     expect(CHART_PINNED_MOMENT_SETTING_KEY in shared(null)).toBe(false);
     // The sender's own pane keeps no moment: the share rewrites a copy.
     expect(CHART_PINNED_MOMENT_SETTING_KEY in pane.settings).toBe(false);
+    // A pane opened from a pinned link and shared on before it pinned passes no stale moment.
+    const opened = { ...pane, settings: { ...pane.settings, [CHART_PINNED_MOMENT_SETTING_KEY]: moment } };
+    const reshared = buildPaneSharePayload(registry, opened, {}, "SPY", new Map(), null);
+    if (reshared?.data.version !== 2) throw new Error("expected a portable pane share");
+    expect(CHART_PINNED_MOMENT_SETTING_KEY in (reshared.data.layout.layout.instances[0]!.settings ?? {})).toBe(false);
   });
 
   test("persisted and shared authored formulas survive toggling another formula", async () => {

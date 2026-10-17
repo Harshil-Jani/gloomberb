@@ -314,12 +314,13 @@ function ChartComposerSurface({
   );
   // A link shared while its sender's crosshair was pinned opens on that
   // moment: the chart pins its tab there once, then forgets it, so a restart
-  // does not pin it again.
+  // does not pin it again. The value came from a link: anything but a time a
+  // Date can hold is dropped without pinning (the pin checks the range).
   const [pinnedMoment, setPinnedMoment] = usePaneSettingValue<unknown>(CHART_PINNED_MOMENT_SETTING_KEY, null);
   const momentLink = useTabCursorLink(paneId ? `${paneId}:moment` : null);
   useEffect(() => {
-    if (typeof pinnedMoment !== "number" || !Number.isFinite(pinnedMoment) || !momentLink?.pin) return;
-    momentLink.pin(pinnedMoment);
+    if (pinnedMoment == null || !momentLink?.pin) return;
+    if (typeof pinnedMoment === "number") momentLink.pin(pinnedMoment);
     setPinnedMoment(null);
   }, [momentLink, pinnedMoment, setPinnedMoment]);
   const persistedInteractionViewport = useMemo(
