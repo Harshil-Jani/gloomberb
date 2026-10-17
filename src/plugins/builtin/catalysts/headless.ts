@@ -2,7 +2,7 @@ import { CATALYST_TYPES, type CatalystEvent } from "../../../api-client/catalyst
 import type { HeadlessPaneDefinition } from "../../../types/plugin";
 import { isoDateOption } from "../../../utils/calendar-date";
 import { fetchCatalystDetail, fetchCatalysts } from "./client";
-import { catalystCell, catalystChangeText, catalystDate, catalystDateBasis, catalystParties, catalystQuery, catalystTickers } from "./model";
+import { catalystCell, catalystChangeText, catalystDate, catalystDateBasis, catalystEmptyTitle, catalystParties, catalystQuery, catalystTickers } from "./model";
 
 function definition(litigation: boolean): HeadlessPaneDefinition<"bundle"> {
   return {
@@ -48,7 +48,8 @@ function definition(litigation: boolean): HeadlessPaneDefinition<"bundle"> {
         ...(changes ? [{ key: "changeSummary", header: "Changes" }] : [{ key: "status", header: "Status", textFormat: cell("status") }]),
         { key: "agency", header: "Agency", textFormat: cell("agency") }, { key: "country", header: "Country", textFormat: cell("country") }, { key: "sourceUrl", header: "Primary source" },
       ], rows: data.events.map((event) => ({ ...event, date: catalystDate(event, query.dateField), ...(!changes ? { basis: catalystDateBasis(event, query.dateField) } : {}),
-        tickers: catalystTickers(event), ...(changes ? { changeSummary: catalystCell(event, "status", query.dateField, true) } : {}) })) }],
+        tickers: catalystTickers(event), ...(changes ? { changeSummary: catalystCell(event, "status", query.dateField, true) } : {}) })),
+        ...(data.events.length ? {} : { empty: catalystEmptyTitle(data, query, changes) }) }],
       metadata: { asOf: data.asOf, total: data.total, offset: data.offset, limit: data.limit, access: data.access, coverage: data.coverage, complete: data.access?.pro !== false && data.offset + data.events.length >= data.total } };
     },
   };
