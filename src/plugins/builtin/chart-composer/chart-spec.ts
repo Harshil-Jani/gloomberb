@@ -10,6 +10,8 @@ import { isRecord } from "../../../utils/guards";
 
 export const CHART_SPEC_SETTING_KEY = "chartSpec";
 export const CHART_INTERACTION_VIEWPORT_SETTING_KEY = "chartInteractionViewport";
+/** A shared link's pinned crosshair: the chart pins its tab there once on open, then drops it. */
+export const CHART_PINNED_MOMENT_SETTING_KEY = "chartPinnedMoment";
 export const MAX_CHART_COMPOSER_SERIES = MAX_CHART_SERIES;
 
 export interface ChartInteractionViewport {

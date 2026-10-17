@@ -113,3 +113,9 @@ export function usePinnedTabTime(): number | null {
   }, [tabKey]);
   return useSyncExternalStore(subscribe, pinnedTime);
 }
+
+/** The moment the active layout tab has its crosshair pinned at, outside React: a shared link opens there. */
+export function pinnedTabTime(state: AppState): number | null {
+  const cursor = cursors.get(selectTabKey(state));
+  return cursor?.sourceId === PINNED ? cursor.time : null;
+}

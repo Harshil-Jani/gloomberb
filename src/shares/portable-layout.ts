@@ -484,6 +484,8 @@ function publishableBinding(binding: PaneBinding | undefined, ids: ReadonlyMap<s
 export interface PublishableLayoutContext {
   /** Local ticker records, so panes can pin listings the receiver cannot look up. */
   tickers?: ReadonlyMap<string, TickerRecord>;
+  /** The moment the shared pane's layout tab has its crosshair pinned at. */
+  pinnedTime?: number | null;
 }
 
 function publishableLayout(
@@ -498,7 +500,7 @@ function publishableLayout(
     const instanceId = ids.get(sourceInstance.instanceId)!;
     const def = panes.get(sourceInstance.paneId);
     const instance = def?.portableShare?.prepare && context.tickers
-      ? def.portableShare.prepare(sourceInstance, { tickers: context.tickers })
+      ? def.portableShare.prepare(sourceInstance, { tickers: context.tickers, ...(context.pinnedTime != null ? { pinnedTime: context.pinnedTime } : {}) })
       : sourceInstance;
     const privacy = def?.portableShare?.private;
     // A pane from a plugin this terminal lacks arrived already scrubbed by
