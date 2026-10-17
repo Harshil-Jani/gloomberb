@@ -207,6 +207,12 @@ export function usePinnedTabTime(): number | null {
   return useSyncExternalStore(subscribe, pinnedTime);
 }
 
+/** The moment the active layout tab has its crosshair pinned at, outside React: a shared link opens there. */
+export function pinnedTabTime(state: AppState): number | null {
+  const cursor = cursors.get(selectTabKey(state));
+  return cursor?.sourceId === PINNED ? cursor.time : null;
+}
+
 /** Lifts the layout tab's pin from a pane that is not a chart, as Esc does on a chart. */
 export function useUnpinTab(): () => void {
   const tabKey = useOptionalAppSelector<string | null>(selectTabKey, null);
