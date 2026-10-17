@@ -1,5 +1,7 @@
 import { FINANCIAL_VINTAGE_NOTICE } from "../utils/financial-statements";
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
+import { apiClient } from "../api-client";
+import { GloomberbCloudProvider } from "../sources/gloomberb-cloud";
 import { chartSeriesSourceKey } from "../capabilities";
 import type { FredSeriesData, FredSeriesLoadResult } from "../sources/gloomberb-cloud/fred-series";
 import { buildCustomChartPreset } from "../plugins/builtin/chart-composer/presets";
@@ -2040,6 +2042,87 @@ describe("resolveChartSpecData", () => {
     expect(result.errors).toEqual([]);
     expect(result.series[0]?.points.map((point) => point.value)).toEqual([65.78, 69.69]);
     expect(result.series[0]?.points.at(-1)).toMatchObject({ open: 61.43, high: 69.76, low: 59.51 });
+  });
+
+  test("a session closed the same UTC day keeps its bar's open, high, low and volume, at the regular close", async () => {
+    // AAPL on Friday 16 Oct at 22:12Z: closed at 343.46, last printed 342.88 after hours. Gloom Cloud reads a
+    // date-only end as exclusive, so a window ending on today's date has no bar of today.
+    const now = Date.parse("2026-10-16T22:12:00Z");
+    const bars = [
+      { date: "2026-10-15T00:00:00.000Z", open: 346.95, high: 347.85, low: 341.6, close: 342, volume: 39_678_300 },
+      { date: "2026-10-16T00:00:00.000Z", open: 346.085, high: 347.82, low: 340.46, close: 343.46, volume: 60_122_725 },
+    ];
+    const asked: Array<string | undefined> = [];
+    const original = apiClient.getCloudHistory;
+    apiClient.getCloudHistory = async (_symbol, _exchange, params = {}) => {
+      asked.push(params.endDate);
+      return { status: "success", data: bars.filter((bar) => bar.date.slice(0, 10) < params.endDate!) };
+    };
+    setSystemTime(now);
+    try {
+      const cloud = new GloomberbCloudProvider();
+      const source = { kind: "security" as const, instrument: { symbol: "AAPL", exchange: "NASDAQ" }, fieldId: "market.ohlcv" };
+      const resolve = (quote: Record<string, unknown>, at = now) => resolveChartSpecData(chartSpec({
+        viewport: { range: "1M", resolution: "1d" },
+        series: [chartSeries({ source, style: "candles" })],
+      }), {
+        dataProvider: createTestDataProvider({
+          getPriceHistoryForResolutionWithMetadata: (...args) => cloud.getPriceHistoryForResolutionWithMetadata(...args),
+        }),
+        now: new Date(at),
+        quoteOverrides: new Map([[chartQuoteOverrideKeyForSource(source), {
+          symbol: "AAPL", currency: "USD", change: 1.46, changePercent: 0.43, previousClose: 342, listingExchangeName: "NASDAQ",
+          lastUpdated: Date.parse("2026-10-16T22:10:00Z"), ...quote,
+        } as never]]),
+      });
+      const result = await resolve({
+        price: 342.88, marketState: "POST", postMarketPrice: 342.88, changeSessionDate: "2026-10-16",
+        regularClose: 343.46, regularCloseSessionDate: "2026-10-16", regularChange: 1.46, regularChangePercent: 0.427,
+      });
+      expect(result.errors).toEqual([]);
+      expect(result.series[0]?.points.at(-1)).toMatchObject({
+        date: new Date("2026-10-16T00:00:00Z"), open: 346.085, high: 347.82, low: 340.46, value: 343.46, volume: 60_122_725,
+      });
+      expect(asked.at(-1)).toBe("2026-10-17");
+      // While the session trades the window still ends today: the day's bar is the live quote's.
+      const midday = Date.parse("2026-10-16T15:00:00Z");
+      setSystemTime(midday);
+      await resolve({ price: 345, marketState: "REGULAR", lastUpdated: midday - 60_000 }, midday);
+      expect(asked.at(-1)).toBe("2026-10-16");
+    } finally {
+      apiClient.getCloudHistory = original;
+      setSystemTime();
+    }
+  });
+
+  test("a fresh chart of a day the history lacks opens its candle with the session's range, mid-session and just after the close", async () => {
+    // Friday 16 Oct: the history ends on Thursday, so Friday's candle is the quote's.
+    const source = { kind: "security" as const, instrument: { symbol: "AAPL", exchange: "NASDAQ" }, fieldId: "market.ohlcv" };
+    const history = [{ date: new Date("2026-10-15T00:00:00Z"), open: 346.95, high: 347.85, low: 341.6, close: 342, volume: 39_678_300 }];
+    const session = { open: 346.085, high: 347.82, low: 340.46, volume: 60_000_000 };
+    const resolveAt = async (time: string, quote: Record<string, unknown>) => {
+      const now = Date.parse(time);
+      const result = await resolveChartSpecData(chartSpec({
+        viewport: { range: "1M", resolution: "1d" },
+        series: [chartSeries({ source, style: "candles" })],
+      }), {
+        dataProvider: createTestDataProvider({ getPriceHistoryForResolution: async () => history }),
+        now: new Date(now),
+        quoteOverrides: new Map([[chartQuoteOverrideKeyForSource(source), {
+          symbol: "AAPL", currency: "USD", change: 1.46, changePercent: 0.43, previousClose: 342, listingExchangeName: "NASDAQ",
+          lastUpdated: now - 60_000, ...session, ...quote,
+        } as never]]),
+      });
+      expect(result.errors).toEqual([]);
+      return result.series[0]?.points.at(-1);
+    };
+    expect(await resolveAt("2026-10-16T17:00:00Z", { price: 345, marketState: "REGULAR" }))
+      .toMatchObject({ date: new Date("2026-10-16T00:00:00Z"), open: 346.085, high: 347.82, low: 340.46, value: 345, volume: 60_000_000 });
+    // After-hours print under the day's low: the close is the regular close, the low the session's.
+    expect(await resolveAt("2026-10-16T20:10:00Z", {
+      price: 340, marketState: "POST", postMarketPrice: 340, changeSessionDate: "2026-10-16",
+      regularClose: 343.46, regularCloseSessionDate: "2026-10-16", regularChange: 1.46, regularChangePercent: 0.427,
+    })).toMatchObject({ open: 346.085, high: 347.82, low: 340.46, value: 343.46 });
   });
 
   test("reuses raw source loads while live quotes recompute the chart tail", async () => {

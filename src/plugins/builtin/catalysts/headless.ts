@@ -41,14 +41,14 @@ function definition(litigation: boolean): HeadlessPaneDefinition<"bundle"> {
       const changes = args.options.tab === "changes";
       // The text reads like the pane's cells; exports keep the service's codes (`clinical`, `ACTIVE_NOT_RECRUITING`).
       const cell = (column: string) => (_value: unknown, row: Record<string, unknown>) => catalystCell(row as unknown as CatalystEvent, column, query.dateField, changes);
-      return { ...(lockedRows > 0 ? { complete: false, errors: [`${lockedRows} more ${litigation ? "cases" : "events"} need Gloom Pro`] } : {}), sections: [{ title: litigation ? "Company dockets" : "Catalyst events", columns: [
+      return { ...(lockedRows > 0 ? { complete: false, errors: [`${lockedRows.toLocaleString("en-US")} more ${litigation ? "case" : "event"}${lockedRows === 1 ? " needs" : "s need"} Gloom Pro`] } : {}), sections: [{ title: litigation ? "Company dockets" : "Catalyst events", columns: [
         { key: "date", header: changes ? "Observed (UTC)" : "Date" }, ...(!changes ? [{ key: "basis", header: "Date basis" }] : []),
-        { key: "tickers", header: "Tickers" }, { key: "parties", header: "Parties" }, { key: "title", header: litigation ? "Case / docket" : "Event", textFormat: cell("title") },
+        { key: "tickers", header: "Tickers" }, { key: "parties", header: "Parties", format: (_value, row) => catalystParties(row as unknown as CatalystEvent) }, { key: "title", header: litigation ? "Case / docket" : "Event", textFormat: cell("title") },
         { key: "type", header: "Type", textFormat: cell("type") },
         ...(changes ? [{ key: "changeSummary", header: "Changes" }] : [{ key: "status", header: "Status", textFormat: cell("status") }]),
         { key: "agency", header: "Agency", textFormat: cell("agency") }, { key: "country", header: "Country", textFormat: cell("country") }, { key: "sourceUrl", header: "Primary source" },
       ], rows: data.events.map((event) => ({ ...event, date: catalystDate(event, query.dateField), ...(!changes ? { basis: catalystDateBasis(event, query.dateField) } : {}),
-        tickers: catalystTickers(event), parties: catalystParties(event), ...(changes ? { changeSummary: catalystCell(event, "status", query.dateField, true) } : {}) })),
+        tickers: catalystTickers(event), ...(changes ? { changeSummary: catalystCell(event, "status", query.dateField, true) } : {}) })),
         ...(data.events.length ? {} : { empty: catalystEmptyTitle(data, query, changes) }) }],
       metadata: { asOf: data.asOf, total: data.total, offset: data.offset, limit: data.limit, access: data.access, coverage: data.coverage, complete: data.access?.pro !== false && data.offset + data.events.length >= data.total } };
     },

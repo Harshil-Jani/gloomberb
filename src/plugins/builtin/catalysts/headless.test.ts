@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { deriveHeadlessFreshness } from "../../../cli/pane-functions/freshness";
-import { headlessReportTables, renderHeadlessPaneText } from "../../../cli/pane-functions/headless";
+import { headlessReportTables, renderHeadlessPaneText, serializeHeadlessPaneResult } from "../../../cli/pane-functions/headless";
 import { renderReportCsv } from "../../../cli/report-tables";
 import { createTestHeadlessArgs, createTestHeadlessContext } from "../../../test-support/headless";
 import type { HeadlessPaneContext } from "../../../types/headless";
 import { catalystsHeadless, litigationHeadless } from "./headless";
-import { catalystPayload } from "./test-fixture";
+import { catalystFixture, catalystPayload } from "./test-fixture";
 
 async function report(definition: typeof catalystsHeadless, access: { pro: boolean; lockedRows: number }) {
   const ctx = createTestHeadlessContext({
@@ -22,6 +22,8 @@ test("a free preview says how many events it holds back, so it never reads as co
   expect(result.errors).toEqual(["193 more events need Gloom Pro"]);
   expect(text).toContain("Pro: 193 more events need Gloom Pro");
   expect((await report(litigationHeadless, { pro: false, lockedRows: 4 })).result.errors).toEqual(["4 more cases need Gloom Pro"]);
+  expect((await report(litigationHeadless, { pro: false, lockedRows: 1 })).result.errors).toEqual(["1 more case needs Gloom Pro"]);
+  expect((await report(catalystsHeadless, { pro: false, lockedRows: 1204 })).result.errors).toEqual(["1,204 more events need Gloom Pro"]);
 });
 
 test("a Pro report holds nothing back", async () => {
@@ -37,4 +39,9 @@ test("the text reads like the pane while exports keep the service's codes", asyn
   const csv = renderReportCsv(headlessReportTables(catalystsHeadless, result, createTestHeadlessArgs({ argument: "PFE" }), "CATL",
     deriveHeadlessFreshness(catalystsHeadless, result), { complete: true, unavailableSymbols: [] }));
   expect(csv).toContain("clinical,RECRUITING,FDA");
+  // The parties print as names in CSV, but JSON keeps the service's array.
+  expect(csv.split("\n")[0]).toContain("Parties");
+  expect(csv).toContain("Pfizer");
+  const json = serializeHeadlessPaneResult(catalystsHeadless, result) as { sections: Array<{ rows: Array<{ parties: unknown }> }> };
+  expect(json.sections[0]!.rows[0]!.parties).toEqual(catalystFixture.parties);
 });
