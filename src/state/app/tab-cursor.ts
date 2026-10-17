@@ -16,6 +16,11 @@ interface TabCursor {
 }
 
 const cursors = new Map<string, TabCursor>();
+/**
+ * A pinned cursor belongs to no chart: every chart in the tab follows it, the
+ * one it was pinned from too, and no pointer leaving a chart takes it away.
+ */
+const PINNED = "\u0000pinned";
 const listeners = new Set<() => void>();
 
 function setTabCursorTime(tabKey: string, sourceId: string | null, time: number | null): void {
@@ -48,8 +53,12 @@ export interface TabCursorLink {
   held(): boolean;
   /** Reports this chart's cursor, or null when it leaves. */
   publish(time: number | null): void;
-  /** Clears the tab's cursor, whichever chart holds it. */
+  /** Clears the tab's cursor, whichever chart holds it, a pinned one too. */
   clear(): void;
+  /** Whether the tab's cursor is pinned. */
+  pinned?(): boolean;
+  /** Pins the tab's cursor at `time`, which no chart's pointer moves, or unpins it with null. */
+  pin?(time: number | null): void;
 }
 
 /** A layout tab is named by its id; older saved tabs have none, and go by position. */
@@ -76,8 +85,14 @@ export function useTabCursorLink(sourceId: string | null): TabCursorLink | undef
       return cursor && cursor.sourceId !== sourceId ? cursor.time : null;
     },
     held: () => cursors.get(tabKey)?.sourceId === sourceId,
-    publish: (time) => setTabCursorTime(tabKey, sourceId, time !== null && Number.isFinite(time) ? time : null),
+    publish: (time) => {
+      // A pinned cursor stays until it is unpinned: hovering a chart, or leaving it, does not move it.
+      if (cursors.get(tabKey)?.sourceId === PINNED) return;
+      setTabCursorTime(tabKey, sourceId, time !== null && Number.isFinite(time) ? time : null);
+    },
     clear: () => setTabCursorTime(tabKey, null, null),
+    pinned: () => cursors.get(tabKey)?.sourceId === PINNED,
+    pin: (time) => setTabCursorTime(tabKey, PINNED, time !== null && Number.isFinite(time) ? time : null),
   }, [sourceId, tabKey]);
   // A chart closed or switched away from under the cursor takes its cursor with it.
   useEffect(() => () => link?.publish(null), [link]);

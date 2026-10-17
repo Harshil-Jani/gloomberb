@@ -369,6 +369,7 @@ function ThemedCompositeChart({
     return time === null || !baseScene ? null : compositeLinkedCursorTime(baseScene, time);
   }, [baseScene, sharedTime]));
   const holdsSharedCursor = useSyncExternalStore(subscribeToLink, link?.held ?? holdsNothing);
+  const pinnedCursor = useSyncExternalStore(subscribeToLink, link?.pinned ?? holdsNothing);
   const publishCursor = link?.publish;
   const scene = useMemo(() => {
     if (!baseScene) return null;
@@ -405,10 +406,39 @@ function ThemedCompositeChart({
     updateCursor(null);
   }, [cursorDate, holdsSharedCursor, link, updateCursor]);
   // Esc on a chart showing another chart's cursor clears it, as on that chart.
+  // While the tab's cursor is pinned the arrows move the pin and Esc unpins it.
   const updateKeyboardCursor = useCallback((date: Date | null) => {
+    if (link?.pinned?.()) {
+      link.pin?.(date && baseScene ? compositeCursorAsOf(baseScene, date) : null);
+      return;
+    }
     if (date === null && showsSharedCursor) link?.clear();
     updateCursor(date);
-  }, [link, showsSharedCursor, updateCursor]);
+  }, [baseScene, link, showsSharedCursor, updateCursor]);
+  // `p` pins the crosshair where it is, this chart's own or another's, so
+  // every chart in the tab holds that moment after the pointer leaves. With
+  // no crosshair it pins the last one shown: the pointer leaves the plot on
+  // its way to the footer's pin.
+  // The last time sits in a ref, so a moving crosshair costs no extra render;
+  // only the first one shown brings the pin to the footer.
+  const cursorAt = scene?.cursorDate?.getTime() ?? null;
+  const lastCursorAtRef = useRef<number | null>(null);
+  if (cursorAt !== null) lastCursorAtRef.current = cursorAt;
+  const [cursorShown, setCursorShown] = useState(false);
+  const firstCursor = !cursorShown && cursorAt !== null;
+  useEffect(() => {
+    if (firstCursor) setCursorShown(true);
+  }, [firstCursor]);
+  const pinnable = !!link?.pin && (pinnedCursor || cursorShown);
+  const togglePin = useCallback(() => {
+    if (!link?.pin) return;
+    if (link.pinned?.()) {
+      link.pin(null);
+      return;
+    }
+    const at = lastCursorAtRef.current;
+    if (at !== null && baseScene) link.pin(compositeCursorAsOf(baseScene, new Date(at)));
+  }, [baseScene, link]);
 
   const {
     armedTool,
@@ -429,6 +459,7 @@ function ThemedCompositeChart({
     scene,
     cursorDate,
     updateCursor: updateKeyboardCursor,
+    pin: pinnable ? { pinned: pinnedCursor, toggle: togglePin } : null,
     onActivate,
     timePick,
     levels,

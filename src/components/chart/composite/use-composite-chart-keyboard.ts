@@ -73,6 +73,7 @@ export function useCompositeChartKeyboard({
   scene,
   cursorDate,
   updateCursor,
+  pin,
   onActivate,
   timePick,
   levels,
@@ -101,6 +102,8 @@ export function useCompositeChartKeyboard({
   scene: CompositeChartScene | null;
   cursorDate: CompositeChartProps["cursorDate"];
   updateCursor: (date: Date | null) => void;
+  /** The tab's crosshair pin, when there is a cursor to pin or a pin to lift. */
+  pin: { pinned: boolean; toggle: () => void } | null;
   onActivate: CompositeChartProps["onActivate"];
   timePick: CompositeChartProps["timePick"];
   levels: CompositeChartProps["levels"];
@@ -583,6 +586,7 @@ export function useCompositeChartKeyboard({
       armTool(tool);
     },
     leave: leaveChart,
+    togglePin: () => pin?.toggle(),
   };
   const chartActionsRef = useRef(chartActions);
   chartActionsRef.current = chartActions;
@@ -600,6 +604,7 @@ export function useCompositeChartKeyboard({
   const levelActionHint = selectedLevel?.actionable && levels?.action ? levels.action : null;
   const levelToolKeys = toolsActive && armedTool === "level" && levelsEditable;
   const canDeleteLevel = toolsActive && levelsEditable && !!selectedLevel?.editable;
+  const pinState = pin ? pin.pinned : null;
   usePaneFooter(keyboardId, () => {
     if (!keyboardActive || !scene) return null;
     const hints: PaneHint[] = [];
@@ -617,6 +622,15 @@ export function useCompositeChartKeyboard({
         label: levelActionHint.label,
         title: levelActionHint.title,
         onPress: () => chartActionsRef.current.levelAction(),
+      });
+    }
+    if (pinState !== null) {
+      hints.push({
+        id: "chart-pin",
+        key: "p",
+        label: pinState ? "unpin" : "pin",
+        title: pinState ? "Unpin Crosshair" : "Pin Crosshair",
+        onPress: () => chartActionsRef.current.togglePin(),
       });
     }
     if (legendKeysActive && legendEntryToggleable) {
@@ -686,6 +700,7 @@ export function useCompositeChartKeyboard({
     canDeleteLevel,
     levelsEditable,
     toolsActive,
+    pinState,
   ]);
 
   return {
