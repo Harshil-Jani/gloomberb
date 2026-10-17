@@ -151,3 +151,11 @@ export function usePinnedTabTime(): number | null {
   }, [tabKey]);
   return useSyncExternalStore(subscribe, pinnedTime);
 }
+
+/** Lifts the layout tab's pin from a pane that is not a chart, as Esc does on a chart. */
+export function useUnpinTab(): () => void {
+  const tabKey = useOptionalAppSelector<string | null>(selectTabKey, null);
+  return useCallback(() => {
+    if (tabKey !== null) setTabCursorTime(tabKey, PINNED, null);
+  }, [tabKey]);
+}
