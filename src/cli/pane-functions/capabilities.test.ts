@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { paneSchemas as chartSchemas } from "../../plugins/builtin/chart-composer/headless-schema";
+import { buildFundamentalChartPreset, buildValuationChartPreset } from "../../plugins/builtin/chart-composer/presets";
 import { paneSchemas as correlationSchemas } from "../../plugins/builtin/correlation/headless-schema";
 import { paneSchemas as researchSchemas } from "../../plugins/builtin/research/headless-schema";
 import { optionsPositioningHeadless } from "../../plugins/builtin/options-positioning/headless";
@@ -76,6 +77,21 @@ describe("pane function capabilities", () => {
       period: "annual",
     });
     expect(capabilityPluginState(capability, options)).toEqual({});
+  });
+
+  test("GF opens on the period its app template builds, with annual one option away", () => {
+    const capability = capabilityFor("fundamental-graph-pane");
+    expect(buildFundamentalChartPreset(["AAPL"]).series[0]!.source).toMatchObject({ period: "quarterly" });
+    expect(normalizeCapabilityOptions(capability, {}).period).toBe("quarterly");
+    expect(normalizeCapabilityOptions(capability, { period: "annual" }).period).toBe("annual");
+  });
+
+  test("GE reads annual by default, unlike its quarterly app template, until quarterly TTM history is fixed", () => {
+    // The quarterly multiple has values for about the last year only; annual reads from 2021.
+    const capability = capabilityFor("valuation-graph-pane");
+    expect(buildValuationChartPreset(["AAPL"]).series[0]!.source).toMatchObject({ period: "quarterly" });
+    expect(normalizeCapabilityOptions(capability, {}).period).toBe("annual");
+    expect(normalizeCapabilityOptions(capability, { period: "quarterly" }).period).toBe("quarterly");
   });
 
   test("exposes custom G as a bot-safe mixed-series capability", () => {
