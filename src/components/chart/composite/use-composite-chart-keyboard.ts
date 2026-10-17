@@ -477,9 +477,10 @@ export function useCompositeChartKeyboard({
       setLegendKeyboardIndex(null);
       return;
     }
-    // Then Esc lifts a pin, on any chart that owns its cursor, whether or not
-    // the pinned moment is on its bars.
-    if (pin?.pinned && cursorDate === undefined && isPlainKey(event, "escape")) {
+    // Then Esc lifts a pin, whether or not the pinned moment is on this
+    // chart's bars, and before an owner that holds the cursor (a pane's
+    // selected date) gets it: the pin shows over that cursor until it goes.
+    if (pin?.pinned && isPlainKey(event, "escape")) {
       consume();
       pin.toggle();
       return;
@@ -636,7 +637,8 @@ export function useCompositeChartKeyboard({
       hints.push({
         id: "chart-pin",
         key: "p",
-        label: pinState ? "unpin" : "in",
+        // "[p]in", and "[p] unpin" for the word that does not start with its key.
+        label: pinState ? " unpin" : "in",
         title: pinState ? "Unpin Crosshair" : "Pin Crosshair",
         // A pane whose own `p` means something else keeps it.
         yieldsKey: true,

@@ -349,10 +349,12 @@ function ThemedCompositeChart({
   // pane's layout tab, its siblings in the pane included: each chart is its
   // own source, so they never take turns. A chart that stops taking the
   // pointer for a while (under a dialog) keeps its place, so a cursor it
-  // holds stays shared.
+  // holds stays shared. Only an interactive chart shows the tab's pin and
+  // lifts it, so only one counts toward keeping it.
   const chartId = useId();
   const tabLink = useTabCursorLink(
     cursorLink === undefined && !xAxis && paneInstanceId !== null ? `${paneInstanceId}${chartId}` : null,
+    { viewer: interactive },
   );
   const link = xAxis ? undefined
     : cursorLink === undefined ? interactive ? tabLink : undefined
