@@ -1282,7 +1282,7 @@ const steps: Step[] = [
       const hovered = await waitFor<{ a: State; b: State } | null>(cdp, `(() => { const s = ${both}; return s.a.line && s.b.line && s.b.time ? s : null; })()`)
         ?? fail("the daily chart did not follow the hovered crosshair", await evaluate(cdp, both));
       // The pointer leaves the plot for the footer's pin: the last crosshair is the one pinned.
-      const pin = await waitFor<Rect | null>(cdp, pinHint("pin")) ?? fail("the focused chart's footer has no pin", await evaluate(cdp, `__check.pane("chart-composer:a")?.querySelector("[data-gloom-role=pane-footer]")?.textContent`));
+      const pin = await waitFor<Rect | null>(cdp, pinHint("[p]in")) ?? fail("the focused chart's footer has no pin", await evaluate(cdp, `__check.pane("chart-composer:a")?.querySelector("[data-gloom-role=pane-footer]")?.textContent`));
       await click(cdp, { x: pin.x + pin.width / 2, y: pin.y + pin.height / 2 });
       const pinned = await waitFor<{ a: State; b: State } | null>(cdp, `(() => { const s = ${both}; return s.a.line && s.b.line && s.b.time === ${JSON.stringify(hovered.b.time)} ? s : null; })()`)
         ?? fail("the charts did not hold the crosshair's moment once pinned and the pointer left", { hovered, now: await evaluate(cdp, both) });
