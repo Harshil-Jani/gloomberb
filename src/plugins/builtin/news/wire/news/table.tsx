@@ -18,6 +18,7 @@ import { formatFeedTime } from "../../../../../utils/datetime-format";
 import { nextHeaderSort } from "../../../../../utils/sort-values";
 import { formatNewsCategory } from "../categories";
 import { useOpenTickerChoice } from "../../../shared/ticker-choice";
+import { usePinnedTabTime } from "../../../../../state/app/tab-cursor";
 
 export type NewsColumnId =
   | "rank"
@@ -252,6 +253,22 @@ export function NewsArticleStackView({
     void loadNewsStory(article.id).catch(() => {});
   }, [loadNewsStory]);
 
+  // A crosshair pinned in the tab picks the newest story out by then, and
+  // dims the ones published after it.
+  const pinnedAt = usePinnedTabTime();
+  const pinnedArticleId = useMemo(() => {
+    if (pinnedAt === null) return null;
+    let newest: MarketNewsItem | null = null;
+    for (const article of sortedArticles) {
+      const at = article.publishedAt.getTime();
+      if (at <= pinnedAt && (!newest || at > newest.publishedAt.getTime())) newest = article;
+    }
+    return newest?.id ?? null;
+  }, [pinnedAt, sortedArticles]);
+  useEffect(() => {
+    if (pinnedArticleId !== null) setSelectedArticleId(pinnedArticleId);
+  }, [pinnedArticleId, setSelectedArticleId]);
+
   useEffect(() => {
     if (sortedArticles.length === 0) {
       if (selectedArticleId !== null) setSelectedArticleId(null);
@@ -279,6 +296,7 @@ export function NewsArticleStackView({
     index: number,
     rowState: { selected: boolean },
   ): DataTableCell => {
+    const later = pinnedAt !== null && item.publishedAt.getTime() > pinnedAt;
     switch (column.id) {
       case "rank":
         return { text: String(index + 1), color: colors.textDim };
@@ -291,8 +309,8 @@ export function NewsArticleStackView({
           // Unclipped: the table fits it to the width the column really gets,
           // which on desktop is wider than the width it was laid out at.
           text: titleForArticle?.(item) ?? item.title,
-          color: colors.text,
-          attributes: readArticleIds?.has(item.id)
+          color: later ? colors.textDim : colors.text,
+          attributes: later || readArticleIds?.has(item.id)
             ? TextAttributes.NONE
             : TextAttributes.BOLD,
         };
@@ -334,7 +352,7 @@ export function NewsArticleStackView({
           color: item.importance >= 80 ? colors.positive : colors.textDim,
         };
     }
-  }, [readArticleIds, titleForArticle]);
+  }, [pinnedAt, readArticleIds, titleForArticle]);
 
   return (
     <DataTableStackView<MarketNewsItem, NewsTableColumn>

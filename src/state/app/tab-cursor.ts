@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { AppState } from "../../core/state/app/state";
 import { useOptionalAppSelector } from "./context";
 
@@ -97,4 +97,19 @@ export function useTabCursorLink(sourceId: string | null): TabCursorLink | undef
   // A chart closed or switched away from under the cursor takes its cursor with it.
   useEffect(() => () => link?.publish(null), [link]);
   return link;
+}
+
+/**
+ * The moment the layout tab's crosshair is pinned at, for a pane that is not a
+ * chart (news, the tape): null while nothing is pinned. It follows the pin, not
+ * a pointer passing over a chart, so a list re-renders when the pin moves and
+ * never on a pointer move.
+ */
+export function usePinnedTabTime(): number | null {
+  const tabKey = useOptionalAppSelector<string | null>(selectTabKey, null);
+  const pinnedTime = useCallback(() => {
+    const cursor = tabKey === null ? undefined : cursors.get(tabKey);
+    return cursor?.sourceId === PINNED ? cursor.time : null;
+  }, [tabKey]);
+  return useSyncExternalStore(subscribe, pinnedTime);
 }

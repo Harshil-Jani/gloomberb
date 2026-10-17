@@ -13,6 +13,7 @@ import { createDefaultConfig } from "../../../../../types/config";
 import type { MarketNewsItem } from "../../../../../types/news-source";
 import { createTestArticle } from "../../../../../test-support/news";
 import { NewsArticleStackView, buildColumns, type NewsSortPreference } from "./table";
+import { useTabCursorLink } from "../../../../../state/app/tab-cursor";
 
 const tui = createOpenTuiTestHarness();
 
@@ -196,5 +197,45 @@ describe("NewsArticleStackView", () => {
     expect(frame).toContain("PARA");
     expect(frame).not.toContain("NFLX:XNAS");
     expect(frame).not.toContain("PARA:XNAS");
+  });
+});
+
+describe("NewsArticleStackView under a pinned crosshair", () => {
+  test("selects the newest story out by the pinned moment and drops the later stories' weight", async () => {
+    const selections: Array<string | null> = [];
+    let pin: ((time: number | null) => void) | undefined;
+    function Pinner() {
+      pin = useTabCursorLink("chart")?.pin;
+      return null;
+    }
+    const articles = [
+      makeArticle({ id: "before", title: "Before story", publishedAt: new Date("2026-04-18T12:00:00Z") }),
+      makeArticle({ id: "at", title: "At story", publishedAt: new Date("2026-04-18T14:30:00Z") }),
+      makeArticle({ id: "after", title: "After story", publishedAt: new Date("2026-04-18T16:00:00Z") }),
+    ];
+    await tui.render(
+      <AppContext value={createStaticAppStore(createInitialState(createDefaultConfig("/tmp/gloomberb-news-pinned")))}>
+        <PaneInstanceProvider paneId="news-feed:main">
+          <Pinner />
+          <NewsArticleStackView articles={articles} focused width={90} rootHeight={10} selectedArticleId="after"
+            setSelectedArticleId={(id) => selections.push(id)} sortPreference={sortPreference} setSortPreference={() => {}}
+            onOpenArticle={() => {}} detailOpen={false} onBack={() => {}} detailContent={<Box />}
+            columns={["time", "source", "title"]} emptyStateTitle="No stories" />
+        </PaneInstanceProvider>
+      </AppContext>,
+      { width: 90, height: 10 },
+    );
+    await act(async () => { await tui.setup().renderOnce(); });
+    try {
+      await act(async () => pin!(Date.parse("2026-04-18T15:00:00Z")));
+      await act(async () => { await tui.setup().renderOnce(); });
+      expect(selections.at(-1)).toBe("at");
+      const bold = tui.setup().captureSpans().lines.flatMap((line) => line.spans)
+        .filter((span) => (span.attributes & TextAttributes.BOLD) !== 0).map((span) => span.text).join(" ");
+      expect(bold).toContain("At story");
+      expect(bold).not.toContain("After story");
+    } finally {
+      await act(async () => pin?.(null));
+    }
   });
 });

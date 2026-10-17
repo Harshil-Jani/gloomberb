@@ -3,7 +3,7 @@ import { ApiRequestError } from "../../../api-client/errors";
 import type { TapeSnapshot } from "../../../api-client/tape";
 import { tapeFixture } from "./test-fixture";
 import { fetchTape, validateTape } from "./client";
-import { newestFirst, quoteKey, quoteSpread, stickyTapePriceDigits, tapeClock, tapeClockMs, tapeClockNewYork, tapeConditionWords, tapePrice, tapeStatistics, tapeTicks, tradeKey } from "./model";
+import { newestFirst, quoteKey, quoteSpread, stickyTapePriceDigits, tapeClock, tapeClockMs, tapeClockNewYork, tapeConditionWords, tapePrice, tapeRowAtOrBefore, tapeStatistics, tapeTicks, tradeKey } from "./model";
 
 
 test("lossless IDs and nanosecond order determine latest print and weighted observed statistics", () => {
@@ -105,4 +105,17 @@ test("tape rows read in New York time and conditions in words, regular sales uns
   expect(tapeConditionWords(["@", "F", "T", "I"])).toBe("ISO · ext hours · odd lot");
   expect(tapeConditionWords(["@"])).toBe("");
   expect(tapeConditionWords(["@", "?"])).toBe("?");
+});
+
+test("the row at a pinned moment is the newest printed at or before it, nanoseconds kept", () => {
+  const rows = newestFirst([
+    { timestamp: "2026-09-28T14:30:00.000000002Z", id: "c" },
+    { timestamp: "2026-09-28T14:30:00.000000001Z", id: "b" },
+    { timestamp: "2026-09-28T14:29:59.500000000Z", id: "a" },
+  ]);
+  const at = (iso: string) => tapeRowAtOrBefore(rows, (row) => row.timestamp, Date.parse(iso))?.id ?? null;
+  // A moment inside the millisecond still lands at or before it: 14:30:00.000 is before both nanosecond prints.
+  expect(at("2026-09-28T14:30:00.000Z")).toBe("a");
+  expect(at("2026-09-28T14:30:00.001Z")).toBe("c");
+  expect(at("2026-09-28T14:29:59.000Z")).toBeNull();
 });

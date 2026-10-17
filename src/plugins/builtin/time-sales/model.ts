@@ -36,6 +36,11 @@ export const quoteKey = (row: TapeQuote) => JSON.stringify([tapeTimeKey(row.time
 export function newestFirst<T extends { timestamp: string }>(rows: readonly T[]): T[] {
   return [...rows].sort((a, b) => tapeTimeKey(b.timestamp).localeCompare(tapeTimeKey(a.timestamp)));
 }
+/** Of rows newest first, the first printed at or before `at` (ms): null when every row is later. */
+export function tapeRowAtOrBefore<T>(rows: readonly T[], timestamp: (row: T) => string, at: number): T | null {
+  const key = tapeTimeKey(new Date(at).toISOString());
+  return rows.find((row) => tapeTimeKey(timestamp(row)).localeCompare(key) <= 0) ?? null;
+}
 export function tapeStatistics(data: Pick<TapeSnapshot, "trades">) {
   const trades = newestFirst(data.trades);
   const prices = trades.map((row) => row.price);
