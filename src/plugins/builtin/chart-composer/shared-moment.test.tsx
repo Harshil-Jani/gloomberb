@@ -55,7 +55,7 @@ async function open(moment: unknown) {
 
 const held = () => findPaneInstance(latest.config.layout, PANE_ID)?.settings?.[CHART_PINNED_MOMENT_SETTING_KEY] ?? null;
 
-test("a shared moment pins the tab once and leaves the pane; one no Date can hold pins nothing and goes too", async () => {
+test("a shared moment pins the tab once and leaves the pane; an implausible one pins nothing and goes too", async () => {
   const moment = Date.parse("2026-10-15T14:30:00.000Z");
   await open(moment);
   expect(pinnedAt).toBe(moment);
@@ -63,7 +63,9 @@ test("a shared moment pins the tab once and leaves the pane; one no Date can hol
   await act(async () => unpin());
   expect(pinnedAt).toBeNull();
 
-  for (const untrusted of [1e20, "1760538600000", { at: moment }]) {
+  // Past the Date range, year 275760, 1850, two years ahead, not a number.
+  const year = 365 * 86_400_000;
+  for (const untrusted of [1e20, 8.64e15, Date.UTC(1850, 0, 1), Date.now() + 2 * year, "1760538600000", { at: moment }]) {
     await open(untrusted);
     expect(pinnedAt).toBeNull();
     expect(held()).toBeNull();

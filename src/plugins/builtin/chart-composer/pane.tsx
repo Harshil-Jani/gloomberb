@@ -60,6 +60,7 @@ import {
   CHART_PINNED_MOMENT_SETTING_KEY,
   CHART_SPEC_SETTING_KEY,
   parseChartInteractionViewport,
+  parseSharedPinnedMoment,
   parseChartSpecOr,
   projectVisibleChartSeries,
   toggleChartSeries,
@@ -314,14 +315,16 @@ function ChartComposerSurface({
   );
   // A link shared while its sender's crosshair was pinned opens on that
   // moment: the chart pins its tab there once, then forgets it, so a restart
-  // does not pin it again. The value came from a link: anything but a time a
-  // Date can hold is dropped without pinning (the pin checks the range).
+  // does not pin it again. The value came from a link: anything but a
+  // plausible time is dropped without pinning. This handle only sets the
+  // pin; the chart it opens on is what shows and keeps it.
   const [pinnedMoment, setPinnedMoment] = usePaneSettingValue<unknown>(CHART_PINNED_MOMENT_SETTING_KEY, null);
-  const momentLink = useTabCursorLink(paneId ? `${paneId}:moment` : null);
+  const momentLink = useTabCursorLink(paneId ? `${paneId}:moment` : null, { viewer: false });
   useEffect(() => {
     if (pinnedMoment == null || !momentLink?.pin) return;
-    if (typeof pinnedMoment === "number") momentLink.pin(pinnedMoment);
-    setPinnedMoment(null);
+    const moment = parseSharedPinnedMoment(pinnedMoment);
+    if (moment !== null) momentLink.pin(moment);
+    setPinnedMoment(undefined);
   }, [momentLink, pinnedMoment, setPinnedMoment]);
   const persistedInteractionViewport = useMemo(
     () => parseChartInteractionViewport(storedInteractionViewport),

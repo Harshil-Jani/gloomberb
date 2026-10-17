@@ -143,13 +143,13 @@ function prepareChartPaneForShare(
   pane: PaneInstanceConfig,
   { tickers, pinnedTime }: { tickers: ReadonlyMap<string, TickerRecord>; pinnedTime?: number },
 ): PaneInstanceConfig {
-  const spec = parseChartSpec(pane.settings?.[CHART_SPEC_SETTING_KEY]);
-  if (!spec) return pane;
-  const pinned = pinChartSpecListings(spec, tickers);
   // A crosshair pinned in the sender's tab travels with the link, so it opens
   // on that moment. A moment the pane still holds from a link it was opened
-  // from is never passed on.
+  // from is never passed on, whatever else the pane holds.
   const { [CHART_PINNED_MOMENT_SETTING_KEY]: held, ...settings } = pane.settings ?? {};
+  const spec = parseChartSpec(pane.settings?.[CHART_SPEC_SETTING_KEY]);
+  if (!spec) return held === undefined ? pane : { ...pane, settings };
+  const pinned = pinChartSpecListings(spec, tickers);
   if (pinned === spec && pinnedTime === undefined && held === undefined) return pane;
   return { ...pane, settings: {
     ...settings,

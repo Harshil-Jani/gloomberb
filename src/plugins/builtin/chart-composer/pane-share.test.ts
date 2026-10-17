@@ -16,6 +16,7 @@ import { setPairStudies } from "./studies";
 import { buildCustomChartPreset, buildPriceChartPreset } from "./presets";
 import { applyChartComposerPaneSetting, CHART_SETTING_KEYS } from "./settings";
 import { buildPaneSharePayload } from "../../../shares/pane";
+import { publishableMarketplaceLayout } from "../../../shares/portable-layout";
 import type { PluginRegistry } from "../../registry";
 import type { ChartStudySpec } from "../../../time-series/types";
 import type { TickerRecord } from "../../../types/ticker";
@@ -84,11 +85,18 @@ describe("chart pane sharing", () => {
     expect(CHART_PINNED_MOMENT_SETTING_KEY in shared(null)).toBe(false);
     // The sender's own pane keeps no moment: the share rewrites a copy.
     expect(CHART_PINNED_MOMENT_SETTING_KEY in pane.settings).toBe(false);
-    // A pane opened from a pinned link and shared on before it pinned passes no stale moment.
-    const opened = { ...pane, settings: { ...pane.settings, [CHART_PINNED_MOMENT_SETTING_KEY]: moment } };
-    const reshared = buildPaneSharePayload(registry, opened, {}, "SPY", new Map(), null);
-    if (reshared?.data.version !== 2) throw new Error("expected a portable pane share");
-    expect(CHART_PINNED_MOMENT_SETTING_KEY in (reshared.data.layout.layout.instances[0]!.settings ?? {})).toBe(false);
+    // A pane opened from a pinned link and shared on before it pinned passes
+    // no stale moment: as a link, with a spec this terminal cannot read, or
+    // in a layout published to the gallery, which has no ticker records.
+    const opened = (spec: unknown) => ({ ...pane, settings: { [CHART_SPEC_SETTING_KEY]: spec, [CHART_PINNED_MOMENT_SETTING_KEY]: moment } });
+    const reshared = buildPaneSharePayload(registry, opened(pane.settings[CHART_SPEC_SETTING_KEY]), {}, "SPY", new Map(), null);
+    const unreadable = buildPaneSharePayload(registry, opened({ version: 99 }), {}, "SPY", new Map(), null);
+    const gallery = publishableMarketplaceLayout({ dockRoot: { kind: "pane", instanceId: pane.instanceId }, instances: [opened(pane.settings[CHART_SPEC_SETTING_KEY])], floating: [], detached: [] }, {}, registry.panes);
+    for (const instance of [reshared?.data.version === 2 ? reshared.data.layout.layout.instances[0] : null,
+      unreadable?.data.version === 2 ? unreadable.data.layout.layout.instances[0] : null, gallery.layout.instances[0]]) {
+      expect(instance).toBeTruthy();
+      expect(CHART_PINNED_MOMENT_SETTING_KEY in (instance!.settings ?? {})).toBe(false);
+    }
   });
 
   test("persisted and shared authored formulas survive toggling another formula", async () => {
