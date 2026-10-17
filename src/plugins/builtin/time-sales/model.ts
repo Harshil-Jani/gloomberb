@@ -36,10 +36,17 @@ export const quoteKey = (row: TapeQuote) => JSON.stringify([tapeTimeKey(row.time
 export function newestFirst<T extends { timestamp: string }>(rows: readonly T[]): T[] {
   return [...rows].sort((a, b) => tapeTimeKey(b.timestamp).localeCompare(tapeTimeKey(a.timestamp)));
 }
-/** Of rows newest first, the first printed at or before `at` (ms): null when every row is later. */
-export function tapeRowAtOrBefore<T>(rows: readonly T[], timestamp: (row: T) => string, at: number): T | null {
-  const key = tapeTimeKey(new Date(at).toISOString());
-  return rows.find((row) => tapeTimeKey(timestamp(row)).localeCompare(key) <= 0) ?? null;
+/**
+ * A moment in milliseconds as a tape key, the one comparison both picking the
+ * row at a pinned moment and muting the rows after it use, so a print at
+ * 14:30:00.000000002 is after a moment of 14:30:00.000 for both.
+ */
+export const tapeMomentKey = (at: number) => tapeTimeKey(new Date(at).toISOString());
+/** Whether a SIP stamp is after a moment's key (`tapeMomentKey`). */
+export const tapeAfter = (timestamp: string, momentKey: string) => tapeTimeKey(timestamp) > momentKey;
+/** Of rows newest first, the first printed at or before a moment's key: null when every row is later. */
+export function tapeRowAtOrBefore<T>(rows: readonly T[], timestamp: (row: T) => string, momentKey: string): T | null {
+  return rows.find((row) => !tapeAfter(timestamp(row), momentKey)) ?? null;
 }
 export function tapeStatistics(data: Pick<TapeSnapshot, "trades">) {
   const trades = newestFirst(data.trades);

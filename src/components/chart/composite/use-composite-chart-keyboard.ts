@@ -220,7 +220,8 @@ export function useCompositeChartKeyboard({
   const leaveChart = () => {
     setEntered(false);
     setLegendKeyboardIndex(null);
-    if (!clearableCursor) return;
+    // Stepping out to the strip leaves a pinned crosshair where it is.
+    if (!clearableCursor || pin?.pinned) return;
     keyboardCursorDateRef.current = null;
     updateCursor(null);
   };
@@ -476,6 +477,13 @@ export function useCompositeChartKeyboard({
       setLegendKeyboardIndex(null);
       return;
     }
+    // Then Esc lifts a pin, on any chart that owns its cursor, whether or not
+    // the pinned moment is on its bars.
+    if (pin?.pinned && cursorDate === undefined && isPlainKey(event, "escape")) {
+      consume();
+      pin.toggle();
+      return;
+    }
     // Whatever a tool or a pick held is gone by now, so Esc steps out to the
     // strip, and so does Up: the strip sits above. Consumed, so leaving never
     // counts toward a double-Esc close.
@@ -628,8 +636,10 @@ export function useCompositeChartKeyboard({
       hints.push({
         id: "chart-pin",
         key: "p",
-        label: pinState ? "unpin" : "pin",
+        label: pinState ? "unpin" : "in",
         title: pinState ? "Unpin Crosshair" : "Pin Crosshair",
+        // A pane whose own `p` means something else keeps it.
+        yieldsKey: true,
         onPress: () => chartActionsRef.current.togglePin(),
       });
     }

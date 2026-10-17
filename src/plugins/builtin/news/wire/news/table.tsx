@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
 import { TextAttributes, type ScrollBoxRenderable } from "../../../../../ui";
 import {
   DataTableStackView,
@@ -18,7 +18,7 @@ import { formatFeedTime } from "../../../../../utils/datetime-format";
 import { nextHeaderSort } from "../../../../../utils/sort-values";
 import { formatNewsCategory } from "../categories";
 import { useOpenTickerChoice } from "../../../shared/ticker-choice";
-import { usePinnedTabTime } from "../../../../../state/app/tab-cursor";
+import { usePinnedMoment } from "../../../../../components/use-pinned-moment";
 
 export type NewsColumnId =
   | "rank"
@@ -254,8 +254,9 @@ export function NewsArticleStackView({
   }, [loadNewsStory]);
 
   // A crosshair pinned in the tab picks the newest story out by then, and
-  // dims the ones published after it.
-  const pinnedAt = usePinnedTabTime();
+  // mutes the ones published after it. The selection follows the pin when it
+  // moves, not when a story streams in, so a row the user picked stays put.
+  const pinnedAt = usePinnedMoment("news-table:pin", { enabled: !detailOpen });
   const pinnedArticleId = useMemo(() => {
     if (pinnedAt === null) return null;
     let newest: MarketNewsItem | null = null;
@@ -265,9 +266,13 @@ export function NewsArticleStackView({
     }
     return newest?.id ?? null;
   }, [pinnedAt, sortedArticles]);
+  const followedPinRef = useRef<number | null>(null);
   useEffect(() => {
-    if (pinnedArticleId !== null) setSelectedArticleId(pinnedArticleId);
-  }, [pinnedArticleId, setSelectedArticleId]);
+    if (pinnedAt === null) followedPinRef.current = null;
+    if (pinnedAt === null || pinnedArticleId === null || followedPinRef.current === pinnedAt) return;
+    followedPinRef.current = pinnedAt;
+    setSelectedArticleId(pinnedArticleId);
+  }, [pinnedAt, pinnedArticleId, setSelectedArticleId]);
 
   useEffect(() => {
     if (sortedArticles.length === 0) {
@@ -296,12 +301,15 @@ export function NewsArticleStackView({
     index: number,
     rowState: { selected: boolean },
   ): DataTableCell => {
+    // A story out after the pinned moment reads muted and plain throughout,
+    // as rows that no longer apply do elsewhere (an exited holder).
     const later = pinnedAt !== null && item.publishedAt.getTime() > pinnedAt;
+    const tone = (color: string) => later ? colors.textMuted : color;
     switch (column.id) {
       case "rank":
-        return { text: String(index + 1), color: colors.textDim };
+        return { text: String(index + 1), color: tone(colors.textDim) };
       case "time":
-        return { text: formatFeedTime(item.publishedAt), value: item.publishedAt, color: colors.textDim };
+        return { text: formatFeedTime(item.publishedAt), value: item.publishedAt, color: tone(colors.textDim) };
       case "source":
         return { text: item.source, color: colors.textMuted };
       case "title":
@@ -309,7 +317,7 @@ export function NewsArticleStackView({
           // Unclipped: the table fits it to the width the column really gets,
           // which on desktop is wider than the width it was laid out at.
           text: titleForArticle?.(item) ?? item.title,
-          color: later ? colors.textDim : colors.text,
+          color: tone(colors.text),
           attributes: later || readArticleIds?.has(item.id)
             ? TextAttributes.NONE
             : TextAttributes.BOLD,
@@ -331,13 +339,13 @@ export function NewsArticleStackView({
       case "categories":
         return {
           text: formatNewsCategory(item.categories[0]) || "-",
-          color: colors.textDim,
+          color: tone(colors.textDim),
         };
       case "sentiment": {
         const sentiment = item.sentiment;
         return {
           text: sentiment ? sentiment.slice(0, 3) : "-",
-          color: (
+          color: tone(
             sentiment === "positive"
               ? colors.positive
               : sentiment === "negative"
@@ -349,7 +357,7 @@ export function NewsArticleStackView({
       case "importance":
         return {
           text: String(item.importance),
-          color: item.importance >= 80 ? colors.positive : colors.textDim,
+          color: tone(item.importance >= 80 ? colors.positive : colors.textDim),
         };
     }
   }, [pinnedAt, readArticleIds, titleForArticle]);

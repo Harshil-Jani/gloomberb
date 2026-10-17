@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core";
 import { describe, expect, test } from "bun:test";
-import { act } from "react";
+import { act, useState } from "react";
 import { Box } from "../../../../../ui";
 import { createOpenTuiTestHarness } from "../../../../../renderers/opentui/test-utils";
 import {
@@ -201,7 +201,7 @@ describe("NewsArticleStackView", () => {
 });
 
 describe("NewsArticleStackView under a pinned crosshair", () => {
-  test("selects the newest story out by the pinned moment and drops the later stories' weight", async () => {
+  test("selects the newest story out by the pinned moment and mutes the later ones, and a story streaming in leaves the selection alone", async () => {
     const selections: Array<string | null> = [];
     let pin: ((time: number | null) => void) | undefined;
     function Pinner() {
@@ -213,14 +213,20 @@ describe("NewsArticleStackView under a pinned crosshair", () => {
       makeArticle({ id: "at", title: "At story", publishedAt: new Date("2026-04-18T14:30:00Z") }),
       makeArticle({ id: "after", title: "After story", publishedAt: new Date("2026-04-18T16:00:00Z") }),
     ];
+    let setArticles: (next: MarketNewsItem[]) => void = () => {};
+    function Feed() {
+      const [list, set] = useState(articles);
+      setArticles = set;
+      return <NewsArticleStackView articles={list} focused width={90} rootHeight={10} selectedArticleId="after"
+        setSelectedArticleId={(id) => selections.push(id)} sortPreference={sortPreference} setSortPreference={() => {}}
+        onOpenArticle={() => {}} detailOpen={false} onBack={() => {}} detailContent={<Box />}
+        columns={["time", "source", "title"]} emptyStateTitle="No stories" />;
+    }
     await tui.render(
       <AppContext value={createStaticAppStore(createInitialState(createDefaultConfig("/tmp/gloomberb-news-pinned")))}>
         <PaneInstanceProvider paneId="news-feed:main">
           <Pinner />
-          <NewsArticleStackView articles={articles} focused width={90} rootHeight={10} selectedArticleId="after"
-            setSelectedArticleId={(id) => selections.push(id)} sortPreference={sortPreference} setSortPreference={() => {}}
-            onOpenArticle={() => {}} detailOpen={false} onBack={() => {}} detailContent={<Box />}
-            columns={["time", "source", "title"]} emptyStateTitle="No stories" />
+          <Feed />
         </PaneInstanceProvider>
       </AppContext>,
       { width: 90, height: 10 },
@@ -234,6 +240,11 @@ describe("NewsArticleStackView under a pinned crosshair", () => {
         .filter((span) => (span.attributes & TextAttributes.BOLD) !== 0).map((span) => span.text).join(" ");
       expect(bold).toContain("At story");
       expect(bold).not.toContain("After story");
+      // The selection follows the pin when it moves, not a story arriving under it.
+      const picks = selections.length;
+      await act(async () => setArticles([...articles, makeArticle({ id: "streamed", title: "Streamed story", publishedAt: new Date("2026-04-18T14:45:00Z") })]));
+      await act(async () => { await tui.setup().renderOnce(); });
+      expect(selections.length).toBe(picks);
     } finally {
       await act(async () => pin?.(null));
     }
