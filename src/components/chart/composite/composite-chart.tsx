@@ -419,17 +419,13 @@ function ThemedCompositeChart({
   // every chart in the tab holds that moment after the pointer leaves. With
   // no crosshair it pins the last one shown: the pointer leaves the plot on
   // its way to the footer's pin.
-  // The last time sits in a ref, so a moving crosshair costs no extra render;
-  // only the first one shown brings the pin to the footer.
+  // The last time sits in a ref, so a moving crosshair costs no extra render,
+  // and the footer's pin is there from the start: a hint appearing mid-hover
+  // would move the plot under the pointer.
   const cursorAt = scene?.cursorDate?.getTime() ?? null;
   const lastCursorAtRef = useRef<number | null>(null);
   if (cursorAt !== null) lastCursorAtRef.current = cursorAt;
-  const [cursorShown, setCursorShown] = useState(false);
-  const firstCursor = !cursorShown && cursorAt !== null;
-  useEffect(() => {
-    if (firstCursor) setCursorShown(true);
-  }, [firstCursor]);
-  const pinnable = !!link?.pin && (pinnedCursor || cursorShown);
+  const pinnable = !!link?.pin;
   const togglePin = useCallback(() => {
     if (!link?.pin) return;
     if (link.pinned?.()) {
