@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo } from "react";
+import { useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { AppState } from "../../core/state/app/state";
 import { findPaneInstance, type SavedLayout } from "../../types/config";
 import { AppContext, useOptionalAppSelector, useOptionalPaneInstanceId, type AppContextStoreValue } from "./context";
@@ -190,4 +190,27 @@ export function useTabCursorLink(sourceId: string | null, { viewer = true }: { v
     };
   }, [app, link, paneId, tabKey, viewer]);
   return link;
+}
+
+/**
+ * The moment the layout tab's crosshair is pinned at, for a pane that is not a
+ * chart (news, the tape): null while nothing is pinned. It follows the pin, not
+ * a pointer passing over a chart, so a list re-renders when the pin moves and
+ * never on a pointer move.
+ */
+export function usePinnedTabTime(): number | null {
+  const tabKey = useOptionalAppSelector<string | null>(selectTabKey, null);
+  const pinnedTime = useCallback(() => {
+    const cursor = tabKey === null ? undefined : cursors.get(tabKey);
+    return cursor?.sourceId === PINNED ? cursor.time : null;
+  }, [tabKey]);
+  return useSyncExternalStore(subscribe, pinnedTime);
+}
+
+/** Lifts the layout tab's pin from a pane that is not a chart, as Esc does on a chart. */
+export function useUnpinTab(): () => void {
+  const tabKey = useOptionalAppSelector<string | null>(selectTabKey, null);
+  return useCallback(() => {
+    if (tabKey !== null) setTabCursorTime(tabKey, PINNED, null);
+  }, [tabKey]);
 }
