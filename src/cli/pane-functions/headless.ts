@@ -288,6 +288,7 @@ function serializeBundleSection(
       columns: serializableColumns(columns),
       rows: section.rows,
       ...(section.unit ? { unit: section.unit } : {}),
+      ...(section.interval ? { interval: section.interval } : {}),
       ...(section.empty && section.rows.length === 0 ? { empty: section.empty } : {}),
     };
   }
@@ -640,7 +641,18 @@ export function headlessReportTables(
       tables = (result as HeadlessBundleResult).sections.map((section) => {
         if (!("rows" in section && section.rows)) return exportEntriesTable(section.title, section.entries);
         const table = exportRowsTable(section.title, displayedColumns(columnsFor(section.rows, section.columns, definition.columns)), section.rows);
-        return section.unit?.trim() ? { ...table, identity: { currencyOrUnit: section.unit.trim() } } : table;
+        const identity = {
+          ...(section.unit?.trim() ? { currencyOrUnit: section.unit.trim() } : {}),
+          ...(section.interval?.trim() ? { interval: section.interval.trim() } : {}),
+        };
+        const unitKey = section.rowUnitKey;
+        const rowIdentities = unitKey
+          ? section.rows.map((row) => {
+            const unit = row[unitKey];
+            return { currencyOrUnit: typeof unit === "string" ? unit : null };
+          })
+          : undefined;
+        return { ...table, ...(Object.keys(identity).length > 0 ? { identity } : {}), ...(rowIdentities ? { rowIdentities } : {}) };
       });
       break;
     case "series": {
@@ -668,7 +680,7 @@ export function headlessReportTables(
       incomplete: incompleteDetail(result, status),
       locked,
       errors: failed,
-      notes: [...textNotices(result), ...(result.notes ?? [])],
+      notes: [...textNotices(result), ...(definition.exportWarnings ? result.warnings ?? [] : []), ...(result.notes ?? [])],
     }),
   };
 }

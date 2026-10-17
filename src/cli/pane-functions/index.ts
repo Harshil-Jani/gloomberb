@@ -8,6 +8,7 @@ import {
   filterPaneCatalogEntries,
   findFunctionCode,
   nearFunctionCodes,
+  renderFunctionHelp,
   renderPaneCatalogReport,
   selectPaneCatalogMatches,
   suggestPaneFunctions,
@@ -20,7 +21,7 @@ import {
   parsePaneFunctionArgs,
   type ParsedPaneFunctionArgs,
 } from "./options";
-import { applyListingArgument, resolvePaneFunction, UnknownPaneFunctionError, type ResolvedPaneFunction } from "./resolver";
+import { applyListingArgument, findPaneFunction, resolvePaneFunction, UnknownPaneFunctionError, type ResolvedPaneFunction } from "./resolver";
 import { buildFunctionReport } from "./report";
 import { expandResolvedArgument } from "./headless";
 import { defaultScreenshotPath, renderDesktopShot, shotSizeWarnings, shotStatusIssues } from "./screenshot";
@@ -405,6 +406,46 @@ function runGlossary(term: string, ctx: CliCommandContext): void {
 }
 
 const GLOSSARY_ACTIONS = new Set(["glossary", "explain"]);
+
+/**
+ * The help of a command that runs a function (`fn BT --help`, `shot BT
+ * --help`, `help fn BT`): that function's options and examples, as
+ * `catalog BT` lists them. The first word is read as `fn` reads it, so a pane
+ * id or alias (`fn backtest --help`) helps with what it would run. False when
+ * it opens nothing or the catalog cannot be read, so the command's own help prints instead.
+ */
+export async function runPaneFunctionHelp(command: string, args: string[], ctx: CliCommandContext): Promise<boolean> {
+  let target: string;
+  try {
+    target = parsePaneFunctionArgs(args).target.trim();
+  } catch {
+    // Intentional ignore: help for arguments that do not parse is the command's own.
+    return false;
+  }
+  if (!target) return false;
+  try {
+    const entry = await withMarketData(ctx, async (context) => {
+      const registry = await createPaneCatalog(context, ctx.plugins);
+      try {
+        const found = findPaneFunction(registry, target);
+        if (!found?.pane) return undefined;
+        const { template, pane } = found;
+        const entries = await buildPaneCatalogEntries(registry, context);
+        // A pane named directly, where functions open it, is helped by the first of them.
+        return (template ? entries.find((candidate) => candidate.templateId === template.id) : undefined)
+          ?? entries.find((candidate) => candidate.paneId === pane.id);
+      } finally {
+        registry.destroy();
+      }
+    });
+    if (!entry) return false;
+    ctx.printResult({ data: entry }, { text: () => renderFunctionHelp(entry, command) });
+    return true;
+  } catch (error) {
+    logFailure("cli.pane-functions-index", "Read function help failed")(error);
+    return false;
+  }
+}
 
 export async function runPaneCatalog(args: string[], ctx: CliCommandContext) {
   await runPaneCliCommand(ctx, async () => {
