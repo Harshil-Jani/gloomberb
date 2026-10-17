@@ -1,6 +1,7 @@
-import { useEffect, useMemo } from "react";
+import { useContext, useEffect, useMemo } from "react";
 import type { AppState } from "../../core/state/app/state";
-import { useOptionalAppSelector } from "./context";
+import { findPaneInstance } from "../../types/config";
+import { AppContext, useOptionalAppSelector, useOptionalPaneInstanceId } from "./context";
 
 /**
  * The time the pointer or keyboard cursor is at on one chart of a layout tab,
@@ -21,7 +22,14 @@ const cursors = new Map<string, TabCursor>();
  * one it was pinned from too, and no pointer leaving a chart takes it away.
  */
 const PINNED = "\u0000pinned";
+/** How many charts in each tab are mounted to show its pin; see `useTabCursorLink`. */
+const pinViewers = new Map<string, number>();
 const listeners = new Set<() => void>();
+
+/** A time a Date can hold. A pin is never NaN, infinite or past the Date range, whatever asks for it. */
+function isMoment(time: number): boolean {
+  return Number.isFinite(time) && Math.abs(time) <= 8.64e15;
+}
 
 function setTabCursorTime(tabKey: string, sourceId: string | null, time: number | null): void {
   const current = cursors.get(tabKey);
@@ -78,6 +86,8 @@ const selectTabKey = (state: AppState): string => {
  */
 export function useTabCursorLink(sourceId: string | null): TabCursorLink | undefined {
   const tabKey = useOptionalAppSelector<string | null>(selectTabKey, null);
+  const app = useContext(AppContext);
+  const paneId = useOptionalPaneInstanceId();
   const link = useMemo<TabCursorLink | undefined>(() => tabKey === null || sourceId === null ? undefined : {
     subscribe,
     time: () => {
@@ -92,9 +102,37 @@ export function useTabCursorLink(sourceId: string | null): TabCursorLink | undef
     },
     clear: () => setTabCursorTime(tabKey, null, null),
     pinned: () => cursors.get(tabKey)?.sourceId === PINNED,
-    pin: (time) => setTabCursorTime(tabKey, PINNED, time !== null && Number.isFinite(time) ? time : null),
+    // Null unpins; a time no Date can hold changes nothing.
+    pin: (time) => {
+      if (time === null || isMoment(time)) setTabCursorTime(tabKey, PINNED, time);
+    },
   }, [sourceId, tabKey]);
-  // A chart closed or switched away from under the cursor takes its cursor with it.
-  useEffect(() => () => link?.publish(null), [link]);
+  useEffect(() => {
+    if (!link || tabKey === null) return;
+    pinViewers.set(tabKey, (pinViewers.get(tabKey) ?? 0) + 1);
+    return () => {
+      // A chart closed or switched away from under the cursor takes its cursor with it.
+      link.publish(null);
+      const left = (pinViewers.get(tabKey) ?? 1) - 1;
+      if (left > 0) {
+        pinViewers.set(tabKey, left);
+        return;
+      }
+      pinViewers.delete(tabKey);
+      // The pin is the tab's, so it stays when the chart it was pinned on
+      // closes and others remain, and through a switch to another tab. When
+      // the last chart showing it closes, nothing in the tab could lift it,
+      // so it goes too. Read once the commit settles, from the app's current
+      // state: a chart replaced in place, or one in a pane that is still open
+      // (reloading), keeps it.
+      queueMicrotask(() => {
+        if (pinViewers.has(tabKey) || !app) return;
+        const state = "getState" in app ? app.getState() : app.state;
+        if (selectTabKey(state) !== tabKey) return;
+        if (paneId !== null && findPaneInstance(state.config.layout, paneId)) return;
+        setTabCursorTime(tabKey, PINNED, null);
+      });
+    };
+  }, [app, link, paneId, tabKey]);
   return link;
 }

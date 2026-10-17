@@ -35,6 +35,7 @@ import {
   compositeCursorAsOf,
   compositeLinkedCursorTime,
   resizeCompositePanel,
+  resolveAdjacentCompositeCursorDate,
 } from "./scene";
 import { buildCompositeTimeAxisLayout, buildCompositeViewportTimeAxisLayout } from "./time-axis";
 import type {
@@ -416,15 +417,20 @@ function ThemedCompositeChart({
     updateCursor(date);
   }, [baseScene, link, showsSharedCursor, updateCursor]);
   // `p` pins the crosshair where it is, this chart's own or another's, so
-  // every chart in the tab holds that moment after the pointer leaves. With
-  // no crosshair it pins the last one shown: the pointer leaves the plot on
-  // its way to the footer's pin.
+  // every chart in the tab holds that moment after the pointer leaves.
+  // Another chart's is pinned at its own moment, not at the bar it lands on
+  // here, so a daily chart pins an intraday chart's minute. With no crosshair
+  // it pins the last one shown (the pointer leaves the plot on its way to the
+  // footer's pin), and before any, the latest bar, where the arrows start.
   // The last time sits in a ref, so a moving crosshair costs no extra render,
   // and the footer's pin is there from the start: a hint appearing mid-hover
   // would move the plot under the pointer.
   const cursorAt = scene?.cursorDate?.getTime() ?? null;
-  const lastCursorAtRef = useRef<number | null>(null);
-  if (cursorAt !== null) lastCursorAtRef.current = cursorAt;
+  const lastCursorAtRef = useRef<{ time: number; shared: boolean } | null>(null);
+  if (cursorAt !== null) {
+    const shared = showsSharedCursor ? sharedTime?.() ?? null : null;
+    lastCursorAtRef.current = shared !== null ? { time: shared, shared: true } : { time: cursorAt, shared: false };
+  }
   const pinnable = !!link?.pin;
   const togglePin = useCallback(() => {
     if (!link?.pin) return;
@@ -432,8 +438,19 @@ function ThemedCompositeChart({
       link.pin(null);
       return;
     }
-    const at = lastCursorAtRef.current;
-    if (at !== null && baseScene) link.pin(compositeCursorAsOf(baseScene, new Date(at)));
+    const live = link.time();
+    if (live !== null) {
+      link.pin(live);
+      return;
+    }
+    if (!baseScene) return;
+    const last = lastCursorAtRef.current;
+    if (last?.shared) {
+      link.pin(last.time);
+      return;
+    }
+    const date = last ? new Date(last.time) : resolveAdjacentCompositeCursorDate(baseScene, null, -1);
+    if (date) link.pin(compositeCursorAsOf(baseScene, date));
   }, [baseScene, link]);
 
   const {
