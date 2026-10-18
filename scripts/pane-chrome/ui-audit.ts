@@ -2,7 +2,8 @@ import { appendFile, mkdir, readdir, rm } from "fs/promises";
 import { existsSync } from "fs";
 import { join, resolve } from "path";
 import { takeOption } from "../tui-benchmark-harness";
-import { cacheDir, click, evaluate, launchBrowser, sleep, type Browser, type Cdp } from "./browser";
+import { cacheDir, click, evaluate, launchBrowser, sleep, waitFor, type Browser, type Cdp } from "./browser";
+import { checkoutPlugin, pluginLock } from "./plugin-lock";
 import { pathName, visitAlternatives } from "./tab-visits";
 import { UI_AUDIT_MEASURE, type AuditMeasure } from "./ui-audit-measure";
 import { writeAuditReport } from "./ui-audit-report";
@@ -14,7 +15,8 @@ import {
 /**
  * The UI audit: every view of the desktop and web app, measured. For each
  * function in the catalog, the panes of the plugins the web app bundles and,
- * with `--registry`, of every plugin the registry lists, it opens the pane
+ * with `--registry`, of every plugin the registry lists (at the commits the
+ * replay folder's lock pins: plugin-lock.ts), it opens the pane
  * docked on the real web build at each width, then its detail (Enter) and
  * each of its tabs, each opened from the pane as it first shows and measured
  * only once the page says it is selected (tab-visits.ts; a tab it could not
@@ -31,6 +33,14 @@ import {
  *   bun run audit:ui [--only TOP,CHG] [--widths 640,1280] [--themes white,paper]
  *                    [--registry] [--build] [--no-shots] [--resume] [--list]
  *                    [--out <dir>] [--web <dir>] [--replay <dir>] [--root <checkout>]
+ *                    [--offline] [--shard 0/4] [--no-report] [--no-variants]
+ *
+ * `--offline` reads only what the replay kept (web-app.ts); `--shard i/n`
+ * takes the functions whose token hashes to `i` of `n` (the shell views go
+ * with shard 0), so shards stay put as functions come and go; `--no-report`
+ * skips the report, for the checks that read `results.jsonl` themselves
+ * (ui-tokens.ts, ui-benchmark.ts); `--no-variants` skips the pictures of
+ * each variant, which only the report shows.
  *
  * It builds its own copy of the web app (`build-web.ts --keep-names`, so the
  * components keep their names) under the cache folder, and reads Gloom Cloud
@@ -53,8 +63,12 @@ const height = Number(takeOption(args, "--height") ?? 800);
 const themes = (takeOption(args, "--themes") ?? "white,paper").split(",");
 const out = resolve(takeOption(args, "--out") ?? cacheDir("ui-audit"));
 const web = resolve(takeOption(args, "--web") ?? cacheDir("ui-audit-web"));
-const replay = createReplay(resolve(takeOption(args, "--replay") ?? cacheDir("ui-audit-replay")));
+const replayDir = resolve(takeOption(args, "--replay") ?? cacheDir("ui-audit-replay"));
+const replay = createReplay(replayDir, { offline: args.includes("--offline") });
+const shard = parseShard(takeOption(args, "--shard"));
+const report = !args.includes("--no-report");
 const shots = !args.includes("--no-shots");
+const variants = shots && !args.includes("--no-variants");
 const resume = args.includes("--resume");
 const withRegistry = args.includes("--registry");
 /** Families whose look under the pointer is pictured too. */
@@ -98,30 +112,41 @@ interface AuditResult extends AuditView {
   measure: AuditMeasure;
 }
 
+/** `i/n`, or every function. */
+function parseShard(value: string | undefined): { index: number; count: number } {
+  if (!value) return { index: 0, count: 1 };
+  const [index, count] = value.split("/").map(Number) as [number, number];
+  if (!(count >= 1) || !(index >= 0 && index < count)) throw new Error(`--shard takes i/n with 0 <= i < n, not ${value}`);
+  return { index, count };
+}
+
+/** The shard a function belongs to: by its token, so adding a function moves no other. */
+export function shardOf(token: string, count: number): number {
+  return Number.parseInt(new Bun.CryptoHasher("sha1").update(token).digest("hex").slice(0, 8), 16) % count;
+}
+
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "tab";
 
-/** Registry plugins that are not built in, checked out at their registry ref and installed beside each other. */
+/**
+ * Registry plugins that are not built in, checked out at the commits the
+ * replay folder's lock pins (plugin-lock.ts) and installed beside each other.
+ */
 async function registryPluginDirs(builtIn: Set<string>): Promise<string[]> {
-  const { loadRegistry } = await import("../../src/plugins/marketplace/feed");
   const { linkHostPackages } = await import("../../src/plugins/host-link");
   const { WEB_BUNDLED_PLUGIN_PACKAGES } = await import("../../src/plugins/web-bundled");
-  const feed = await loadRegistry();
   const pluginsDir = cacheDir("ui-audit-plugins");
   await mkdir(pluginsDir, { recursive: true });
+  const lock = await pluginLock(replayDir, pluginsDir);
   const dirs: string[] = [];
-  for (const plugin of feed.plugins) {
-    if (!plugin.repo || plugin.bundled || builtIn.has(plugin.id)) continue;
-    const name = plugin.repo.split("/")[1]!;
-    if ((WEB_BUNDLED_PLUGIN_PACKAGES as readonly string[]).includes(name)) continue;
-    const dir = join(pluginsDir, name);
-    if (!existsSync(join(dir, "package.json"))) {
-      const clone = Bun.spawnSync(["git", "clone", "--quiet", "--depth", "1", ...(plugin.ref ? ["--branch", plugin.ref] : []), `https://github.com/${plugin.repo}.git`, dir]);
-      if (clone.exitCode !== 0) { console.warn(`Left out ${plugin.id}: could not clone ${plugin.repo}`); continue; }
-      Bun.spawnSync(["bun", "install", "--production", "--omit", "peer", "--ignore-scripts"], { cwd: dir });
-    }
-    linkHostPackages(dir, undefined, pluginsDir);
+  for (const plugin of lock.plugins) {
+    if (builtIn.has(plugin.id)) continue;
+    if ((WEB_BUNDLED_PLUGIN_PACKAGES as readonly string[]).includes(plugin.repo.split("/")[1]!)) continue;
+    const dir = await checkoutPlugin(plugin, pluginsDir);
+    if (!dir) { console.warn(`Left out ${plugin.id}: could not fetch ${plugin.repo}@${plugin.commit.slice(0, 12)}`); continue; }
     dirs.push(dir);
   }
+  // Linked once every plugin is checked out: a plugin's peer (ibkr-gateway's ibkr) may come after it.
+  for (const dir of dirs) linkHostPackages(dir, undefined, pluginsDir);
   return dirs;
 }
 
@@ -185,9 +210,9 @@ const SHELL_VIEWS: Array<{ id: string; layout: object; focused?: string; seed?: 
     layout: dock(SAMPLE_PANE),
     focused: SAMPLE_PANE.instanceId,
     surface: ".gloom-menu, [role=menu]",
-    // The pane's actions button (its "more" icon) opens the pane menu.
+    // The pane's actions button (its "more" icon) opens the pane menu, once the pane has drawn it.
     async open(cdp) {
-      const at = await evaluate<{ x: number; y: number } | null>(cdp, `(() => { const r = document.querySelector("[data-gloom-role=pane-action] > *")?.getBoundingClientRect(); return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`);
+      const at = await waitFor<{ x: number; y: number } | null>(cdp, `(() => { const r = document.querySelector("[data-gloom-role=pane-action] > *")?.getBoundingClientRect(); return r && r.width > 0 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`, 6_000);
       if (!at) return;
       await click(cdp, at);
     },
@@ -210,8 +235,9 @@ async function main(): Promise<void> {
     await buildWeb(withRegistry ? await registryPluginDirs(builtIn) : []);
   }
   const entries = [...catalog, ...(await pluginEntries()).filter((entry) => !builtIn.has(entry.paneId))]
-    .filter((entry) => !only || only.includes(entry.token));
-  const shells = SHELL_VIEWS.filter((view) => !only || only.includes(view.id));
+    .filter((entry) => !only || only.includes(entry.token))
+    .filter((entry) => shardOf(entry.token, shard.count) === shard.index);
+  const shells = SHELL_VIEWS.filter((view) => (!only || only.includes(view.id)) && shard.index === 0);
   if (args.includes("--list")) {
     for (const entry of entries) console.log(`${entry.token}\t${entry.paneId}\t${entry.plugin ?? ""}`);
     for (const shell of shells) console.log(`${shell.id}\tshell`);
@@ -276,7 +302,7 @@ async function main(): Promise<void> {
       if (value.missing) return false;
       const result: AuditResult = { ...view, width, height, theme, measure: value };
       await writeLine(resultsFile, result);
-      if (shots) await pictureVariants(view, width, value);
+      if (variants) await pictureVariants(view, width, value);
     }
     if (shots) {
       const dir = join(out, "shots", theme, String(width));
@@ -299,11 +325,18 @@ async function main(): Promise<void> {
         if (unopened) break;
         await viewport(width);
         for (const [index, theme] of themes.entries()) {
-          await loadLayout(browser.cdp, app.url, replay, shell.layout, shell.focused, { theme, ...shell.seed });
-          await settle(browser.cdp, "body", 700, 6_000);
-          await shell.open(browser.cdp);
-          await settle(browser.cdp, "body", 600, 4_000);
-          if (shell.surface && !await evaluate<boolean>(browser.cdp, `!!document.querySelector(${JSON.stringify(shell.surface)})`)) {
+          // Opened from a fresh page up to three times: on a busy machine a key typed before the
+          // command bar has focus goes to the pane, and the surface never opens.
+          let opened = false;
+          for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
+            await loadLayout(browser.cdp, app.url, replay, shell.layout, shell.focused, { theme, ...shell.seed });
+            await settle(browser.cdp, "body", 700, 6_000);
+            await shell.open(browser.cdp);
+            await settle(browser.cdp, "body", 600, 4_000);
+            opened = !shell.surface || !!await waitFor<boolean>(browser.cdp, `!!document.querySelector(${JSON.stringify(shell.surface)})`, 2_000);
+            if (!opened) console.warn(`${shell.id}: not open at ${width}px in ${theme} (try ${attempt + 1} of 3)`);
+          }
+          if (!opened) {
             unopened = `${shell.surface} is not on the page at ${width}px in ${theme}`;
             break;
           }
@@ -406,8 +439,11 @@ async function main(): Promise<void> {
     return [...views.values()];
   }
 
+  if (!report) return;
   const pluginsDir = cacheDir("ui-audit-plugins");
-  const extraDirs = withRegistry && existsSync(pluginsDir) ? (await readdir(pluginsDir)).map((name) => join(pluginsDir, name)) : [];
+  const extraDirs = withRegistry && existsSync(pluginsDir)
+    ? (await readdir(pluginsDir, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => join(pluginsDir, entry.name))
+    : [];
   await writeAuditReport(out, { root, extraDirs });
   console.log(`\n${join(out, "report.md")}`);
 }
