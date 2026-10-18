@@ -12,6 +12,7 @@ import type {
   TickerFinancials,
 } from "../../types/financials";
 import { currencyPriceMinDigits, formatMarketPrice, formatMarketPriceWithCurrency, quoteFormatOptions } from "../../market-data/market/format";
+import { INDEX_POINTS_EXPORT_UNIT, isIndexLevel, reportedQuoteVolume } from "../../market-data/market/index-level";
 import {
   EXTENDED_SESSION_LABELS,
   getExtendedSessionDisplay,
@@ -71,7 +72,8 @@ import {
   valueChainAtModelSpot,
   type OptionsChainBasis,
 } from "./options-chain";
-import { missingExpiryMessage } from "../../utils/option-expiry";
+import { missingExpiryMessage, OPTION_EXPIRATION_FORMAT, OPTION_EXPIRATION_PLACEHOLDER } from "../../utils/option-expiry";
+import { DATE_OPTION_EXAMPLES } from "../../utils/calendar-date";
 import { declaredDividends } from "../../utils/declared-dividends";
 import {
   DEFAULT_LEAPS_CRITERIA, LEAPS_EXTRA_COLUMNS, LEAPS_USAGE, parseLeapsCriteria, runLeapsScreen, takeLeapsOptions,
@@ -396,7 +398,7 @@ function quoteRows(results: QuoteCliRecord[], now = Date.now()) {
     const extended = getExtendedSessionDisplay(quote);
     const yieldIndex = isYieldIndexSymbol(result.target.symbol);
     // An index level is in points, not in the currency its members trade in.
-    const indexPoints = quote?.instrumentType?.trim().toUpperCase() === "INDEX";
+    const indexPoints = isIndexLevel(quote?.instrumentType);
     // Pad to two decimals so a column lines up, but never past the currency's minor unit (JPY has none).
     // Points have no minor unit, so a yen-listed index still pads to two.
     const options = {
@@ -434,8 +436,9 @@ function quoteRows(results: QuoteCliRecord[], now = Date.now()) {
       dayRange: quote?.low != null && quote.high != null
         ? indexPoints ? `${price(quote.low)}-${price(quote.high)}` : formatPriceRange(quote.low, quote.high, quote.currency, options, "-")
         : "",
-      volume: quote?.volume ?? null,
-      currency: quote?.currency ?? "",
+      // An index's 0 is volume nobody counts, and its level has no currency.
+      volume: reportedQuoteVolume(quote),
+      currency: indexPoints ? "" : quote?.currency ?? "",
       providerId: quote?.providerId ?? "",
       source: quote?.dataSource ?? quote?.providerId ?? "",
       feed: quoteFeedState(quote, now),
@@ -720,6 +723,11 @@ async function runQuote(rawArgs: string[], ctx: Parameters<CliCommandDef["execut
       freshness: quotesFreshness(data.map((row) => row.quote), yieldsOnly ? { schedule: `Cboe close ${CBOE_YIELD_INDEX_CLOSE}` } : undefined),
     }, {
       rows: quoteRows,
+      // An index row's Cur is blank, its level having no currency; the export names what it is in instead.
+      exportIdentity: (row) => ({
+        symbolOrSeries: row.symbol,
+        currencyOrUnit: row.currency || (row.yieldIndex ? "pct" : isIndexLevel(row.instrumentType) ? INDEX_POINTS_EXPORT_UNIT : null),
+      }),
       details: quoteDetailsText,
       columns,
       ...(yieldsOnly ? { textColumns: columns.map((column) => column.key === "changePercent" ? { ...column, header: "Chg" } : column) } : {}),
@@ -1652,7 +1660,7 @@ async function runOptions(rawArgs: string[], ctx: Parameters<CliCommandDef["exec
     if (parsed == null) {
       ctx.fail(
         expiration == null ? "--expiration needs a date." : `Invalid --expiration "${expiration}".`,
-        `Use YYYY-MM-DD (2028-01-21) or Unix seconds (1832025600).\nUsage: gloomberb ${OPTIONS_USAGE}`,
+        `Use ${OPTION_EXPIRATION_FORMAT}.\nUsage: gloomberb ${OPTIONS_USAGE}`,
       );
     }
     expirationDate = parsed;
@@ -1984,7 +1992,7 @@ export const marketDataCliCommands: BuiltinCliCommandDef[] = [
       usage: [OPTIONS_USAGE, LEAPS_USAGE],
       options: [
         {
-          flags: "--expiration <YYYY-MM-DD|unix>",
+          flags: `--expiration <${OPTION_EXPIRATION_PLACEHOLDER}>`,
           description: "Expiration as a date (2028-01-21) or Unix seconds; defaults to the nearest one, and lists the others. With --leaps: rank that expiry alone",
         },
         EXCHANGE_OPTION,
@@ -2004,8 +2012,8 @@ export const marketDataCliCommands: BuiltinCliCommandDef[] = [
           description: `With --leaps: fewest calendar days to expiry (default ${DEFAULT_LEAPS_CRITERIA.minDays}); 180 reaches six months out`,
         },
         { flags: "--max-days <days>", description: "With --leaps: most calendar days to expiry; --min-days 365 --max-days 730 is 12 to 24 months" },
-        { flags: "--expiry-from <YYYY-MM-DD>", description: "With --leaps: first expiry date kept; replaces the one-year floor" },
-        { flags: "--expiry-to <YYYY-MM-DD>", description: "With --leaps: last expiry date kept" },
+        { flags: "--expiry-from <date>", description: `With --leaps: first expiry date kept, as ${DATE_OPTION_EXAMPLES}; replaces the one-year floor` },
+        { flags: "--expiry-to <date>", description: "With --leaps: last expiry date kept" },
         {
           flags: "--columns <list>",
           description: `With --leaps: add figures, comma-separated: ${LEAPS_EXTRA_COLUMNS.join(", ")}`,
