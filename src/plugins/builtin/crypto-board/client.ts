@@ -58,6 +58,27 @@ function validAsset(asset: CryptoMarketAsset): boolean {
   );
 }
 
+const validPeg = (peg: CryptoMarketAsset["peg"]) =>
+  !!peg
+  && typeof peg.currency === "string"
+  && /^[A-Z]{3}$/.test(peg.currency)
+  && typeof peg.accrues === "boolean"
+  && (peg.price === null || (isFiniteNumber(peg.price) && peg.price > 0))
+  && nullableInstant(peg.asOf);
+
+const validRange = (range: CryptoMarketAsset["range24h"]) =>
+  !!range
+  && [range.low, range.high].every((value) => isFiniteNumber(value) && value > 0)
+  && [range.lowAt, range.highAt, range.start, range.end].every(instant);
+
+/** A malformed peg or 24h range is dropped from its coin alone; the coin and the rest of the board stay. */
+function withValidStablecoinFields(asset: CryptoMarketAsset): CryptoMarketAsset {
+  const peg = asset.peg != null && !validPeg(asset.peg);
+  const range = asset.range24h != null && !validRange(asset.range24h);
+  if (!peg && !range) return asset;
+  return { ...asset, ...(peg ? { peg: null } : {}), ...(range ? { range24h: null } : {}) };
+}
+
 export function validateCryptoMarkets(data: CryptoMarketsPayload): CryptoMarketsPayload {
   if (
     !data
@@ -77,7 +98,8 @@ export function validateCryptoMarkets(data: CryptoMarketsPayload): CryptoMarkets
   ) {
     throw new Error("The server returned an invalid crypto board");
   }
-  return data;
+  const assets = data.assets.map(withValidStablecoinFields);
+  return assets.every((asset, index) => asset === data.assets[index]) ? data : { ...data, assets };
 }
 
 export async function fetchCryptoMarkets(
