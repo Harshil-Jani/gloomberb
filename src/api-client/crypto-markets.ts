@@ -73,3 +73,64 @@ export interface CryptoMarketsPayload {
   assets: CryptoMarketAsset[];
   warnings: string[];
 }
+
+/** One stablecoin's supply across chains in USD, on the board's as-of day. */
+export interface StablecoinSupplyCoin {
+  symbol: string;
+  name: string;
+  /** The currency the coin is pegged to, as the source names it: peggedUSD, peggedEUR, peggedVAR (a floating target). */
+  pegType: string;
+  pegMechanism: string | null;
+  /** USD per unit the day's supply is valued at; null when the source states no units that day. */
+  price: number | null;
+  /** USD on the as-of day: the same figure the coin's daily supply ends on. */
+  supply: number;
+  /** Change in USD over 7 and 30 days on the coin's daily supply, and in percent of the value then. */
+  change7d: number | null;
+  change7dPercent: number | null;
+  change30d: number | null;
+  change30dPercent: number | null;
+  /** Percent of the total stablecoin supply. */
+  share: number | null;
+}
+
+export interface StablecoinSupplyPayload {
+  version: 1;
+  generatedAt: string;
+  fetchedAt: string | null;
+  /** UTC date of the newest daily total. */
+  asOf: string | null;
+  status: "available" | "stale" | "unavailable";
+  source: { name: string; url: string };
+  total: {
+    supply: number;
+    change7d: number | null;
+    change7dPercent: number | null;
+    change30d: number | null;
+    change30dPercent: number | null;
+  } | null;
+  /** The largest stablecoins by supply, largest first. */
+  coins: StablecoinSupplyCoin[];
+  /** Daily supply in USD since `start`: the total and the largest coins, on the same days. */
+  history: {
+    start: string;
+    total: Array<number | null>;
+    coins: Array<{ symbol: string; name: string; values: Array<number | null> }>;
+  } | null;
+  warnings: string[];
+}
+
+/** One stablecoin's daily supply in USD. */
+export interface StablecoinSupplyHistoryPayload {
+  version: 1;
+  generatedAt: string;
+  fetchedAt: string | null;
+  asOf: string | null;
+  status: "available" | "stale" | "unavailable";
+  source: { name: string; url: string };
+  symbol: string;
+  name: string;
+  pegType: string;
+  history: { start: string; values: Array<number | null> } | null;
+  warnings: string[];
+}

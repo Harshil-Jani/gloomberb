@@ -94,6 +94,19 @@ test("narrow panes drop 1Y, the sparkline, 30D, volume and name in that order", 
   expect(ids(60)).toEqual(["rank", "code", "price", "changePercent", "return7d", "marketCap"]);
   const wide = buildCryptoColumns(200).find((column) => column.id === "name")!;
   expect(wide.width).toBe(24);
+  // Stablecoins keep the peg and the low. Supply adds its columns after the
+  // market cap, and they all leave before the name, which drops where it does without them.
+  const stable = (width: number, withSupply: boolean) => buildCryptoColumns(width, "stablecoin", withSupply).map((column) => column.id);
+  expect(stable(177, true)).toEqual([
+    "rank", "code", "name", "price", "pegText", "offPegBp", "low24h", "low24hAt", "high24h", "high24hAt",
+    "volume24h", "marketCap", "supply", "supply7dPercent", "supply7d", "supply30dPercent", "supply30d", "supplyShare",
+  ]);
+  expect(stable(119, true)).toEqual([
+    "rank", "code", "name", "price", "pegText", "offPegBp", "low24h", "low24hAt", "high24h", "high24hAt", "marketCap", "supply",
+  ]);
+  for (const width of [109, 110]) expect(stable(width, true)).toEqual(stable(width, false));
+  expect(stable(110, false)).toContain("name");
+  expect(stable(109, false)).not.toContain("name");
 });
 
 test("a move that rounds to zero is unsigned", () => {
