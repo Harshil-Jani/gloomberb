@@ -162,10 +162,14 @@ export function parseSeriesExpression(value: string): ParsedSeriesExpression | n
   return { kind: "security", ...instrument, fieldId };
 }
 
+const SERIES_FORMS = "Use SYMBOL, SYMBOL:field, FUT:code, UST:maturity, FRED:series, GEO:series, or CAP:capability-id:series-id.";
+
 export function parseChartExpression(value: string): ParsedSeriesExpression[] {
   if (!value.trim()) return [];
-
-  const legs = value.split(/[;,\n]/);
+  // A list pasted with a stray separator (`BRK.B,SPY,`, `,SPY`, `A,,B`) has no series between them.
+  const legs = value.split(/[;,\n]/).filter((leg) => leg.trim());
+  // Separators alone name no series at all.
+  if (legs.length === 0) throw new Error(`Invalid chart series "${value.trim()}": no series between its separators. ${SERIES_FORMS}`);
   if (legs.length > MAX_CHART_COMPOSER_SERIES) {
     throw new Error(`Charts support up to ${MAX_CHART_COMPOSER_SERIES} base series.`);
   }
@@ -173,10 +177,7 @@ export function parseChartExpression(value: string): ParsedSeriesExpression[] {
   return legs.map((leg) => {
     const parsed = parseSeriesExpression(leg);
     if (parsed) return parsed;
-    const display = leg.trim() || "empty series";
-    throw new Error(
-      `Invalid chart series "${display}". Use SYMBOL, SYMBOL:field, FUT:code, UST:maturity, FRED:series, GEO:series, or CAP:capability-id:series-id.`,
-    );
+    throw new Error(`Invalid chart series "${leg.trim()}". ${SERIES_FORMS}`);
   });
 }
 

@@ -13,7 +13,15 @@ import { getLoadablePlugins } from "../../plugins/catalog";
 import { createDefaultConfig } from "../../types/config";
 import type { MarketContext } from "../types";
 import { parseCliGlobalArgs } from "../options";
+import { COMMODITIES_VIEW_STATE } from "../../plugins/builtin/commodities-energy/view-state";
+import { cotHeadless } from "../../plugins/builtin/cot/headless";
+import { FIXED_INCOME_VIEW_STATE } from "../../plugins/builtin/fixed-income/model";
+import { futuresCurveHeadless } from "../../plugins/builtin/futures-curve/headless";
+import { jodiHeadless } from "../../plugins/builtin/jodi/headless";
+import { treasuryAuctionsHeadless } from "../../plugins/builtin/treasury-auctions/headless";
+import { yieldCurveHeadless } from "../../plugins/builtin/yield-curve/headless";
 import {
+  capabilityPaneSettings,
   capabilityPluginState,
   getPaneFunctionCapability,
   isDataPaneForDomFallback,
@@ -148,6 +156,22 @@ describe("pane function capabilities", () => {
         expect(() => normalizeCapabilityOptions(capability, { [key]: bad }))
           .toThrow(`Invalid --${key} "${bad}". Use YYYY-MM-DD (2028-01-21), DD.MM.YYYY, Jan 21 2028, 21 January 2028 or Unix seconds (1832025600).`);
       }
+    }
+  });
+
+  test("COT, CTM, AUCT, JODI and GC options reach their view's own state, under the namespace its workspace wraps it with", () => {
+    const cases: Array<[HeadlessPaneDefinition, Record<string, string>, Record<string, Record<string, unknown>>, Record<string, unknown>]> = [
+      [cotHeadless, { traderClass: "commercial", scope: "all" }, { [COMMODITIES_VIEW_STATE.cot]: { class: "commercial", scope: "all" } }, {}],
+      [futuresCurveHeadless, { tab: "table", date: "2026-10-09" }, { [COMMODITIES_VIEW_STATE.curve]: { tab: "contracts" } }, { asOfDate: "2026-10-09" }],
+      [treasuryAuctionsHeadless, { filter: "bill" }, { [FIXED_INCOME_VIEW_STATE.treasuryAuctions]: { activeTab: "bill" } }, {}],
+      [jodiHeadless, { commodity: "gas" }, { [COMMODITIES_VIEW_STATE.balances]: { commodity: "gas" } }, {}],
+      [yieldCurveHeadless, { date: "2026-10-09" }, {}, { asOfDate: "2026-10-09" }],
+    ];
+    for (const [headless, raw, pluginState, settings] of cases) {
+      const capability = getPaneFunctionCapability({ id: "view", paneId: dummyPane.id, label: "View", description: "View", headless }, dummyPane);
+      const options = normalizeCapabilityOptions(capability, raw);
+      expect(capabilityPluginState(capability, options)).toMatchObject(pluginState);
+      expect(capabilityPaneSettings(capability, options)).toMatchObject(settings);
     }
   });
 
@@ -292,6 +316,22 @@ describe("pane catalog search", () => {
         expect(tokens[0], query).toBe("OSA");
         expect(tokens.slice(0, 3).sort(), query).toEqual(["OMON", "OSA", "VCA"]);
       }
+    } finally {
+      registry.destroy();
+    }
+  });
+
+  test("Buffett, overlap, copying a basket and active share searches list 13F first, one word or several", async () => {
+    const context = { config: createDefaultConfig("/tmp/capabilities-test") } as MarketContext;
+    const registry = await createPaneCatalog(context, getLoadablePlugins());
+    try {
+      const entries = await buildPaneCatalogEntries(registry, context);
+      for (const query of ["buffett", "berkshire", "overlap", "copy", "active share", "portfolio import"]) {
+        const ranked = filterPaneCatalogEntries(entries, query);
+        expect(selectPaneCatalogMatches(ranked, query, 10).shown[0]?.token, query).toBe("13F");
+      }
+      // The Buffett indicator is still VAL's.
+      expect(filterPaneCatalogEntries(entries, "buffett").map(({ token }) => token)).toContain("VAL");
     } finally {
       registry.destroy();
     }
