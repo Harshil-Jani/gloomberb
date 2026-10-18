@@ -7,9 +7,10 @@ import {
   resetThirteenFApiPersistence,
 } from "./api";
 import { ApiRequestError } from "../../../api-client/errors";
-import { corporateSplitFactor, loadBrowserRows as loadRankedRows, loadFilingGap, loadFilingPositions, loadFundDetail, loadFundPerformance } from "./data";
+import { corporateSplitFactor, loadBrowserRows as loadRankedRows, loadFilingGap, loadFilingPositions, loadFundDetail, loadFundPerformance, loadSplitFactors } from "./data";
 import { filingGapText } from "./report-notes";
 import { buildFundHoldingRows, hasComparable13FQuarter } from "./model";
+import type { FundDetailData, ThirteenFFormSummary, ThirteenFHoldingRecord } from "./types";
 
 async function loadBrowserRows(...args: Parameters<typeof loadRankedRows>) {
   const result = await loadRankedRows(...args);
@@ -494,6 +495,65 @@ test("a fund's own performance row takes the ranking's return when it gives one,
   expect(priced.rows[0]?.estQuarterReturn).toBeCloseTo(20);
   expect(looked).toEqual([["AAA", "2026-03-31", "2026-06-30"]]);
   expect(await noEstimate({ lines: split }), "a failed lookup").toMatchObject({ skipped: [expect.anything()] });
+});
+
+test("a ticker its company has left reads its split factor from the symbol the company trades as now, once; one nobody left, or that lists something else now, stays unreadable", async () => {
+  const unavailable = { dividends: [], earnings: [], splits: [], coverage: { splits: "unavailable" as const } };
+  const changes = (symbol: string, to: string, listedName: string | null) => ({
+    symbol, moved: { symbol: to, name: `${to} Corp`, hops: [{ from: symbol, to, date: "2026-05-21" }] },
+    formerly: null, listedName, changes: [{ from: symbol, to, date: "2026-05-21" }],
+  });
+  const asked: string[] = [];
+  const changesAsked: string[] = [];
+  const provider = {
+    getCorporateActions: async (ticker: string) => {
+      asked.push(ticker);
+      if (ticker === "BK" || ticker === "FB") return { symbol: ticker, ...unavailable };
+      if (ticker === "BNY") return { symbol: ticker, dividends: [], earnings: [], splits: [], coverage: { splits: "available" as const } };
+      if (ticker === "VSXY") return { symbol: ticker, dividends: [], earnings: [], splits: [{ date: "2026-05-04", fromFactor: 1, toFactor: 10 }] };
+      if (ticker === "KLAC") return { symbol: ticker, dividends: [], earnings: [], splits: [] };
+      throw new Error("UPSTREAM_ERROR");
+    },
+    getTickerChanges: async (ticker: string) => {
+      changesAsked.push(ticker);
+      return ticker === "BK" ? changes("BK", "BNY", null) : ticker === "VSCO" ? changes("VSCO", "VSXY", null) : ticker === "FB" ? changes("FB", "META", "ProShares Buffer ETF") : null;
+    },
+  };
+  const factor = (ticker: string) => corporateSplitFactor(provider, ticker, "2026-03-31", "2026-06-30");
+  // Unavailable under the old symbol, or failing: the current symbol's actions, with its own split or none.
+  expect(await factor("BK")).toBe(1);
+  expect(await factor("VSCO")).toBe(10);
+  expect(asked).toEqual(["BK", "BNY", "VSCO", "VSXY"]);
+  // A ticker with actions of its own is not looked up for a rename.
+  expect(await factor("KLAC")).toBe(1);
+  expect(changesAsked).toEqual(["BK", "VSCO"]);
+  // FB lists another security now, so the META line is not its own; a failure with no record stays a failure.
+  expect(await factor("FB")).toBeNull();
+  expect(asked.slice(-1)).toEqual(["FB"]);
+  await expect(factor("MDALF")).rejects.toThrow("UPSTREAM_ERROR");
+});
+
+test("split factors are looked up for the lines that move like a split only; a failed or tickerless one reads unconfirmed, and an abort stops waiting on a hung one", async () => {
+  const form = (period: string): ThirteenFFormSummary => ({ url: "", accessionNumber: period, submissionType: "13F-HR", periodOfReport: period, filedAsOfDate: period, cik: "1", companyName: "Fund", tableValueTotal: 1, tableEntryTotal: 4, isAmendment: false });
+  const row = (ticker: string, cusip: string, value: number, shares: number): ThirteenFHoldingRecord => ({ accessionNumber: "", cik: "1", issuer: ticker, titleOfClass: "COM", cusip, ticker, value, shares, shareType: "SH", investmentDiscretion: "", votingAuthoritySole: 0, votingAuthorityShared: 0, votingAuthorityNone: 0, putCall: "" });
+  // AAA, BBB and the tickerless line go 10:1 on paper; DDD only gains 10%.
+  const detail: FundDetailData = {
+    cik: "1", name: "Fund", forms: [], latestForm: form("2026-06-30"), previousForm: form("2026-03-31"),
+    latestHoldings: [row("AAA", "A", 1200, 100), row("BBB", "B", 1200, 100), row("", "C", 1200, 100), row("DDD", "D", 1100, 100)],
+    previousHoldings: [row("AAA", "A", 1000, 10), row("BBB", "B", 1000, 10), row("", "C", 1000, 10), row("DDD", "D", 1000, 100)],
+  };
+  const looked: unknown[][] = [];
+  const factors = await loadSplitFactors(detail, async (...lookup) => {
+    looked.push(lookup);
+    if (lookup[0] === "BBB") throw new Error("corporate actions down");
+    return 10;
+  });
+  expect(Object.fromEntries(factors)).toEqual({ "A||SH": 10, "B||SH": null, "C||SH": null });
+  expect(looked.toSorted()).toEqual([["AAA", "2026-03-31", "2026-06-30"], ["BBB", "2026-03-31", "2026-06-30"]]);
+  const controller = new AbortController();
+  const hung = loadSplitFactors(detail, () => new Promise(() => {}), controller.signal);
+  controller.abort(new Error("pane closed"));
+  await expect(hung).rejects.toThrow();
 });
 
 test("a ticker's split factor is the product of its share splits between the quarter ends, and unknown without its actions", async () => {

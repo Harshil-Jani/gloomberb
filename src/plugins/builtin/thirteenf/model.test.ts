@@ -274,6 +274,61 @@ describe("13F model", () => {
     }
   });
 
+  test("a line's Est P&L is priced by its split factor: split-adjusted, as a trade, or none, and the fund's estimate is the sum of the same lines", () => {
+    const fund = (previous: ThirteenFHoldingRecord[], current: ThirteenFHoldingRecord[]): FundDetailData => ({
+      cik: "0001067983", name: "Fund", forms: [],
+      latestForm: form({}), previousForm: form({ periodOfReport: "2025-12-31" }),
+      latestHoldings: current, previousHoldings: previous,
+    });
+    const line = (data: FundDetailData, splits?: Map<string, number | null>) => {
+      const row = buildFundHoldingRows(data, splits).find((entry) => entry.ticker === "AAA")!;
+      return { estimatedPnl: row.estimatedPnl, splitRatio: row.splitRatio, splitUnread: row.splitUnread, id: row.id };
+    };
+    // 10:1 at 100 a share then 12 (120 before the split), the 100 split shares held through: +2 on each of them.
+    // Priced as value over shares it is -88 on each of the 10 old ones, the crash the filings alone show.
+    const forward = fund([holding({ cusip: "A", value: 1000, shares: 10 })], [holding({ cusip: "A", value: 1200, shares: 100 })]);
+    const { id } = line(forward);
+    expect(line(forward, new Map([[id, 10]]))).toEqual({ id, estimatedPnl: 200, splitRatio: 10, splitUnread: undefined });
+    // A 1:10 reverse split at 1 a share then 9 (10 before it): -1 on each of the 100 shares held, not +800.
+    const reverse = fund([holding({ cusip: "A", value: 1000, shares: 1000 })], [holding({ cusip: "A", value: 900, shares: 100 })]);
+    expect(line(reverse, new Map([[id, 0.1]]))).toMatchObject({ estimatedPnl: expect.closeTo(-100), splitRatio: 0.1 });
+    // No split between the filings (a trim or a rebalance that moved like one): priced as the filings read.
+    const trim = fund([holding({ cusip: "A", value: 660_686_383, shares: 3_907_075 })], [holding({ cusip: "A", value: 413_814_258, shares: 1_857_752 })]);
+    expect(line(trim, new Map([[id, 1]]))).toMatchObject({ estimatedPnl: expect.closeTo((413_814_258 / 1_857_752 - 660_686_383 / 3_907_075) * 1_857_752), splitRatio: undefined, splitUnread: undefined });
+    // A factor that is null, absent or unlooked-for is left without a figure, and says so; never the crash.
+    for (const splits of [new Map([[id, null]]), new Map(), undefined]) {
+      expect(line(forward, splits)).toEqual({ id, estimatedPnl: null, splitRatio: undefined, splitUnread: true });
+    }
+    // The fund's return is the Est P&L of these lines over their start: one rule, so the two cannot disagree.
+    const steady = { previous: holding({ cusip: "B", ticker: "BBB", value: 1000, shares: 100 }), current: holding({ cusip: "B", ticker: "BBB", value: 1100, shares: 100 }) };
+    const both = fund([holding({ cusip: "A", value: 1000, shares: 10 }), steady.previous], [holding({ cusip: "A", value: 1200, shares: 100 }), steady.current]);
+    const splits = new Map([[id, 10]]);
+    const pnl = buildFundHoldingRows(both, splits).reduce((sum, row) => sum + (row.estimatedPnl ?? 0), 0);
+    expect(estimateFilingQuarterReturn(both, splits).percent).toBeCloseTo((pnl / (1000 + 1000)) * 100);
+    // A line that does not move like a split is never unread, whatever the factors are.
+    expect(buildFundHoldingRows(fund([steady.previous], [steady.current]), new Map()).every((row) => !row.splitUnread && row.estimatedPnl === 100)).toBe(true);
+  });
+
+  test("a confirmed split carries the prior shares to today's basis for the share change and the action; a trade or an unread line keeps the change as filed", () => {
+    const fund = (previous: ThirteenFHoldingRecord[], current: ThirteenFHoldingRecord[]): FundDetailData => ({
+      cik: "0001067983", name: "Fund", forms: [],
+      latestForm: form({}), previousForm: form({ periodOfReport: "2025-12-31" }),
+      latestHoldings: current, previousHoldings: previous,
+    });
+    // 10 shares at 100 became 100 at 10:1, of which 50 are left at 12: cut in half. Read as filed that is +40 shares, an add.
+    const cut = fund([holding({ cusip: "A", value: 1000, shares: 10 })], [holding({ cusip: "A", value: 600, shares: 50 })]);
+    const id = buildFundHoldingRows(cut)[0]!.id;
+    expect(buildFundHoldingRows(cut, new Map([[id, 10]]))[0]).toMatchObject({
+      previousShares: 10, shares: 50, sharesChange: -50, sharesChangePercent: -0.5, action: "trim", splitRatio: 10, estimatedPnl: 100,
+    });
+    for (const splits of [new Map([[id, 1]]), new Map([[id, null]]), undefined]) {
+      expect(buildFundHoldingRows(cut, splits)[0]).toMatchObject({ sharesChange: 40, sharesChangePercent: 4, action: "add" });
+    }
+    // 70 shares held through a 1:10 reverse split are 7: unchanged, though 70 × 0.1 is 7.000000000000001.
+    const held = fund([holding({ cusip: "A", value: 700, shares: 70 })], [holding({ cusip: "A", value: 700, shares: 7 })]);
+    expect(buildFundHoldingRows(held, new Map([[id, 0.1]]))[0]).toMatchObject({ sharesChange: 0, sharesChangePercent: 0, action: "held", splitRatio: 0.1 });
+  });
+
   test("does not call a first filing or a missing-quarter comparison new buying", () => {
     for (const previousForm of [null, form({ periodOfReport: "2025-09-30" })]) {
       const rows = buildFundHoldingRows({
