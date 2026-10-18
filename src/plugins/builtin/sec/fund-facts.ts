@@ -65,14 +65,29 @@ function formatNetAssets(value: number): string {
   return `$${formatCompact(value)}`;
 }
 
-/** A trust charges a sponsor fee; a fund states an expense ratio, net or gross of waivers, which its detail says. */
-function expenseRatioLabel(facts: Pick<FundFactsPayload, "expenseRatio" | "structure">): string {
-  return facts.expenseRatio?.kind === "sponsor-fee" || facts.structure === "trust" ? "Sponsor fee" : "Expense ratio";
+/**
+ * The fee as the server says it is: a sponsor fee (IBIT, GLD), or an expense
+ * ratio, net or gross of waivers, which its detail says. A pool's total
+ * expense ratio (USO, DBC) stays an expense ratio: a trust is not enough to
+ * call a fee a sponsor fee.
+ */
+function expenseRatioLabel(facts: Pick<FundFactsPayload, "expenseRatio">): string {
+  return facts.expenseRatio?.kind === "sponsor-fee" ? "Sponsor fee" : "Expense ratio";
 }
 
 function feeBasis(facts: FundFactsPayload): "net" | "gross" | null {
   const kind = facts.expenseRatio?.kind;
-  return facts.structure === "trust" || kind === "sponsor-fee" ? null : kind === "gross" ? "gross" : kind === "net" ? "net" : null;
+  return kind === "gross" ? "gross" : kind === "net" ? "net" : null;
+}
+
+/**
+ * Net assets of the whole fund, every share class (N-PORT's, a fund family's
+ * figure), not the ETF class alone: the label says so, `Fund net assets`,
+ * which no narrow column drops; a report says `all share classes`. A trust
+ * has no classes to tell apart.
+ */
+function wholeFund(facts: FundFactsPayload): boolean {
+  return facts.netAssets?.scope === "fund" && facts.structure !== "trust";
 }
 
 /**
@@ -85,9 +100,11 @@ const BENCHMARK_LABEL = "Benchmark";
  * How each dated figure reads beside the NAV, the date the sheet is about.
  * Every figure says its own date. One that is older than it looks is marked:
  * every figure once the NAV is stale, a premium of another day than the NAV,
- * a day's net assets older than it. Vanguard's net assets are a month end's
- * and say so, which is their normal cadence rather than a lag. A fee is dated
- * by the page or prospectus it was read from and is marked only when stale.
+ * a day's net assets older than it. Vanguard's and ARK's net assets are a
+ * month end's and say so, which is their normal cadence rather than a lag, as
+ * do N-PORT's, which name the report. A fee is dated by the page or
+ * prospectus it was read from, says so when it is the prospectus's, and is
+ * marked only when stale.
  */
 interface DatedFigure {
   /** The date, with what it is when that is not plain: `2026-10-16 close`, `2026-09-30 month-end`. */
@@ -103,6 +120,8 @@ function datedFigures(facts: FundFactsPayload): Record<"nav" | "premium" | "fee"
   const monthEnd = assets?.period === "month-end";
   const basis = feeBasis(facts);
   const feeDate = facts.expenseRatio?.asOf ?? null;
+  const prospectus = facts.expenseRatio?.document === "prospectus";
+  const nport = assets?.document === "N-PORT";
   return {
     nav: { detail: nav ? (facts.stale ? tf("{date} stale", { date: nav }) : nav) : undefined, marked: facts.stale },
     premium: {
@@ -110,11 +129,19 @@ function datedFigures(facts: FundFactsPayload): Record<"nav" | "premium" | "fee"
       marked: facts.stale || (!!premium?.asOf && !!nav && premium.asOf !== nav),
     },
     fee: {
-      detail: feeDate ? (basis === "gross" ? tf("gross {date}", { date: feeDate }) : basis === "net" ? tf("net {date}", { date: feeDate }) : feeDate) : basis ?? undefined,
+      detail: feeDate
+        ? prospectus
+          ? basis === "gross" ? tf("gross, prospectus {date}", { date: feeDate })
+            : basis === "net" ? tf("net, prospectus {date}", { date: feeDate }) : tf("prospectus {date}", { date: feeDate })
+          : basis === "gross" ? tf("gross {date}", { date: feeDate }) : basis === "net" ? tf("net {date}", { date: feeDate }) : feeDate
+        : basis ?? undefined,
       marked: facts.stale,
     },
     netAssets: {
-      detail: assets?.asOf ? (monthEnd ? tf("{date} month-end", { date: assets.asOf }) : assets.asOf) : undefined,
+      detail: assets?.asOf
+        ? nport ? tf("{date} month-end · N-PORT", { date: assets.asOf })
+          : monthEnd ? tf("{date} month-end", { date: assets.asOf }) : assets.asOf
+        : undefined,
       marked: facts.stale || (!monthEnd && !!assets?.asOf && !!nav && assets.asOf < nav),
     },
   };
@@ -135,7 +162,7 @@ export function fundFactItems(facts: FundFactsPayload): StatItem[] {
   if (facts.nav) items.push(cell("nav", "NAV", formatNav(facts.nav.value), dated.nav));
   if (facts.premiumDiscount) items.push(cell("premium", "Premium/discount", formatPremiumPercent(facts.premiumDiscount.value), dated.premium));
   if (facts.expenseRatio) items.push(cell("fee", expenseRatioLabel(facts), formatFeePercent(facts.expenseRatio.value), dated.fee));
-  if (facts.netAssets) items.push(cell("assets", "Net assets", formatNetAssets(facts.netAssets.value), dated.netAssets));
+  if (facts.netAssets) items.push(cell("assets", wholeFund(facts) ? "Fund net assets" : "Net assets", formatNetAssets(facts.netAssets.value), dated.netAssets));
   if (facts.sponsor) items.push({ id: "sponsor", label: "Sponsor", value: facts.sponsor.value });
   if (facts.inception) items.push({ id: "inception", label: "Inception", value: facts.inception.value });
   if (facts.index) items.push({ id: "index", label: BENCHMARK_LABEL, value: facts.index.value, wide: true });
@@ -168,9 +195,13 @@ export function fundFactOverviewFields(facts: FundFactsPayload): FundFactOvervie
   };
   if (facts.nav) fields.push(field("NAV", formatNav(facts.nav.value), dated.nav));
   if (facts.premiumDiscount) fields.push(field("Prem/Disc", formatPremiumPercent(facts.premiumDiscount.value), dated.premium, facts.premiumDiscount.asOf ?? undefined));
-  if (facts.netAssets) fields.push(field("Net Assets", formatNetAssets(facts.netAssets.value), dated.netAssets));
+  if (facts.netAssets) {
+    // N-PORT's long form gives way to the month end alone before the bare date.
+    const monthEnd = facts.netAssets.document && facts.netAssets.asOf ? tf("{date} month-end", { date: facts.netAssets.asOf }) : undefined;
+    fields.push(field(wholeFund(facts) ? "Fund Assets" : "Net Assets", formatNetAssets(facts.netAssets.value), dated.netAssets, monthEnd));
+  }
   if (facts.expenseRatio) {
-    const fee = facts.expenseRatio.kind === "sponsor-fee" || facts.structure === "trust";
+    const fee = facts.expenseRatio.kind === "sponsor-fee";
     fields.push(field(fee ? "Sponsor Fee" : "Exp Ratio", formatFeePercent(facts.expenseRatio.value), dated.fee, facts.expenseRatio.asOf ?? undefined));
   }
   if (facts.inception) fields.push({ label: "Inception", value: facts.inception.value });
@@ -196,8 +227,9 @@ export function fundFactEntries(facts: FundFactsPayload): HeadlessPaneEntry[] {
     facts.structure === "trust" ? "Trust or pool, not an open-end fund" : "Registered fund");
   if (facts.expenseRatio) {
     const kind = feeBasis(facts);
+    const date = facts.expenseRatio.asOf && facts.expenseRatio.document === "prospectus" ? `${facts.expenseRatio.asOf} prospectus` : facts.expenseRatio.asOf;
     add("expenseRatioPercent", expenseRatioLabel(facts), facts.expenseRatio.value,
-      provenance(`${formatFeePercent(facts.expenseRatio.value)}${kind ? ` ${kind}` : ""}`, facts.expenseRatio.asOf, facts.expenseRatio.source), "%");
+      provenance(`${formatFeePercent(facts.expenseRatio.value)}${kind ? ` ${kind}` : ""}`, date, facts.expenseRatio.source), "%");
   }
   if (facts.nav) add("nav", "NAV", facts.nav.value, provenance(formatNav(facts.nav.value), facts.nav.asOf, facts.nav.source), "USD");
   if (facts.closingPrice) add("closingPrice", "Closing price", facts.closingPrice.value,
@@ -208,8 +240,9 @@ export function fundFactEntries(facts: FundFactsPayload): HeadlessPaneEntry[] {
       provenance(formatPremiumPercent(facts.premiumDiscount.value), facts.premiumDiscount.asOf, basis, facts.premiumDiscount.source), "%");
   }
   if (facts.netAssets) {
-    const scope = facts.netAssets.scope === "fund" && facts.structure !== "trust" ? "all share classes" : null;
-    const date = facts.netAssets.asOf && facts.netAssets.period === "month-end" ? `${facts.netAssets.asOf} month-end` : facts.netAssets.asOf;
+    const scope = wholeFund(facts) ? "all share classes" : null;
+    const date = facts.netAssets.asOf && facts.netAssets.period === "month-end"
+      ? `${facts.netAssets.asOf} month-end${facts.netAssets.document ? ` ${facts.netAssets.document}` : ""}` : facts.netAssets.asOf;
     add("netAssets", "Net assets", facts.netAssets.value, provenance(formatNetAssets(facts.netAssets.value), date, scope, facts.netAssets.source), "USD");
   }
   if (facts.sponsor) add("sponsor", "Sponsor", facts.sponsor.value, facts.sponsor.value);
@@ -255,11 +288,24 @@ export function fundFactsEmpty(symbol: string, facts: FundFactsPayload | null, p
 }
 
 /**
- * The pane's line for a fund without facts, translated: why, from what the
- * SEC's lists make of it, as the server's reason says it in English.
+ * The pane's line for a fund without facts, translated, as the server's
+ * reason says it in English: not collected yet when a source Gloom reads
+ * covers the fund, not published only when none does, or no fund at all.
  */
 export function fundFactsEmptyText(symbol: string, facts: FundFactsPayload | null): string {
   if (!facts) return tf("No fund facts for {symbol} yet.", { symbol });
+  if (facts.status === "not-collected-yet") return tf("{symbol}'s figures are not collected yet; the next read stores them.", { symbol });
+  if (facts.status === "not-published") {
+    if (facts.structure === "trust") {
+      return tf("{symbol} files with the SEC as a trust or pool, not as an open-end fund, and its sponsor's site is not one Gloom reads.", { symbol });
+    }
+    if (facts.structure === "registered") {
+      return tf("No figures for {symbol}: its sponsor's site is not one Gloom reads, and the SEC's prospectus and N-PORT data sets list none for it yet.", { symbol });
+    }
+    return tf("No figures for {symbol}: it lists as a fund, but the SEC's lists do not name it yet and its sponsor's site is not one Gloom reads.", { symbol });
+  }
+  if (facts.status === "not-a-fund") return tf("No fund facts for {symbol}: it is not on the SEC's lists of US-listed funds.", { symbol });
+  // A server before statuses: what the SEC's lists make of it.
   if (facts.structure === "trust") {
     return tf("{symbol} files with the SEC as a trust or pool, not as an open-end fund; its sponsor's daily figures are not collected yet.", { symbol });
   }
