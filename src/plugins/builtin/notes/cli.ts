@@ -1,5 +1,6 @@
 import { apiClient } from "../../../api-client";
 import { withCliServices, withConfigData } from "../../../cli/scoped-context";
+import type { CliServicesContext } from "../../../cli/types";
 import { CLI_COMMAND_GROUPS } from "../../../cli/help";
 import { dryRunNote } from "../../../cli/helpers";
 import { requireArg, takeOption } from "../../../cli/commands/command-utils";
@@ -7,9 +8,10 @@ import { EXCHANGE_OPTION, listingReadNotes, requireListingArg } from "../../../c
 import { createPluginPersistence } from "../../plugin-persistence";
 import type { CliCommandDef } from "../../../types/plugin";
 import { cliStyles } from "../../../utils/cli-output";
+import { errorMessage } from "../../../utils/errors";
 import { logFailure } from "../../../utils/log-failure";
 import { readChatSessionState } from "../chat/controller/persistence";
-import { exportNotesToDirectory, type NotesExportSource } from "./export";
+import { describeExportSkip, exportNotesToDirectory, type NotesExportSource } from "./export";
 import { NotesFiles } from "./files";
 import { CloudNotesStore } from "./store";
 
@@ -42,29 +44,52 @@ export const notesCliCommand: CliCommandDef = {
         // (personal and every team), one folder each.
         const dir = args[1] ?? `${config.dataDir}/notes-export-${new Date().toISOString().slice(0, 10)}`;
         const sources: NotesExportSource[] = [{ label: "local", store: notes }];
-        await withCliServices(ctx, async (services) => {
+        // A Cloud source left out or unreadable is a warning, as `quote` reports
+        // a symbol it found nothing for: the local files are always written.
+        const warnings: string[] = [];
+        const leftOut = (what: string, failure: string) => (error: unknown) => {
+          logFailure("notes.cli", failure)(error);
+          warnings.push(`${what} (${errorMessage(error)}).`);
+          return null;
+        };
+        const addCloudSources = async (services: CliServicesContext) => {
           const cloudPersistence = createPluginPersistence(services.persistence.pluginState, services.persistence.resources, "plugin:gloomberb-cloud", "gloomberb-cloud");
           const session = readChatSessionState(cloudPersistence, null);
           if (!session?.sessionToken) return;
           apiClient.setSessionToken(session.sessionToken);
           const user = await apiClient.ensureVerifiedSession()
-            .catch(logFailure("notes.cli", "Verify the saved session for the notes export failed", null));
+            .catch(leftOut("Skipped Gloom Cloud notes: the saved session could not be checked", "Verify the saved session for the notes export failed"));
           if (!user) return;
           const notesPersistence = createPluginPersistence(services.persistence.pluginState, services.persistence.resources, "plugin:notes", "notes");
           sources.push({ label: "mine", store: new CloudNotesStore({ kind: "user" }, notesPersistence) });
-          const teams = await apiClient.listTeams().catch(logFailure("notes.cli", "List teams for the notes export failed", []));
+          const teams = await apiClient.listTeams()
+            .catch(leftOut("Skipped team notes: the team list could not be read", "List teams for the notes export failed")) ?? [];
           for (const team of teams) {
             sources.push({ label: team.name, store: new CloudNotesStore({ kind: "team", teamId: team.id }, notesPersistence) });
           }
+        };
+        // The Cloud stores read and cache through these services, so the
+        // export runs before they close.
+        const result = await withCliServices(ctx, async (services) => {
+          await addCloudSources(services);
+          return ctx.cliOptions.dryRun ? null : await exportNotesToDirectory(dir, sources);
         });
-        if (ctx.cliOptions.dryRun) {
-          ctx.printResult({ data: { dryRun: true, dir, sources: sources.map((source) => source.label) } }, {
+        if (!result) {
+          ctx.printResult({ data: { dryRun: true, dir, sources: sources.map((source) => source.label) }, ...(warnings.length > 0 ? { warnings } : {}) }, {
             text: (data) => `Would export ${data.sources.join(", ")} notes to ${data.dir}.${dryRunNote(true)}`,
           });
           return;
         }
-        const result = await exportNotesToDirectory(dir, sources);
-        ctx.printResult({ data: { dir: result.dir, files: result.files, sources: sources.map((source) => source.label) } }, {
+        warnings.push(...result.skipped.map(describeExportSkip));
+        ctx.printResult({
+          data: {
+            dir: result.dir,
+            files: result.files,
+            sources: result.exported,
+            ...(result.skipped.length > 0 ? { skipped: result.skipped } : {}),
+          },
+          ...(warnings.length > 0 ? { warnings } : {}),
+        }, {
           text: (data) => `Exported ${data.files} notes from ${data.sources.join(", ")} to ${data.dir}.`,
         });
         return;
