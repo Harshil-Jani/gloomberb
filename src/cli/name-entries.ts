@@ -1,6 +1,6 @@
 import { logFailure } from "../utils/log-failure";
 import type { DataProvider } from "../types/data-provider";
-import { findListingOfCompanyName, isCompanyNameInput } from "../tickers/company-name-listing";
+import { findListingOfCompanyName, isCompanyNameInput, readTerminalCodeArg } from "../tickers/company-name-listing";
 import { isNotATickerMessage } from "./not-a-ticker";
 import { splitSymbolWords } from "./symbol-args";
 import { isProviderBusy } from "../sources/provider-errors";
@@ -19,7 +19,9 @@ export async function readNameEntries(
   dataProvider: Pick<DataProvider, "search">,
 ): Promise<string[]> {
   const read = await Promise.all(entries.map(async (entry) => (
-    isCompanyNameInput(entry) && await findListingOfCompanyName(dataProvider, entry).catch(busyAsFound) ? [entry] : splitSymbolWords([entry])
+    // A terminal's code for a listing ("JPM US Equity") is one entry, like a company's name.
+    await readTerminalCodeArg(dataProvider, entry) || (isCompanyNameInput(entry) && await findListingOfCompanyName(dataProvider, entry).catch(busyAsFound))
+      ? [entry] : splitSymbolWords([entry])
   )));
   return read.flat();
 }
@@ -51,6 +53,7 @@ export async function readPhraseArgument(
   phrase: string,
   dataProvider: Pick<DataProvider, "search" | "getQuotesBatch">,
 ): Promise<PhraseReading> {
+  if (await readTerminalCodeArg(dataProvider, phrase)) return { kind: "symbols", symbols: [phrase] };
   const words = splitSymbolWords([phrase]);
   const asked = words.filter((word) => !word.includes(":")).map((word) => word.replace(/^\$/, "").toUpperCase());
   const [named, results] = await Promise.all([
