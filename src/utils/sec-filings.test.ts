@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { currentReportItemsLabel, isPricingSupplement, loadWithoutPricingSupplements } from "./sec-filings";
+import { currentReportItemsLabel, hiddenFilingsNote, isPricingSupplement, isScheduleAboutAnotherCompany, loadLatestFilings, pricingSupplementTest } from "./sec-filings";
 import type { SecFilingItem } from "../types/data-provider";
 
 test.each([
@@ -29,18 +29,79 @@ test("an 8-K's items read by number and name, exhibits only when alone", () => {
   expect(currentReportItemsLabel(undefined)).toBeNull();
 });
 
-test("an issuer the first read leaves short is read in full; a short list is all there is", async () => {
-  const filing = (form: string, index: number): SecFilingItem => ({ form, accessionNumber: String(index), filingDate: new Date(0), cik: "72971", filingUrl: "" });
+test("a plain 424B3 is a term sheet among a note shelf's supplements, and a company's merger or resale prospectus otherwise", () => {
+  const filing = (form: string, date: string, cik = "19617", primaryDocDescription = ""): SecFilingItem =>
+    ({ form, filingDate: new Date(`${date}T00:00:00Z`), cik, primaryDocDescription, accessionNumber: `${cik}-${date}-${form}`, filingUrl: "" });
+  // JPM: a day's notes, then its FORM 424B3 term sheet; its 2008 merger prospectus filed before it sold notes.
+  const termSheet = filing("424B3", "2026-10-15", "19617", "FORM 424B3");
+  const merger = filing("424B3", "2008-11-25", "19617", "FINAL PROSPECTUS");
+  const bank = [termSheet, ...Array.from({ length: 30 }, (_, index) => filing(index % 2 ? "FWP" : "424B2", "2026-10-14")), merger];
+  // AT&T-like: dozens of bond deals over the years, at most a few in any two months, and a merger prospectus.
+  const bonds = Array.from({ length: 40 }, (_, index) => filing(index % 2 ? "FWP" : "424B2", new Date(Date.UTC(2020, index * 2, 1)).toISOString().slice(0, 10), "732717"));
+  const company = filing("424B3", "2021-06-01", "732717", "424B3");
+  // Another filer under the same ticker, the same day as the bank's notes.
+  const other = filing("424B3", "2026-10-15", "1665650", "424B3");
+
+  const isSupplement = pricingSupplementTest([...bank, ...bonds, company, other]);
+  expect(isSupplement(termSheet)).toBe(true);
+  expect(isSupplement(merger)).toBe(false);
+  expect(isSupplement(company)).toBe(false);
+  expect(isSupplement(other)).toBe(false);
+  // Nineteen supplements are not a shelf.
+  expect(pricingSupplementTest([termSheet, ...bank.slice(1, 20)])(termSheet)).toBe(false);
+});
+
+test.each([
+  // JPM's own 13G/A as a holder: EDGAR lists it with no file number.
+  ["SCHEDULE 13G/A", "", true],
+  ["SC 13D", "", true],
+  ["SCHEDULE 13D/A", "", true],
+  // A schedule about the company carries its 005- number (Apple's, JPM's own).
+  ["SCHEDULE 13G", "005-34242", false],
+  ["SC 13G/A", "005-33632", false],
+  // No file number from the source (an older server): kept, never guessed.
+  ["SCHEDULE 13G/A", undefined, false],
+  ["8-K", "", false],
+])("%s with file number %p is about another company: %p", (form, fileNumber, expected) => {
+  expect(isScheduleAboutAnotherCompany({ form, fileNumber })).toBe(expected);
+});
+
+test("the hidden filings read as one note", () => {
+  expect(hiddenFilingsNote({ pricingSupplements: 1_164, ownershipReportsAboutOthers: 0 })).toBe("1,164 pricing supplements hidden, --all to show");
+  expect(hiddenFilingsNote({ pricingSupplements: 0, ownershipReportsAboutOthers: 1 })).toBe("1 ownership report about another company hidden, --all to show");
+  expect(hiddenFilingsNote({ pricingSupplements: 28, ownershipReportsAboutOthers: 22 }))
+    .toBe("28 pricing supplements and 22 ownership reports about other companies hidden, --all to show");
+  expect(hiddenFilingsNote({ pricingSupplements: 0, ownershipReportsAboutOthers: 0 })).toBeNull();
+});
+
+test("a read that leaves the list short is followed by a larger one, up to the issuer in full; a short list is all there is", async () => {
+  const filing = (form: string, index: number, fileNumber?: string): SecFilingItem =>
+    ({ form, accessionNumber: String(index), filingDate: new Date(0), cik: "72971", filingUrl: "", fileNumber });
   const reads: number[] = [];
-  const issuer = [...Array.from({ length: 250 }, (_, index) => filing("424B2", index)), filing("8-K", 900), filing("10-Q", 901)];
+  const issuer = [
+    ...Array.from({ length: 250 }, (_, index) => filing("424B2", index)),
+    filing("8-K", 900),
+    filing("SCHEDULE 13G/A", 901, ""),
+    filing("10-Q", 902),
+    ...Array.from({ length: 6_000 }, (_, index) => filing("FWP", 1_000 + index)),
+    filing("10-K", 9_000),
+  ];
   const load = async (count: number) => { reads.push(count); return issuer.slice(0, count); };
 
-  expect(await loadWithoutPricingSupplements(load, 2)).toMatchObject({ hidden: 250, filings: [{ form: "8-K" }, { form: "10-Q" }] });
-  expect(reads).toEqual([200, 20_000]);
+  expect(await loadLatestFilings(load, 2)).toMatchObject({
+    hidden: { pricingSupplements: 250, ownershipReportsAboutOthers: 0 }, filings: [{ form: "8-K" }, { form: "SCHEDULE 13G/A" }],
+  });
+  expect(reads).toEqual([200, 1_000]);
 
   reads.length = 0;
-  const few = issuer.slice(240);
-  expect(await loadWithoutPricingSupplements(async (count) => { reads.push(count); return few.slice(0, count); }, 5))
-    .toMatchObject({ hidden: 10, filings: [{ form: "8-K" }, { form: "10-Q" }] });
+  expect(await loadLatestFilings(load, 3, { schedulesAboutOthers: true })).toMatchObject({
+    hidden: { pricingSupplements: 6_250, ownershipReportsAboutOthers: 1 }, filings: [{ form: "8-K" }, { form: "10-Q" }, { form: "10-K" }],
+  });
+  expect(reads).toEqual([200, 1_000, 5_000, 20_000]);
+
+  reads.length = 0;
+  const few = issuer.slice(240, 253);
+  expect(await loadLatestFilings(async (count) => { reads.push(count); return few.slice(0, count); }, 5, { schedulesAboutOthers: true }))
+    .toMatchObject({ hidden: { pricingSupplements: 10, ownershipReportsAboutOthers: 1 }, filings: [{ form: "8-K" }, { form: "10-Q" }] });
   expect(reads).toEqual([200]);
 });

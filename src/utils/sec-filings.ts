@@ -76,60 +76,170 @@ export function currentReportItemsLabel(items: string | null | undefined): strin
   return named.length > 0 ? named.join("; ") : null;
 }
 
+/** A form without its amendment suffix: `424B2/A` is `424B2`. */
+const formBase = (form: string) => form.trim().toUpperCase().replace(/\/A$/, "");
+
+/** The forms a note shelf files for each note it sells. */
+const isNoteSupplementForm = (form: string) => {
+  const base = formBase(form);
+  return base === "424B2" || base === "FWP";
+};
+
 /**
  * The pricing supplements and term sheets of the notes an issuer sells off
  * its shelf: a bank files one for each structured note, hundreds a week
  * (JPM, WFC), as a 424B2 or a free writing prospectus. Another 424B
  * prospectus counts when it calls itself one; a 424B3 is otherwise often a
- * merger or resale prospectus, which stays.
+ * merger or resale prospectus, which stays, unless a note shelf files it
+ * among its supplements (pricingSupplementTest).
  */
 export function isPricingSupplement(filing: Pick<SecFilingItem, "form" | "primaryDocDescription">): boolean {
-  const form = filing.form.trim().toUpperCase().replace(/\/A$/, "");
-  if (form === "424B2" || form === "FWP") return true;
-  return /^424B\d$/.test(form) && /\b(?:PRICING SUPPLEMENT|TERM SHEET)\b/i.test(filing.primaryDocDescription ?? "");
+  if (isNoteSupplementForm(filing.form)) return true;
+  return /^424B\d$/.test(formBase(filing.form)) && /\b(?:PRICING SUPPLEMENT|TERM SHEET)\b/i.test(filing.primaryDocDescription ?? "");
 }
 
 /**
- * The first `limit` filings that are not pricing supplements, and how many
- * supplements sat among them: those filed since the last filing kept, or all
- * of them when fewer than `limit` are kept.
+ * A plain 424B3 is a note's term sheet when its filer filed at least this
+ * many 424B2 or FWP within SHELF_DAYS of it. A note shelf files hundreds a
+ * month (JPM, GS, MS, C, BAC) or dozens (US Bancorp, up to 52 in two months);
+ * a company selling bonds a handful (in any two months since 1994, AT&T at
+ * most 10, Apple 9). Over a list read back to 1994 Apple's, AT&T's and
+ * Microsoft's add up to dozens, so they are counted near the 424B3 only.
  */
-function withoutPricingSupplements<T extends Pick<SecFilingItem, "form" | "primaryDocDescription">>(
-  filings: readonly T[],
-  limit = Number.POSITIVE_INFINITY,
-): { filings: T[]; hidden: number } {
-  const kept: T[] = [];
-  let hidden = 0;
+const SHELF_SUPPLEMENTS = 20;
+const SHELF_DAYS = 30;
+const DAY_MS = 86_400_000;
+
+/** A filing date as a time; persistence can hand back the Date as a string. */
+const filedAt = (filing: Pick<SecFilingItem, "filingDate">) => new Date(filing.filingDate as Date | string).getTime();
+
+/** How many of the sorted `times` fall within [from, to]. */
+function countWithin(times: readonly number[], from: number, to: number): number {
+  const firstAtOrAfter = (value: number) => {
+    let low = 0;
+    let high = times.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (times[middle]! < value) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return firstAtOrAfter(to + 1) - firstAtOrAfter(from);
+}
+
+/**
+ * Which of an issuer's filings are pricing supplements, read over the
+ * filings loaded: those isPricingSupplement names, and a plain 424B3 filed
+ * among a structured-note shelf's supplements (JPM files its note term
+ * sheets as `FORM 424B3`). A company's 424B3 merger or resale prospectus
+ * stays. Each filer (CIK) is read on its own.
+ */
+export function pricingSupplementTest(
+  filings: readonly SecFilingItem[],
+): (filing: Pick<SecFilingItem, "form" | "primaryDocDescription" | "cik" | "filingDate">) => boolean {
+  const supplements = new Map<string, number[]>();
+  for (const filing of filings) {
+    const time = filedAt(filing);
+    if (!isNoteSupplementForm(filing.form) || !Number.isFinite(time)) continue;
+    const times = supplements.get(filing.cik) ?? [];
+    times.push(time);
+    supplements.set(filing.cik, times);
+  }
+  for (const times of supplements.values()) times.sort((left, right) => left - right);
+  return (filing) => {
+    if (isPricingSupplement(filing)) return true;
+    if (formBase(filing.form) !== "424B3") return false;
+    const times = supplements.get(filing.cik);
+    const time = filedAt(filing);
+    if (!times || times.length < SHELF_SUPPLEMENTS || !Number.isFinite(time)) return false;
+    return countWithin(times, time - SHELF_DAYS * DAY_MS, time + SHELF_DAYS * DAY_MS) >= SHELF_SUPPLEMENTS;
+  };
+}
+
+/** A 13D or 13G beneficial-ownership schedule or its amendment, under the old (`SC 13G`) or current (`SCHEDULE 13G`) form name. */
+function isOwnershipSchedule(form: string): boolean {
+  return /^(?:SC|SCHEDULE) 13[DG](?:\/A)?$/i.test(form.trim());
+}
+
+/**
+ * A 13D or 13G the company filed as a holder of another company's shares.
+ * EDGAR lists a schedule under its filer as well as its subject, so a bank's
+ * or an asset manager's list holds hundreds about other companies (197 of
+ * JPM's last 199), and only one about the company carries its 005- file
+ * number. Who submitted it does not tell: an agent files both kinds. A
+ * filing whose file number the source did not give is kept.
+ */
+export function isScheduleAboutAnotherCompany(filing: Pick<SecFilingItem, "form" | "fileNumber">): boolean {
+  return typeof filing.fileNumber === "string" && isOwnershipSchedule(filing.form) && !/^005-/.test(filing.fileNumber.trim());
+}
+
+/** The filings a short list left out, by kind. */
+export interface HiddenFilings {
+  pricingSupplements: number;
+  /** The 13D/13G the company filed as a holder of other companies. */
+  ownershipReportsAboutOthers: number;
+}
+
+/**
+ * The first `limit` filings that are not left out, and how many of each kind
+ * sat among them: those filed since the last filing kept, or all of them when
+ * fewer than `limit` are kept.
+ */
+function keptFilings(
+  filings: readonly SecFilingItem[],
+  limit: number,
+  schedulesAboutOthers: boolean,
+): { filings: SecFilingItem[]; hidden: HiddenFilings } {
+  const kept: SecFilingItem[] = [];
+  const hidden: HiddenFilings = { pricingSupplements: 0, ownershipReportsAboutOthers: 0 };
+  const isSupplement = pricingSupplementTest(filings);
   for (const filing of filings) {
     if (kept.length >= limit) break;
-    if (isPricingSupplement(filing)) hidden += 1;
+    if (isSupplement(filing)) hidden.pricingSupplements += 1;
+    else if (schedulesAboutOthers && isScheduleAboutAnotherCompany(filing)) hidden.ownershipReportsAboutOthers += 1;
     else kept.push(filing);
   }
   return { filings: kept, hidden };
 }
 
-/** "176 pricing supplements hidden, --all to show", or null when none were. */
-export function pricingSupplementsNote(hidden: number, show = "--all to show"): string | null {
-  if (hidden <= 0) return null;
-  return `${hidden.toLocaleString("en-US")} pricing ${hidden === 1 ? "supplement" : "supplements"} hidden, ${show}`;
+/**
+ * "28 pricing supplements and 22 ownership reports about other companies
+ * hidden, --all to show", or null when nothing was.
+ */
+export function hiddenFilingsNote(hidden: HiddenFilings): string | null {
+  const count = (value: number, one: string, many: string) =>
+    value > 0 ? `${value.toLocaleString("en-US")} ${value === 1 ? one : many}` : null;
+  const parts = [
+    count(hidden.pricingSupplements, "pricing supplement", "pricing supplements"),
+    count(hidden.ownershipReportsAboutOthers, "ownership report about another company", "ownership reports about other companies"),
+  ].filter((part): part is string => part != null);
+  return parts.length > 0 ? `${parts.join(" and ")} hidden, --all to show` : null;
 }
 
 /** Filings asked for first, a few times the rows wanted: supplements come in runs of dozens. */
 const FIRST_READ_MIN = 200;
+/** A read that leaves the list short is followed by one this many times larger. */
+const READ_GROWTH = 5;
 
 /**
- * An issuer's latest `limit` filings without its pricing supplements. A
- * bank's last hundreds of filings can be nearly all supplements (192 of
- * WFC's last 200), so a first read asks for a few hundred and only an issuer
- * they leave short is read in full.
+ * An issuer's latest `limit` filings without its pricing supplements and,
+ * with `schedulesAboutOthers`, the 13D/13G it filed as a holder of other
+ * companies. A bank's last hundreds of filings can be nearly all of these
+ * (192 of WFC's last 200 are supplements), so a first read asks for a few
+ * hundred, and each read that leaves the list short is followed by a five
+ * times larger one, up to the issuer in full.
  */
-export async function loadWithoutPricingSupplements(
+export async function loadLatestFilings(
   load: (count: number) => Promise<SecFilingItem[]>,
   limit: number,
-): Promise<{ filings: SecFilingItem[]; hidden: number }> {
-  const count = Math.min(SEC_FILING_FETCH_LIMIT, Math.max(FIRST_READ_MIN, limit * 4));
-  const first = await load(count);
-  const kept = withoutPricingSupplements(first, limit);
-  if (kept.filings.length >= limit || first.length < count) return kept;
-  return withoutPricingSupplements(await load(SEC_FILING_FETCH_LIMIT), limit);
+  { schedulesAboutOthers = false }: { schedulesAboutOthers?: boolean } = {},
+): Promise<{ filings: SecFilingItem[]; hidden: HiddenFilings }> {
+  let count = Math.min(SEC_FILING_FETCH_LIMIT, Math.max(FIRST_READ_MIN, limit * 4));
+  for (;;) {
+    const read = await load(count);
+    const kept = keptFilings(read, limit, schedulesAboutOthers);
+    if (kept.filings.length >= limit || read.length < count || count >= SEC_FILING_FETCH_LIMIT) return kept;
+    count = Math.min(SEC_FILING_FETCH_LIMIT, count * READ_GROWTH);
+  }
 }

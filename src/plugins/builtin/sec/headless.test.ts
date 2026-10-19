@@ -76,6 +76,7 @@ describe("SEC headless model", () => {
     ...Array.from({ length: 150 }, (_, index) => supplement(index)),
     supplement(900, "FWP", "FREE WRITING PROSPECTUS"),
     filings[0]!,
+    // Among the bank's notes, a plain 424B3 is a note's term sheet too.
     supplement(901, "424B3", "PROSPECTUS"),
     ...Array.from({ length: 300 }, (_, index) => supplement(1000 + index)),
     filings[1]!,
@@ -89,11 +90,11 @@ describe("SEC headless model", () => {
     } });
 
     const hidden = await headless.load(args(3), createTestHeadlessContext());
-    expect(hidden.rows.map((row) => row.accessionNumber)).toEqual([filings[0]!.accessionNumber, "0001839882-26-000901", filings[1]!.accessionNumber]);
-    expect(hidden.notes).toEqual(["451 pricing supplements hidden, --all to show"]);
-    expect(hidden.metadata?.pricingSupplementsHidden).toBe(451);
-    // The first read (200) left the list short, so the issuer was read in full.
-    expect(requested).toEqual([200, SEC_FILING_FETCH_LIMIT]);
+    expect(hidden.rows.map((row) => row.accessionNumber)).toEqual([filings[0]!.accessionNumber, filings[1]!.accessionNumber]);
+    expect(hidden.notes).toEqual(["452 pricing supplements hidden, --all to show"]);
+    expect(hidden.metadata?.pricingSupplementsHidden).toBe(452);
+    // The first read (200) left the list short, so a larger one followed.
+    expect(requested).toEqual([200, 1_000]);
 
     const all = await headless.load({ ...args(3), options: { limit: 3, all: true } }, createTestHeadlessContext());
     expect(all.rows.map((row) => row.form)).toEqual(["424B2", "424B2", "424B2"]);
