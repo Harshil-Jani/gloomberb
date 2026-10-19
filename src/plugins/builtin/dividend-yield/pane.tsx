@@ -27,7 +27,8 @@ import { nextHeaderSort } from "../../../utils/sort-values";
 import { handleRefreshKey, loadingErrorFooterInfo } from "../../../components/data-table/table-pane";
 import { SignInWall } from "../cloud/auth-actions";
 import { isCloudSessionRequired, useResearchCloudSession } from "../shared/research-cloud-session";
-import { dividendReferencePrice, fetchDividendData, repriceDividendMetrics, type DividendData } from "./client";
+import { fetchDividendData, repriceDividendMetrics, type DividendData } from "./client";
+import { dividendReferencePrice } from "../../../utils/trailing-dividend";
 import { useTickerQuoteStream } from "../../../state/hooks/live-ticker-financials";
 import { buildTrailingCashChartPoints, formatDividendYield, toDividendRows, type DividendRow } from "./view";
 import {
@@ -39,7 +40,7 @@ import {
   type DividendSortPreference,
 } from "./model";
 import type { DividendMetrics } from "./types";
-import { dividendPriceAsOf, dividendPriceStatus, dividendQuotePriceMetadata } from "./reference-price";
+import { dividendPriceStatus, dividendPriceTime, dividendQuotePriceMetadata } from "./reference-price";
 
 function formatRate(value: number | null, currency: string): string {
   if (value == null) return "—";
@@ -173,7 +174,7 @@ export function DividendYieldPane({ focused, width, height, loadData = fetchDivi
   const currentPrice = paneReferencePrice ?? data?.price ?? null;
   const priceMetadata = paneReferencePrice != null && financials?.quote
     ? dividendQuotePriceMetadata(financials.quote) : data;
-  const priceAsOf = dividendPriceAsOf(Date.parse(priceMetadata?.priceAsOf ?? ""));
+  const priceAsOf = dividendPriceTime(priceMetadata?.priceAsOf);
   const priceStatus = dividendPriceStatus(currentPrice, priceAsOf, priceMetadata?.priceStale);
 
   usePaneFooter("dividend-yield", () => {
