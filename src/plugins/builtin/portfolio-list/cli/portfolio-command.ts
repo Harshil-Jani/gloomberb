@@ -48,7 +48,13 @@ import { importedFromText } from "../imported-from";
 import { savedListingCoinNote } from "../../../../cli/commands/crypto-hints";
 import { findNamedCollection } from "../../../../portfolio/collection-name";
 import { wholeUnitQuantityProblem } from "../../../../portfolio/position-quantity";
-import { parseTypedNumber, readCurrencyAmount } from "../../../../utils/decimal-comma";
+import { CostFxError, loadCostFxRate, type CostFxHistoryClient } from "../../../../portfolio/cost-fx";
+import { lotCostFxRate, sameCurrency } from "../../../../portfolio/position-metrics";
+import { formatFxRate } from "../../../../cli/fx-pair";
+import { createBaseConverter } from "../../../../cli/base-converter";
+import { currencyUnitLabel, heldCurrencyUnit } from "../../../../utils/currency-units";
+import { parseTypedNumber, readCurrencyAmount, readTypedNumber } from "../../../../utils/decimal-comma";
+import { DATE_OPTION_EXAMPLES, dateOptionError, readCalendarDate } from "../../../../utils/calendar-date";
 import {
   failPortfolioCommand,
   isCashArgument,
@@ -67,6 +73,7 @@ import { readNameEntries } from "../../../../cli/name-entries";
 import { DRIP_DEFAULT_YEARS, DRIP_MAX_YEARS, parseDripYears, parseWithholding } from "../income";
 
 const ADD_USAGE = "Usage: gloomberb portfolio add <portfolio> <symbols...> [--file <path>]";
+const POSITION_USAGE = "Usage: gloomberb portfolio position set <portfolio> <ticker> <shares|contracts> <avg-cost> [currency] [--date <purchase date> | --cost-fx <rate>]";
 const REMOVE_USAGE = "Usage: gloomberb portfolio remove <portfolio> <symbols...> [--file <path>]";
 const CASH_USAGE = "Usage: gloomberb portfolio cash set <portfolio> <amount> [currency] | portfolio cash clear <portfolio>";
 const TARGET_USAGE = "Usage: gloomberb portfolio target set <portfolio> <symbol|CASH> <weight%> | target clear <portfolio> [symbol] | target show <portfolio>";
@@ -287,6 +294,8 @@ async function setPositionCommand(
   rawCurrency: string | undefined,
   exchange: string | undefined,
   ctx: CliCommandContext,
+  /** `--date` (an ISO day) and `--cost-fx`, read already; the client reads the date's FX closes. */
+  cost: { date?: string; costFx?: number; history?: CostFxHistoryClient } = {},
   futuresTerms?: (symbol: string) => Promise<FuturesContractTermsPayload | null>,
 ) {
   await withMarketData(ctx, async ({ config, store, dataProvider }) => {
@@ -307,26 +316,48 @@ async function setPositionCommand(
       const future = isFuturesTicker(ticker);
       const size = await loadFuturesEntrySize(ticker, futuresTerms);
       const currency = resolveManualPositionCurrency(rawCurrency, ticker, portfolio, config.baseCurrency, size?.currency);
+      // The first position of an empty manual portfolio sets its currency; the cost converts into the currency
+      // `portfolio show` values the portfolio in once it is set, which is the base currency when that is not USD.
+      const firstPosition = !hasOpenPortfolioPositions(portfolio.id, await store.loadAllTickers());
+      const adopted = firstPosition ? adoptFirstPositionCurrency(config, portfolio.id, currency) : null;
+      const valued = adopted ?? config;
+      const portfolioCurrency = resolvePortfolioTotalsCurrency(
+        valued.portfolios.find((entry) => entry.id === portfolio.id) ?? portfolio, valued.baseCurrency);
+      const toPortfolio = createBaseConverter(dataProvider, heldCurrencyUnit(portfolioCurrency).currency);
+      const costFx = await positionCostFx({
+        ...cost, currency, portfolioCurrency, listing: savedListingName(ticker).key,
+        // Today's rate, in the units the lot is held in: what a typed rate is checked against.
+        todaysRate: async () => (await toPortfolio(1, heldCurrencyUnit(currency).currency))
+          / heldCurrencyUnit(currency).divisor * heldCurrencyUnit(portfolioCurrency).divisor,
+      });
       const result = setManualPortfolioPosition(ticker, portfolio.id, {
         shares,
         avgCost,
         currency,
         ...(size ? { multiplier: size.multiplier } : {}),
+        ...(cost.date ? { dateAcquired: cost.date } : {}),
+        ...(costFx ? { costFx: costFx.costFx } : {}),
       });
-      const multiplier = result.ticker.metadata.positions.find((position) => position.portfolio === portfolio.id)?.multiplier;
+      const lot = result.ticker.metadata.positions.find((position) => position.portfolio === portfolio.id);
+      const multiplier = lot?.multiplier;
       if (future && !multiplier) {
         notes.push(`No contract size is known for ${savedListingName(result.ticker).label}, so its value and P&L are not shown.`);
       }
-      const firstPosition = !hasOpenPortfolioPositions(portfolio.id, await store.loadAllTickers());
       await store.saveTicker(result.ticker);
-      const adopted = firstPosition ? adoptFirstPositionCurrency(config, portfolio.id, currency) : null;
       if (adopted) await saveConfig(adopted);
       const saved = savedListingName(result.ticker);
       const quantity = formatMarketQuantity(shares, { assetCategory: result.ticker.metadata.assetCategory });
+      // A cost in another currency converts at the rate it was bought at when the lot has one, else at today's, and says so.
+      const foreign = !sameCurrency(currency, portfolioCurrency);
+      const boughtRate = lot ? lotCostFxRate(lot, currency, portfolioCurrency) : null;
+      // The purchase date shows where it was given or sets the rate; a lot in the portfolio's currency otherwise prints as it did.
+      const purchaseDate = lot?.dateAcquired && (cost.date || foreign) ? lot.dateAcquired : null;
       ctx.printResult({
         data: {
           changed: true, ...listingFields(saved), portfolio: portfolio.name, shares, avgCost, currency,
           ...(future ? { contractMultiplier: multiplier ?? null, contractSize: size?.size ?? null } : {}),
+          ...(purchaseDate ? { dateAcquired: purchaseDate } : {}),
+          ...(foreign ? { costFxRate: boughtRate, costFxCurrency: portfolioCurrency, costFxDate: costFx?.date ?? null } : {}),
         },
         warnings: notes.length > 0 ? notes : undefined,
       }, {
@@ -338,13 +369,116 @@ async function setPositionCommand(
               : ["Shares", quantity],
             ["Average Cost", formatMarketCostWithCurrency(avgCost, currency, { assetCategory: result.ticker.metadata.assetCategory })],
             ["Currency", currency],
+            ...(purchaseDate ? [["Purchase Date", purchaseDate] as [string, string]] : []),
+            ...(boughtRate !== null
+              ? [["Cost FX", `${formatFxRate(boughtRate)} ${portfolioCurrency} per ${currency}${costFx?.date ? ` (${costFx.date} close)` : ""}`] as [string, string]]
+              : []),
           ]),
+          ...(foreign && boughtRate === null
+            ? [cliStyles.muted(`Cost converted at today's rate into ${portfolioCurrency}; add --date or --cost-fx to use the rate when bought.`)]
+            : []),
         ].join("\n"),
       });
     } catch (error) {
       failPortfolioCommand(ctx, error, `Failed to set position for ${symbol} in "${portfolioName}".`);
     }
   });
+}
+
+/**
+ * The rate a position's cost was bought at, from `--cost-fx` as typed or from
+ * the FX closes of its `--date`, for a position held in another currency
+ * than the portfolio's; undefined when neither was given or the position is
+ * in the portfolio's currency (a date alone then only dates the lot).
+ * `--cost-fx` on a position in the portfolio's own currency, a typed rate
+ * that reads as a mistake against today's, and a date with no FX close fail
+ * saying what to give instead.
+ */
+async function positionCostFx({ date, costFx, history, currency, portfolioCurrency, listing, todaysRate }: {
+  date?: string; costFx?: number; history?: CostFxHistoryClient; currency: string; portfolioCurrency: string; listing: string;
+  /** Today's rate, one unit of `currency` in `portfolioCurrency`; NaN when it cannot be read. */
+  todaysRate: () => Promise<number>;
+}): Promise<{ costFx: { rate: number; currency: string }; date: string | null } | undefined> {
+  const foreign = !sameCurrency(currency, portfolioCurrency);
+  const insteadHint = `Give the rate it was bought at instead: --cost-fx <${portfolioCurrency} per ${currency}>.`;
+  if (costFx != null) {
+    if (!foreign) {
+      const held = currency === portfolioCurrency ? currency : `${currency}, a unit of ${portfolioCurrency}`;
+      throw new PortfolioCliError(`--cost-fx converts a cost in another currency; ${listing} is held in ${held}, the portfolio's currency.`);
+    }
+    const problem = implausibleCostFx(costFx, await todaysRate().catch(() => Number.NaN), { currency, portfolioCurrency, listing });
+    if (problem) throw new PortfolioCliError(problem, "Or give the purchase --date, and its daily FX close is used.");
+    return { costFx: { rate: costFx, currency: portfolioCurrency }, date: null };
+  }
+  if (!date || !foreign) return undefined;
+  try {
+    const reading = await loadCostFxRate(currency, portfolioCurrency, date, history ?? apiClient);
+    return { costFx: { rate: reading.rate, currency: portfolioCurrency }, date: reading.date };
+  } catch (error) {
+    if (error instanceof CostFxError) {
+      throw new PortfolioCliError(`${error.message}, so the ${currency} cost cannot be converted at the rate of ${date}.`, insteadHint);
+    }
+    // Offline, signed out or a server error: say what was being read, and the way that needs no network.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new PortfolioCliError(`Could not read the ${currency} and ${portfolioCurrency} FX closes of ${date}: ${reason}.`, insteadHint);
+  }
+}
+
+/** How far from today's rate a typed one may be: a currency that lost 99% since purchase still fits. */
+const COST_FX_MAX_RATIO = 100;
+
+/**
+ * Why a typed `--cost-fx` reads as a mistake against today's rate, else null:
+ * a rate per pound for a lot held in pence, the inverse of the pair (0.0319
+ * for 31.37 TRY per USD), or more than a hundred times off either way. A
+ * rate is only called inverted when today's is far from 1 and the typed one
+ * lies on the other side of it, so EUR per USD near parity is never refused.
+ * Null when today's rate is not known.
+ */
+function implausibleCostFx(
+  rate: number,
+  today: number,
+  { currency, portfolioCurrency, listing }: { currency: string; portfolioCurrency: string; listing: string },
+): string | null {
+  if (!Number.isFinite(today) || today <= 0) return null;
+  const pair = `${portfolioCurrency} per ${currency}`;
+  const typed = formatFxRate(rate);
+  const todays = `today's is ${formatFxRate(today)} ${pair}`;
+  const unit = heldCurrencyUnit(currency);
+  if (unit.divisor !== 1 && rate / today >= unit.divisor / 5 && rate / today <= unit.divisor * 5) {
+    const name = currency.toUpperCase() === "USX" ? "US cents" : currencyUnitLabel(currency).replace(/^\S+ \((.+)\)$/, "$1");
+    return `--cost-fx ${typed} looks like ${portfolioCurrency} per ${unit.currency}; ${listing} is held in ${currency} (${name}), `
+      + `so the rate is ${pair}, 1/${unit.divisor} of that: ${todays}.`;
+  }
+  if ((today >= 3 && rate < 1) || (today <= 1 / 3 && rate > 1)) {
+    return `--cost-fx ${typed} looks inverted: it is the ${portfolioCurrency} paid for one ${currency}, and ${todays}.`;
+  }
+  if (rate / today > COST_FX_MAX_RATIO || today / rate > COST_FX_MAX_RATIO) {
+    return `--cost-fx ${typed} is more than ${COST_FX_MAX_RATIO} times off today's rate (${formatFxRate(today)} ${pair}); check the rate.`;
+  }
+  return null;
+}
+
+/** `--date`: the day the position was bought, as an ISO day, no later than today (UTC). */
+function parsePurchaseDate(value: string, ctx: CliCommandContext): string {
+  const date = readCalendarDate(value);
+  if (!date) ctx.fail(dateOptionError(value, "--date", { subject: "the purchase date" }), POSITION_USAGE);
+  if (date > new Date().toISOString().slice(0, 10)) ctx.fail(`--date ${value.trim()} is after today; it is the day the position was bought.`, POSITION_USAGE);
+  return date;
+}
+
+/** `--cost-fx`: one unit of the position's currency in the portfolio's when it was bought, a positive number (32,15 reads as 32.15). */
+function parseCostFx(value: string, ctx: CliCommandContext): number {
+  let rate = Number.NaN;
+  try {
+    rate = readTypedNumber(value, "--cost-fx");
+  } catch (error) {
+    ctx.fail(error instanceof Error ? error.message : String(error), POSITION_USAGE);
+  }
+  if (!Number.isFinite(rate) || rate <= 0) {
+    ctx.fail(`--cost-fx is the rate the cost was bought at, a positive number such as 32.15 (TRY per USD); got "${value.trim()}".`, POSITION_USAGE);
+  }
+  return rate;
 }
 
 const CURRENCY_CODE = /^[A-Za-z]{3}$/;
@@ -779,6 +913,8 @@ const POSITION_HELP = {
   lines: [
     "position set replaces the portfolio's lots of the symbol with one: a negative size is a short, and 0 is refused (portfolio remove drops the symbol).",
     "A future's size is in contracts, at a price per unit of its contract (GC=F: per troy ounce); the contract size is read from its terms, as quote shows them.",
+    "The cost is in the currency named after it, else the listing's. A holding in another currency than the portfolio's (a US stock in a TRY portfolio) can be entered at its cost in the portfolio's currency (position set Lira BRK-B 10 20310 TRY), so P&L is in what was paid.",
+    "Entered at its cost in its own currency, its P&L converts the cost at today's rate unless --date gives the purchase date, whose daily FX close is used, or --cost-fx gives the rate paid (portfolio currency per unit of the holding's: 32.15 TRY per USD); then the P&L carries the currency's move since. portfolio show names the holdings whose cost converts at today's rate.",
   ],
 };
 
@@ -815,7 +951,7 @@ export const portfolioCliCommand: CliCommandDef = {
       "portfolio delete <name>",
       "portfolio add <portfolio> <symbols...> [--file <path>]",
       "portfolio remove <portfolio> <symbols...> [--file <path>]",
-      "portfolio position set <portfolio> <symbol> <shares|contracts> <avg-cost> [currency]",
+      "portfolio position set <portfolio> <symbol> <shares|contracts> <avg-cost> [currency] [--date <purchase date> | --cost-fx <rate>]",
       "portfolio cash set <portfolio> <amount> [currency]",
       "portfolio cash clear <portfolio>",
       "portfolio target set <portfolio> <symbol|CASH> <weight%>",
@@ -835,6 +971,8 @@ export const portfolioCliCommand: CliCommandDef = {
       { flags: "--name <portfolio>", description: "portfolio import: the portfolio to create or fill (default: the manager's name and 13F)" },
       { flags: "--notional <amount>", description: "portfolio import: the USD total the shares add up to at the filing's prices (default 100,000)" },
       { flags: "--replace", description: "portfolio import: replace the positions of an existing portfolio of that name" },
+      { flags: "--date <purchase date>", description: `position set: the day it was bought, as ${DATE_OPTION_EXAMPLES}; a holding in another currency converts its cost at that day's FX close` },
+      { flags: "--cost-fx <rate>", description: "position set: the rate a holding in another currency was bought at, in the portfolio's currency per unit of the holding's (32.15 TRY per USD)" },
       { flags: "--explain", description: "portfolio show: follow the report with what its terms mean (Weight, Target, Drift, Trade); gloomberb catalog glossary lists every term" },
     ],
     examples: [
@@ -845,6 +983,9 @@ export const portfolioCliCommand: CliCommandDef = {
       "portfolio add Research --file holdings.csv --dry-run",
       "portfolio position set Research ASML 10 800 EUR",
       "portfolio position set Hedge GC=F -10 4216.30",
+      "portfolio position set Lira BRK-B 10 20310 TRY",
+      "portfolio position set Lira BRK-B 10 410 USD --date 2024-03-01",
+      "portfolio position set Lira KO 40 62.50 USD --cost-fx 32.15",
       "portfolio cash set Research 25000 USD",
       "portfolio target set Research ASML 12.5%",
       "portfolio target set Research CASH 10",
@@ -893,6 +1034,16 @@ export const portfolioCliCommand: CliCommandDef = {
       ctx.fail(error instanceof Error ? error.message : String(error), dripUsage);
     }
     const basis = close ? "regular-close" as const : "latest-print" as const;
+    // A position's purchase date and the rate its cost was bought at, read before anything is looked up.
+    const hasDate = args.some((arg) => arg === "--date" || arg.startsWith("--date="));
+    const dateText = hasDate ? takeOption(args, "--date") ?? "" : undefined;
+    const hasCostFx = args.some((arg) => arg === "--cost-fx" || arg.startsWith("--cost-fx="));
+    const costFxText = hasCostFx ? takeOption(args, "--cost-fx") ?? "" : undefined;
+    if ((hasDate || hasCostFx) && action !== "position") {
+      ctx.fail(`${hasDate ? "--date" : "--cost-fx"} is an option of portfolio position set, not portfolio ${action ?? "list"}.`, POSITION_USAGE);
+    }
+    const purchaseDate = dateText != null ? parsePurchaseDate(dateText, ctx) : undefined;
+    const costFx = costFxText != null ? parseCostFx(costFxText, ctx) : undefined;
     const hasFile = args.some((arg) => arg === "--file" || arg.startsWith("--file="));
     const file = hasFile ? takeOption(args, "--file") ?? "" : undefined;
     if (file != null && action !== "add" && action !== "remove") ctx.fail(`--file is an option of portfolio add and remove, not portfolio ${action ?? "list"}.`, ADD_USAGE);
@@ -940,15 +1091,11 @@ export const portfolioCliCommand: CliCommandDef = {
 
     if (action === "position") {
       const subaction = args[1];
-      if (subaction !== "set") {
-        ctx.fail("Usage: gloomberb portfolio position set <portfolio> <ticker> <shares|contracts> <avg-cost> [currency]");
-      }
+      if (subaction !== "set") ctx.fail(POSITION_USAGE);
       const [, , ...rest] = args;
       const currency = rest[4];
-      if (rest.length < 4) {
-        ctx.fail("Usage: gloomberb portfolio position set <portfolio> <ticker> <shares|contracts> <avg-cost> [currency]");
-      }
-      await setPositionCommand(rest[0]!, rest[1]!, rest[2]!, rest[3]!, currency, exchange, ctx);
+      if (rest.length < 4) ctx.fail(POSITION_USAGE);
+      await setPositionCommand(rest[0]!, rest[1]!, rest[2]!, rest[3]!, currency, exchange, ctx, { date: purchaseDate, costFx });
       return;
     }
 
