@@ -12,6 +12,8 @@ A failed or malformed RSS/Atom response leaves the last successfully cached stor
 
 If saved news feed settings contain unreadable JSON, the News Feed status reports that the settings could not be read. RSS loading and feed edits pause, including automatic migration; the saved values stay untouched. Repair the affected `feeds` or `disabledDefaultFeedIds` value in the `news` plugin configuration and refresh to resume. To discard a damaged value deliberately, back up the configuration first, then replace that value with `[]`: this removes custom feeds for `feeds`, or restores bundled feeds for `disabledDefaultFeedIds`. Readable settings keep their existing normalization and migration behavior.
 
+`gloomberb rss fetch <url>` exits with a non-zero status when the feed cannot be fetched or parsed. A valid feed with no items still succeeds; text output says "The feed has no items."
+
 ## Sources, times, tickers and topics
 
 The SOURCE column names the publisher of the story's lead article as a reader knows it: FT, Reuters, Business Wire, the SEC for an 8-K, an X account as its handle. A story often merges the same event from several outlets; its detail lists each one. Times are in your local time: the clock time today, the weekday and time for the six days before, and the date for anything older.
