@@ -24,8 +24,9 @@ import {
   quoteSessionLabel,
 } from "../../../market-data/market/status";
 import { appendQuoteToPriceReturnHistory, buildPriceReturnFields } from "../../../market-data/performance";
+import { changeBasisLabel, changeBasisNote, quoteChangeBasis } from "../../../market-data/market/change-basis";
 import {
-  fitFuturesContractLines, futuresChangeBasisText, futuresQuoteChangeBasis, futuresContractLines, futuresSettleText, isFuturesInstrument, minorUnitPricePer,
+  fitFuturesContractLines, futuresContractLines, futuresSettleText, isFuturesInstrument, minorUnitPricePer,
   type FuturesContractLine,
 } from "../../../market-data/futures-contract";
 import { useViewport } from "../../../react/input";
@@ -206,14 +207,16 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
   // The headline is the regular session, which stops at the close; extended trading is the line below it.
   const sessionQuote = getRegularSessionDisplay(quote);
   const extendedQuote = getExtendedSessionDisplay(quote);
-  // A price in cents says what it is per (314.95¢/lb), and a future's move what it is measured from (vs Fri settle).
+  // A price in cents says what it is per (314.95¢/lb), and the move what it is measured from (vs Fri 16 Oct close).
   const quotePriceText = sessionQuote
     ? `${formatMarketPriceWithCurrency(sessionQuote.price, quote?.currency, moneyOptions)}${minorUnitPricePer(contractTerms, quote?.currency)}` : "";
   // Nor a move: the close it ended on is where it stays.
   const quoteChangeText = sessionQuote && !delisted ? formatSignedMarketPrice(sessionQuote.change, moneyOptions) : "";
   const quotePercentText = sessionQuote && !delisted ? `(${formatPercentRaw(sessionQuote.changePercent)})` : "";
-  const changeBasis = futuresQuoteChangeBasis(contractTerms, quote);
-  const changeBasisText = changeBasis ? futuresChangeBasisText(changeBasis) : "";
+  const changeBasis = delisted ? null : quoteChangeBasis(quote, { terms: contractTerms });
+  const changeBasisText = changeBasis ? changeBasisLabel(changeBasis) : "";
+  // The days the venue was closed since that close, under the move: "HKEX closed Mon 19 Oct, holiday".
+  const changeBasisNoteText = changeBasisNote(changeBasis);
   // The pane title already names the ticker, so the line leads with the company and drops a name that only repeats it.
   const companyName = [ticker.metadata.name, quote?.name].find((name) => name && name !== ticker.metadata.ticker) ?? "";
   const venueText = listingVenue ? (companyName ? ` (${listingVenue})` : listingVenue) : "";
@@ -240,10 +243,13 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
     ? truncateToDisplayWidth(futuresSettleText(contractTerms, quote),
       Math.max(1, quoteTextWidth - displayWidth(settleLabel) - 1))
     : "";
-  const quoteChangeCells = delisted ? 0 : figureCells(quoteChangeText, "sub") + 1 + figureCells(quotePercentText, "sub")
-    + (changeBasisText ? 1 + displayWidth(changeBasisText) : 0);
+  const quoteChangeCells = delisted ? 0 : figureCells(quoteChangeText, "sub") + 1 + figureCells(quotePercentText, "sub");
   const stackQuoteChange = quoteChangeCells > quoteTextWidth;
   const stackQuoteSummary = figureCells(quotePriceText) + 2 + quoteChangeCells > quoteTextWidth;
+  // What the move is from follows it on its line when there is room; otherwise it takes the line
+  // under the headline, so a narrow pane never splits the move itself to fit the words.
+  const changeBasisInline = !!changeBasisText && (stackQuoteSummary ? 0 : figureCells(quotePriceText) + 2)
+    + quoteChangeCells + 1 + displayWidth(changeBasisText) <= quoteTextWidth;
   const companyNameWidth = Math.max(8, quoteTextWidth
     - displayWidth(venueText)
     - (marketStateText ? displayWidth(marketStateText) + 1 : 0));
@@ -373,14 +379,24 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
                 <FigureText>{quotePriceText}</FigureText>
                 {!delisted && (
                   <Box flexDirection={stackQuoteChange ? "column" : "row"} gap={stackQuoteChange ? 0 : 1}
-                    alignItems={changeBasisText && !stackQuoteChange ? "baseline" : undefined}>
+                    alignItems={changeBasisInline ? "baseline" : undefined}>
                     <FigureText part="sub" change={sessionQuote.change}>{quoteChangeText}</FigureText>
                     <FigureText part="sub" change={sessionQuote.change}>{quotePercentText}</FigureText>
-                    {changeBasisText ? <Text flexShrink={0} fg={colors.textDim}>{changeBasisText}</Text> : null}
+                    {changeBasisInline ? <Text flexShrink={0} fg={colors.textDim}>{changeBasisText}</Text> : null}
                   </Box>
                 )}
               </Box>
             )}
+            {sessionQuote && changeBasisText && !changeBasisInline ? (
+              <Box minWidth={0} overflow="hidden">
+                <ClippedText fg={colors.textDim} text={changeBasisText} width={quoteTextWidth} />
+              </Box>
+            ) : null}
+            {sessionQuote && changeBasisNoteText ? (
+              <Box minWidth={0} overflow="hidden">
+                <ClippedText fg={colors.textDim} text={changeBasisNoteText} width={quoteTextWidth} />
+              </Box>
+            ) : null}
             {extendedQuote && (
               <Box flexDirection="row" gap={2}>
                 <Text fg={colors.textDim}>{extendedSessionLineLabel(extendedQuote, t)}:</Text>

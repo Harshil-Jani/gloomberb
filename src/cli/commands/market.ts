@@ -14,6 +14,7 @@ import type {
 } from "../../types/financials";
 import { currencyPriceMinDigits, formatMarketPrice, formatMarketPriceWithCurrency, quoteFormatOptions, resolveAssetDisplayKind, withCurrencyMinorDigits } from "../../market-data/market/format";
 import { INDEX_POINTS_EXPORT_UNIT, isIndexLevel, reportedQuoteVolume } from "../../market-data/market/index-level";
+import { changeBasisJson, changeBasisLabel, changeBasisNote, quoteChangeBasis, quotePreviousCloseDate } from "../../market-data/market/change-basis";
 import {
   EXTENDED_SESSION_LABELS,
   getExtendedSessionDisplay,
@@ -362,6 +363,28 @@ const QUOTE_LEAD_COLUMNS = [
 
 type QuoteRow = ReturnType<typeof quoteRows>[number];
 
+/**
+ * What Chg% is measured from, as every change line says it ("vs Fri 16 Oct
+ * close", "since 00:00 UTC"): the table sets it after Chg% and names the
+ * venue's holidays under it; an export adds it, and the holiday note, after
+ * its existing columns, so a column read by position stays where it was.
+ */
+const CHANGE_BASIS_COLUMN = {
+  key: "changeBasis", header: "Chg Basis", shrink: false, optional: true, format: (value: unknown) => cliStyles.muted(String(value ?? "")),
+};
+const CHANGE_BASIS_EXPORT_COLUMNS = [
+  { key: "changeBasis", header: "Chg Basis" },
+  { key: "changeBasisNote", header: "Chg Basis Note" },
+];
+
+/** The table's columns: Chg Basis follows Chg%, and the note is a line under the table. */
+function quoteTextColumns<Column extends { key: string }>(columns: Column[]): Array<Column | typeof CHANGE_BASIS_COLUMN> {
+  const exported = new Set(CHANGE_BASIS_EXPORT_COLUMNS.map((column) => column.key));
+  const kept = columns.filter((column) => !exported.has(column.key));
+  const at = kept.findIndex((column) => column.key === "changePercent") + 1;
+  return [...kept.slice(0, at), CHANGE_BASIS_COLUMN, ...kept.slice(at)];
+}
+
 /** A Cboe yield index level is a yield: `5.24%`, not a price. */
 function yieldLevelCell(value: unknown, row: QuoteRow): string {
   const text = String(value ?? "");
@@ -418,6 +441,7 @@ function quoteColumns() {
     },
     // In a narrow terminal the closing line's as-of stands in for each row's.
     { key: "updatedAt", header: "Updated", shrink: false, optional: true, dropPriority: 3 },
+    ...CHANGE_BASIS_EXPORT_COLUMNS,
   ];
 }
 
@@ -429,6 +453,7 @@ function compareColumns() {
     { key: "dayRange", header: "Day Range", align: "right" as const, optional: true, dropPriority: 1 },
     { key: "volume", header: "Volume", align: "right" as const, format: formatCountCell, optional: true, dropPriority: 2 },
     { key: "currency", header: "Cur", shrink: false, optional: true, dropPriority: 3, format: currencyCell },
+    ...CHANGE_BASIS_EXPORT_COLUMNS,
   ];
 }
 
@@ -452,6 +477,34 @@ function nearParCoin(quote: QuoteCliRecord["quote"]): boolean {
   if ((quote.currency ?? "USD").trim().toUpperCase() !== "USD") return false;
   const reference = [quote.previousClose, quote.price].find((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
   return reference != null && reference >= 0.9 && reference < 1.1;
+}
+
+/** What a row's move is measured from, worded as its Chg Basis cell: empty without a move. */
+function rowChangeBasis(result: Pick<QuoteCliRecord, "quote" | "futuresContract">) {
+  return quoteChangeBasis(result.quote, { terms: result.futuresContract });
+}
+
+function basisLabel(result: Pick<QuoteCliRecord, "quote" | "futuresContract">, now: number): string {
+  const basis = rowChangeBasis(result);
+  return basis ? changeBasisLabel(basis, now) : "";
+}
+
+/**
+ * The lines under the table naming the days a row's venue was closed since
+ * the close its move is from ("HKEX closed Mon 19 Oct, holiday"), once each.
+ */
+function changeBasisNotes(results: QuoteCliRecord[], now = Date.now()): string[] {
+  return [...new Set(results.flatMap((result) => changeBasisNote(rowChangeBasis(result), now) ?? []))];
+}
+
+/** The quote as `--json` gives it: `previousCloseDate`, the exchange-local date of its previous close, follows `previousClose`. */
+function withPreviousCloseDate(quote: Quote | null | undefined): (Quote & { previousCloseDate?: string | null }) | null {
+  if (!quote) return null;
+  const previousCloseDate = quotePreviousCloseDate(quote);
+  const entries = Object.entries(quote);
+  const at = entries.findIndex(([key]) => key === "previousClose");
+  entries.splice(at < 0 ? entries.length : at + 1, 0, ["previousCloseDate", previousCloseDate]);
+  return Object.fromEntries(entries) as Quote & { previousCloseDate?: string | null };
 }
 
 function quoteRows(results: QuoteCliRecord[], now = Date.now()) {
@@ -513,6 +566,9 @@ function quoteRows(results: QuoteCliRecord[], now = Date.now()) {
       // When the price Last shows was observed: in a pre-market nothing has traded in, the close it stands at.
       updatedAt: quote?.lastUpdated ? new Date(quoteHeadlineTime(quote)).toISOString() : "",
       error: result.error ?? "",
+      // Last, so a row read by position keeps every field where it was.
+      changeBasis: basisLabel(result, now),
+      changeBasisNote: changeBasisNote(rowChangeBasis(result), now) ?? "",
     };
   });
 }
@@ -784,7 +840,9 @@ async function runQuote(rawArgs: string[], ctx: Parameters<CliCommandDef["execut
       listing: listingMetadata(listingIdentity(listing, result.quote)),
       // The figures the table shows, beside the quote as the source sent it.
       ...getQuoteSessionFields(result.quote),
-      quote: result.quote,
+      // What `change` is measured from, with the label and holiday note the table shows.
+      changeBasis: changeBasisJson(quoteChangeBasis(result.quote, { terms: contracts[index] }), now),
+      quote: withPreviousCloseDate(result.quote),
       ...contracts[index] ? { futuresContract: contracts[index] } : {},
       ...fronts[index] ? { futuresFront: fronts[index] } : {},
       ...perpetualContracts[index] ? { perpetualContract: perpetualContracts[index] } : {},
@@ -810,6 +868,7 @@ async function runQuote(rawArgs: string[], ctx: Parameters<CliCommandDef["execut
       ...ctx.cliOptions.format === "text" ? quoteNotes(data, { exchange }) : [],
     ];
     const columns = commandName === "compare" ? compareColumns() : quoteColumns();
+    const basisNotes = changeBasisNotes(data, now);
     if (ctx.cliOptions.format !== "json") await primeBoardCoins(notes);
     // Only yield indices: their change is in bp, so the text header drops the percent sign (CSV keeps the percent it holds).
     const yieldsOnly = data.length > 0 && data.every((row) => isYieldIndexSymbol(row.target.symbol));
@@ -827,8 +886,11 @@ async function runQuote(rawArgs: string[], ctx: Parameters<CliCommandDef["execut
         currencyOrUnit: row.currency || (row.yieldIndex ? "pct" : isIndexLevel(row.instrumentType) ? INDEX_POINTS_EXPORT_UNIT : null),
       }),
       details: quoteDetailsText,
+      ...(basisNotes.length ? { footnote: basisNotes.join("\n") } : {}),
       columns,
-      ...(yieldsOnly ? { textColumns: columns.map((column) => column.key === "changePercent" ? { ...column, header: "Chg" } : column) } : {}),
+      textColumns: quoteTextColumns(yieldsOnly
+        ? columns.map((column) => column.key === "changePercent" ? { ...column, header: "Chg" } : column)
+        : columns),
     });
     // The table names each symbol it found nothing for; with none found, the exit status says so too.
     if (data.every((row) => !row.quote)) process.exitCode = CLI_EXIT_CODES.error;
