@@ -78,6 +78,7 @@ export const SERIES_INVENTORY: readonly SeriesInventoryEntry[] = [
   { module: "power", chart: "European gas storage by area: % full, TWh and net injection", series: ["gas-storage:*", "gas-storage-twh:*", "gas-injection:*"] },
   { module: "awards", chart: "A company's government award totals by period", series: ["awards:*"] },
   { module: "company-kpis", chart: "A company's reported operating metrics", notInCatalog: "per-item", reason: "Each company reports its own metrics, with no shared list to register." },
+  { module: "supply-chain", chart: "The largest customer's share of a company's receivables at each period end", notInCatalog: "not-yet", reason: "A dated per-company series from filings that could be registered; it needs three disclosed period ends, so most tickers have none." },
   { module: "estimate-revisions", chart: "Consensus estimate for one fiscal period over time", notInCatalog: "per-item", reason: "One fiscal period of one company." },
   { module: "earnings", chart: "Implied and actual moves around past earnings", notInCatalog: "per-item", reason: "One bar per earnings event." },
   { module: "dividend-yield", chart: "A ticker's trailing 12-month cash dividends", series: ["dividends:*"] },
