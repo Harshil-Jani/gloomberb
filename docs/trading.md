@@ -20,7 +20,7 @@ The ticket lists each leg with its side, ratio times the spread quantity, contra
 
 1. Choose the account and check its SIM or LIVE mode.
 2. Check the broker quote, its age, and any delayed or stale warning.
-3. Enter the side, quantity, type, price, and time in force.
+3. Enter the side, quantity, type, price, and time in force. A new limit starts at the side of the quote it takes (the ask to buy, the bid to sell) until you change it. A stop starts empty: at the touch it would trigger at once, and review warns about a buy stop at or below the ask or a sell stop at or above the bid. A market order's estimate uses the same side of the quote.
 4. Press the primary **Buy** or **Sell** action to review the exact order and the broker's preview, fees, account impact, and warnings. The side buttons only select a side.
 5. On simulation review, press **Tab** to focus the confirmation button, then **Enter** to submit.
 6. On LIVE review, focus the symbol field, type the required symbol, then press **Enter** to focus confirmation and **Enter** again to submit.
@@ -46,11 +46,11 @@ The footer shows at most three ticket actions relevant to the current screen. Th
 | Screen | Key | Action |
 |---|---|---|
 | Chart or Overview | `b`, `s` | Open Trade with a Buy or Sell ticket, without submitting |
-| Options chain with trading available | `b`, `s` | Open the selected contract's Trade with a Buy or Sell ticket (Shift+S opens the surface) |
+| Options chain with trading available | `b`, `s` | Open the selected contract's Trade with a Buy or Sell ticket (`v` opens the vol surface) |
 | Options chain | Enter | Open the selected contract's quote, chart and Trade |
 | Docked Research | F6 | Move focus between chart and ticket, including from a text field |
 | Docked Research | `<`, `>` | Widen or narrow the ticket beside the chart |
-| Research Chart with trading available | Shift+S | Edit chart series (`s` opens Sell) |
+| Research Chart with trading available | `a` | Add or edit chart series (`s` opens Sell) |
 | Ticket editing | `b`, `s` | Buy, Sell |
 | Ticket editing | `r` | Open review, even when SIM one-click is enabled |
 | Numeric field | Up/Down | Increase/decrease by one editing step |
@@ -76,7 +76,7 @@ The footer shows at most three ticket actions relevant to the current screen. Th
 | Rejected result | `e` | Edit the rejected order |
 | Result, except unknown or rejected | `n` | Start a new order |
 | Full-screen Orders | Up/Down or `k`/`j` | Select an order |
-| Docked ticket | Shift+O | Show or hide Open orders. Without open orders for the ticker they stay hidden until asked for, and a review hides them until it is placed or edited. Each order is one line, with edit and cancel icons |
+| Docked ticket | `o`, then `o` again | Show and focus Open orders, then hide them. Without open orders for the ticker they stay hidden until asked for, and a review hides them until it is placed or edited. Each order is one line, with edit and cancel icons |
 | Docked ticket outside a text field | `+`, `-`, Left/Right and other chart keys the ticket does not use | Act on the chart beside the ticket |
 | Docked Open orders | `k`/`j` | Select an order |
 | Docked Open orders | Up/Down, then Enter | Step its price, then request a replacement review, never submit directly |

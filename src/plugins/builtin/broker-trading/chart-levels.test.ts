@@ -3,6 +3,7 @@ import { getThemeColors } from "../../../theme/colors";
 import { ticketChartLevels, ticketOrderMatches } from "./chart-levels";
 import { createDemoBroker } from "./test-fixture";
 import { researchTradeMatches } from "../shared/research-trading";
+import { orderEstimatePrice } from "./orders-data";
 
 const colors = getThemeColors("white");
 test("chart overlays require the same listing or exact broker instrument", () => {
@@ -12,6 +13,10 @@ test("chart overlays require the same listing or exact broker instrument", () =>
   expect(researchTradeMatches(trade, { symbol: "AAPL:XNAS" })).toBe(true);
   expect(researchTradeMatches(trade, { symbol: "AAPL", exchange: "LSE" })).toBe(false);
   expect(researchTradeMatches(trade, { symbol: "OTHER", exchange: "NASDAQ" })).toBe(false);
+  // A routed share (Aries files every share on SMART) is on its listing's chart, and on no other listing.
+  const routed = { ...trade, contract: { ...f.draft.contract, exchange: "SMART" } };
+  expect(researchTradeMatches(routed, { symbol: "AAPL:XNAS", exchange: "NASDAQ" })).toBe(true);
+  expect(researchTradeMatches({ ...routed, contract: { ...routed.contract, primaryExchange: "LSE" } }, { symbol: "AAPL", exchange: "NASDAQ" })).toBe(false);
   const option = { ...trade, contract: { ...f.draft.contract, secType: "OPT", conId: 17 } };
   expect(researchTradeMatches(option, { symbol: "AAPL", exchange: "NASDAQ" })).toBe(false);
   expect(researchTradeMatches(option, { symbol: "AAPL", instrument: option.contract })).toBe(true);
@@ -30,6 +35,10 @@ test("chart order projection excludes another account, profile or derivative con
     expect(match({ ...order, contract: { ...order.contract, ...patch } })).toBe(false);
   }
   expect(ticketOrderMatches(order, f.draft.contract, f.instance.id, undefined)).toBe(false);
+  // Routed SMART and filed as a stock, it is the same share as a listing picked in search or an ETF's ticket.
+  const routed = { ...order, contract: { ...order.contract, exchange: "SMART", primaryExchange: undefined } };
+  expect(match({ ...routed })).toBe(true);
+  expect(ticketOrderMatches(routed, { ...f.draft.contract, exchange: undefined, primaryExchange: "NASDAQ", secType: "ETF" }, f.instance.id, f.draft.accountId)).toBe(true);
 });
 // Regression: Aries lists an option order under its underlying, routed SMART
 // with a dashed expiry, so the contract's own page lost its open order.
@@ -73,7 +82,8 @@ test("live draft levels are read-only, follow both prices, and terminal orders d
   expect(levels.slice(0, 2).map((level) => [level.value, level.dashed])).toEqual([[10.25, true], [10.1, true]]);
   expect(levels.slice(0, 2).map((level) => level.axisLabel)).toEqual(["10.25", "10.10"]);
   expect(ticketChartLevels({ draft, editing: true, orders: [], colors, priceStep: 0.005 })[0]?.axisLabel).toBe("10.250");
-  expect(ticketChartLevels({ draft, editing: true, orders: [], colors, priceDecimals: 4 })[0]?.axisLabel).toBe("10.2500");
+  // Five accepted decimals are a limit, not a tick: the labels keep to cents.
+  expect(ticketChartLevels({ draft, editing: true, orders: [], colors, priceDecimals: 5, avgCost: 719.60745, position: 21 }).map((level) => level.axisLabel)).toEqual(["10.25", "10.10", "719.61"]);
   expect(levels.every((level) => !level.editable && !level.actionable)).toBe(true);
   expect(levels.find((level) => level.label?.includes("Sell"))?.color).toBe(colors.negative);
   expect(levels.filter((level) => level.id.startsWith("order:"))).toHaveLength(2);
@@ -82,4 +92,24 @@ test("live draft levels are read-only, follow both prices, and terminal orders d
   expect(ticketChartLevels({ draft: { ...draft, limitPrice: 10.26 }, editing: true, orders: [], colors })[0]?.value).toBe(10.26);
   expect(ticketChartLevels({ draft, editing: false, orders: [], colors })).toEqual([]);
   expect(ticketChartLevels({ draft: { ...draft, limitPrice: 0.00125 }, editing: true, orders: [], colors })[0]).toMatchObject({ label: "Draft limit", axisLabel: "0.00125" });
+});
+
+test("a replacement in flight stands for the listed original, which takes over again if it is newer", () => {
+  const f = createDemoBroker();
+  const original = { ...f.order({ ...f.draft, limitPrice: 700 }, "PENDING_REPLACE", 9), updatedAt: 2 };
+  // Aries gives the replacement a new broker ID; the handle stays.
+  const replacement = { ...original, brokerOrderId: "replacement", status: "NEW", limitPrice: 701, updatedAt: 1 };
+  const prices = (orders: typeof original[]) => ticketChartLevels({ editing: false, orders, latestOrder: replacement, colors }).map((level) => level.value);
+  expect(prices([original])).toEqual([701]);
+  // Refused, the original is listed working again.
+  expect(prices([{ ...original, status: "NEW", updatedAt: 3 }])).toEqual([700]);
+});
+
+test("a market order is estimated at the side of the book it takes, a limit or stop at its own price", () => {
+  const quote = { price: 100, bid: 99.5, ask: 100.5 };
+  expect(orderEstimatePrice({ orderType: "MKT", action: "BUY", limitPrice: 90 }, quote)).toBe(100.5);
+  expect(orderEstimatePrice({ orderType: "MKT", action: "SELL" }, quote)).toBe(99.5);
+  expect(orderEstimatePrice({ orderType: "MKT", action: "BUY" }, { price: 100, bid: 99.5, ask: 0 })).toBe(100);
+  expect(orderEstimatePrice({ orderType: "LMT", action: "BUY", limitPrice: 98 }, quote)).toBe(98);
+  expect(orderEstimatePrice({ orderType: "STP", action: "SELL", stopPrice: 95, limitPrice: 90 }, quote)).toBe(95);
 });

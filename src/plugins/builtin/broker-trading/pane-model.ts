@@ -1,4 +1,5 @@
 import { parsePublicTickerKey } from "../../../utils/exchanges";
+import { parseOptionTicker } from "../../../utils/options";
 import type { PaneTickerIdentity } from "../../../state/hooks/pane-ticker";
 import type { BrokerAdapter, BrokerPosition } from "../../../types/broker";
 import type { BrokerInstanceConfig } from "../../../types/config";
@@ -102,6 +103,14 @@ export function quickTicketQuantity(draft: BrokerOrderRequest, capabilities: Bro
   return quantity;
 }
 
+const LISTING_SEC_TYPES: Record<string, string> = {
+  stock: "STK", equity: "STK", etf: "ETF", option: "OPT", future: "FUT", futures: "FUT", bond: "BOND", crypto: "CRYPTO", currency: "CASH", forex: "CASH",
+};
+/** A ticker's category as a broker security type: a saved ticker carries one ("STK", "ETF"), a listing picked in search its type ("stock"). */
+export function tickerSecType(category: string | undefined, fallback = "STK"): string {
+  return category ? LISTING_SEC_TYPES[category.toLowerCase()] ?? category.toUpperCase() : fallback;
+}
+
 /** Broker contract IDs are meaningful only inside their original broker profile. */
 export function resolveTicketContract(identity: PaneTickerIdentity, broker: BrokerAdapter, instance: BrokerInstanceConfig): { contract?: BrokerContractRef; error?: string } {
   if (identity.error) return { error: identity.error };
@@ -113,8 +122,11 @@ export function resolveTicketContract(identity: PaneTickerIdentity, broker: Brok
     return { contract: { ...identity.contract, brokerInstanceId: instance.id } };
   }
   const listing = parsePublicTickerKey(identity.symbol);
+  const secType = tickerSecType(identity.ticker?.metadata.assetCategory);
   return { contract: { brokerId: broker.id, brokerInstanceId: instance.id, symbol: listing.symbol, localSymbol: listing.symbol,
-    secType: identity.ticker?.metadata.assetCategory ?? "STK", currency: identity.ticker?.metadata.currency ?? "USD", exchange: listing.exchange ?? identity.ticker?.metadata.exchange } };
+    secType, currency: identity.ticker?.metadata.currency || "USD", exchange: listing.exchange ?? identity.ticker?.metadata.exchange,
+    // A listed option's OCC symbol names a standard contract of 100 shares, which its costs count.
+    ...(secType === "OPT" && parseOptionTicker(listing.symbol) ? { multiplier: "100" } : {}) } };
 }
 
 export function chooseTicketAccount(accounts: BrokerAccount[], previous?: string): string | undefined {

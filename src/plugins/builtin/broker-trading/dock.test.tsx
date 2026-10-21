@@ -12,12 +12,13 @@ import { ResearchTradeActions, useResearchTrading } from "../shared/research-tra
 import { BrokerTradeTab } from "./pane";
 import { createTradeIntent } from "./command";
 import { createDemoBroker } from "./test-fixture";
+import { brokerOrderFeed } from "./order-feed";
 import type { AppNotificationRequest } from "../../../types/plugin";
 
 const toasts: AppNotificationRequest[] = [];
 
 const tui = createOpenTuiTestHarness({ width: 140, height: 40 });
-afterEach(() => setSharedRegistryForTests(undefined));
+afterEach(() => { setSharedRegistryForTests(undefined); brokerOrderFeed.clear(); brokerOrderFeed.setNotifier(undefined); });
 function PriceContext({ width, focused }: { width: number; focused: boolean }) {
   const trade = useResearchTrading();
   const [zooms, setZooms] = useState(0);
@@ -51,6 +52,8 @@ async function mount(outcome: "working" | "unknown" = "working", initialWidth = 
     dispatch: (action: AppAction) => { latest = appReducer(latest, action); for (const listener of listeners) listener(); } };
   const dispatch = store.dispatch;
   toasts.length = 0;
+  // The plugin's setup sends order toasts to the app's notifications.
+  brokerOrderFeed.setNotifier((notification) => { toasts.push(notification); });
   const runtime = createTestPluginRuntime({ getBrokerAdapter: () => demo.adapter, notify: (notification) => { toasts.push(notification); } });
   let resize!: (width: number) => void;
   function Harness() {
@@ -140,15 +143,18 @@ test("chart keys the ticket leaves still reach the chart, but not while a ticket
   expect(tui.frame()).not.toContain("ZOOMS 3");
 });
 
-test("docked open orders stay hidden without orders and toggle with Shift+O", async () => {
+test("docked open orders stay hidden without orders, and o shows them from the ticket and hides them again", async () => {
   await mount("working", 140, false, false);
   await tui.emitKeypress({ name: "b" });
   await tui.waitForFrameToContain("Buy 1 AAPL");
   expect(tui.frame()).not.toContain("Open Orders");
-  await tui.emitKeypress({ name: "O", shift: true });
+  await tui.emitKeypress({ name: "o" });
   await tui.waitForFrameToContain("Open Orders (0)");
-  await tui.emitKeypress({ name: "O", shift: true });
+  await tui.emitKeypress({ name: "o" });
   await tui.waitForFrameToExclude("Open Orders");
+  // Shift is no ticket key: Shift+O leaves them as they are.
+  await tui.emitKeypress({ name: "O", shift: true });
+  expect(tui.frame()).not.toContain("Open Orders");
 });
 
 test("orders follow the ticket content in Working, leaving spare height below the list", async () => {
@@ -236,10 +242,11 @@ test("Chart stays the chart alone, Trade puts the ticket beside it, and the divi
 test("Overview lists the ticker's working orders and fills without the ticket, and an order opens Trade to change it", async () => {
   const f = await mount();
   await f.tab("overview");
+  // Orders come from the shared feed and fills from their own read, so either can draw first.
   await tui.waitForFrameToContain("Buy 10 · Limit 336.50");
+  await tui.waitForFrameToContain("Sold 4 at 340.00");
   const frame = tui.frame();
   expect(frame).toContain("Sell 10 · Limit 340.00 · 4 of 10 filled");
-  expect(frame).toContain("Sold 4 at 340.00");
   expect(frame).not.toContain("Review");
   const row = frame.split("\n").findIndex((line) => line.includes("Buy 10 · Limit 336.50"));
   await act(async () => { await tui.setup().mockMouse.click(4, row); });

@@ -483,13 +483,17 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
         : { key: viewportKey, range }
     ));
   }, [viewportKey]);
+  // A chain read from a broker profile has its contracts quoted by that profile too.
+  const quoteBrokerId = instrument?.brokerId, quoteBrokerInstanceId = instrument?.brokerInstanceId;
+  const optionQuoteBroker = useMemo(() => quoteBrokerId || quoteBrokerInstanceId
+    ? { brokerId: quoteBrokerId, brokerInstanceId: quoteBrokerInstanceId } : undefined, [quoteBrokerId, quoteBrokerInstanceId]);
   const optionQuoteTargets = useMemo(
     () => buildOptionQuoteTargets(quoteRows, {
       fallbackHeight: height,
       selectedIndex: selectedStrikeIdx,
       visibleRange: visibleStrikeRange,
-    }),
-    [height, quoteRows, selectedStrikeIdx, visibleStrikeRange],
+    }, optionQuoteBroker),
+    [height, quoteRows, selectedStrikeIdx, visibleStrikeRange, optionQuoteBroker],
   );
   const {
     entries: optionQuoteEntries,
@@ -512,8 +516,8 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   // The snapshot object itself comes back while nothing streamed, so the
   // memos below only recompute when a quote actually landed.
   const liveChain = useMemo(
-    () => strikeChain ? overlayOptionChainQuotes(strikeChain, optionQuoteEntries, optionQuoteFreshness).chain : null,
-    [optionQuoteEntries, optionQuoteFreshness, strikeChain],
+    () => strikeChain ? overlayOptionChainQuotes(strikeChain, optionQuoteEntries, optionQuoteFreshness, optionQuoteBroker).chain : null,
+    [optionQuoteEntries, optionQuoteFreshness, strikeChain, optionQuoteBroker],
   );
   const callsByStrike = useMemo(
     () => new Map(liveChain?.calls.map((c) => [c.strike, c]) ?? []),
@@ -739,8 +743,8 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
     setCalcSide(sideTarget);
   }, [selectContract, selectedRow, selectedStrikeIdx, sideTarget]);
 
-  // With a broker that trades the contract, b and s trade it and Shift+S opens the surface, as on the chart.
-  const surfaceKey = tradable ? "S" : "s";
+  // With a broker that trades the contract, b and s trade it and the surface takes [v]ol surface: no key needs Shift.
+  const surfaceKey = tradable ? "v" : "s";
   const footerHints = useMemo(() => [
     ...(sideTarget ? [{ id: "side", key: SIDE_KEY, label: ` ${sideTarget}`, title: sideTarget === "put" ? "Select Put" : "Select Call", onPress: switchSide }] : []),
     ...(tradable ? [
@@ -749,7 +753,7 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
     ] : []),
     ...(calcParams ? [{ id: "calc", key: "c", label: "alc", onPress: openCalculator }] : []),
     ...(scenarioAvailable ? [{ id: "scenario", key: "a", label: "dd to OSA", onPress: openScenario }] : []),
-    ...(ticker && selectedExpiration != null ? [{ id: "surface", key: surfaceKey, label: "urface", onPress: openSurface }] : []),
+    ...(ticker && selectedExpiration != null ? [{ id: "surface", key: surfaceKey, label: tradable ? "ol surface" : "urface", onPress: openSurface }] : []),
   ], [sideTarget, switchSide, tradable, tradeContract, calcParams, openCalculator, scenarioAvailable, openScenario, ticker, selectedExpiration, surfaceKey, openSurface]);
 
   // Back to where the chain opens: the held contract's strike, else the money.
@@ -803,6 +807,7 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   }, [selectContract, selectedSide]);
 
   useOptionsAccessFooter({
+    broker: !!optionQuoteBroker,
     chain,
     error: [error, underlyingStale ? "Underlying quote stale: Greeks and calculator unavailable" : null,
       selectedContract && strikeChain && !selectedContractAvailable
@@ -837,7 +842,7 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   useShortcut((event) => {
     if (event.defaultPrevented || event.propagationStopped || event.targetEditable) return;
     if (event.ctrl || event.meta || event.alt) return;
-    const surface = tradable ? event.name === "S" || (event.shift && event.name === "s") : !event.shift && isPlainKey(event, "s");
+    const surface = isPlainKey(event, surfaceKey);
     if (surface && ticker && selectedExpiration != null) {
       event.preventDefault();
       event.stopPropagation();
