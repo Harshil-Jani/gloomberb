@@ -960,7 +960,8 @@ export async function buildTickerReport({
     listingVenueLabel(listingExchange, quote, financials, tickerFile) || undefined,
     indexLevel ? INDEX_POINTS_LABEL : quoteCurrency ? `Currency ${currencyCodeLabel(quoteCurrency)}` : undefined,
     quoteMarketStateLabel(quote) ?? undefined,
-    quote?.dataSource ? `Source ${quote.dataSource.toUpperCase()}` : undefined,
+    // A listing that no longer trades has no delay to speak of: its quote is its last session's close.
+    quote?.dataSource && !quote.delisting ? `Source ${quote.dataSource.toUpperCase()}` : undefined,
   ].filter((part): part is string => !!part);
   if (summaryParts.length > 0) {
     lines.push(cliStyles.muted(summaryParts.join(METADATA_SEPARATOR)));
@@ -1033,7 +1034,8 @@ export async function buildTickerReport({
       // A future's move says what it is measured from: "vs Fri settle".
       ["Change", quoteChangeText(quote, session, quoteOptions, futuresContract)],
       ["Open", quote.open != null ? formatMarketPriceWithCurrency(quote.open, quote.currency, quoteOptions) : "—"],
-      ["Day Range", quote.low != null || quote.high != null
+      // A listing that no longer trades: its last session's range, never today's.
+      [quote.delisting ? "Last Session" : "Day Range", quote.low != null || quote.high != null
         ? formatPriceRange(quote.low, quote.high, quote.currency, quoteOptions)
         : "—"],
       ["52W Range", quote.low52w != null || quote.high52w != null

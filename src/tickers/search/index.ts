@@ -38,6 +38,7 @@ import { readTerminalListingCode } from "../terminal-codes";
 import { isProviderBusy, ProviderBusyError, SEARCH_BUSY_MESSAGE } from "../../sources/provider-errors";
 import { settleWithin } from "../../utils/async-deadline";
 import { companyNameExtraWords } from "../company-name";
+import { delistingLabel } from "../../market-data/quotes/delisting";
 export type {
   ResolvedTickerSearch,
   TickerSearchCandidate,
@@ -57,6 +58,17 @@ const MAX_NAMED_LISTINGS = 6;
  * symbol several companies use: CAR's ASX line is its eleventh.
  */
 export const LISTING_SEARCH_LIMIT = 30;
+
+/**
+ * A listing's name as a choice between listings gives it: a listing that no
+ * longer trades says so and when ("First Republic Bank · Last traded Apr 28,
+ * 2023"), and drops a name that only repeats its symbol.
+ */
+function listingChoiceName(result: InstrumentSearchResult): string {
+  if (!result.delisting) return result.name;
+  const name = result.name && normalizeTickerSymbol(result.name) !== normalizeTickerSymbol(result.symbol) ? result.name : "";
+  return [name, delistingLabel(result.delisting)].filter(Boolean).join(" · ");
+}
 
 export class AmbiguousTickerError extends Error {
   constructor(readonly query: string, readonly listings: readonly string[], readonly listingNames: Readonly<Record<string, string>> = {}) {
@@ -467,7 +479,7 @@ async function resolveTickerSymbol(
   }
   const listings = new Set(matches.map((item) => publicTickerKey(item.symbol, listingExchange(item.result!))));
   const ambiguity = (query: string) => new AmbiguousTickerError(query, [...listings], Object.fromEntries(matches.map((item) => [
-    publicTickerKey(item.symbol, listingExchange(item.result!)), item.result!.name,
+    publicTickerKey(item.symbol, listingExchange(item.result!)), listingChoiceName(item.result!),
   ])));
   if (pickerQuery && listings.size > 1) throw ambiguity(pickerQuery);
   // A code that names several venues (TSE) the symbol trades on more than one of is a choice.
@@ -485,7 +497,12 @@ async function resolveTickerSymbol(
       });
       const exchange = canonicalExchange(quote.listingExchangeName || quote.exchangeName);
       const currency = resolveCurrencyUnit(quote.currency).currency;
-      if (exchange && currency && Number.isFinite(quote.price) && quote.price !== 0
+      const ended = quote.delisting;
+      if (ended) {
+        // The symbol's own quote is a US listing that no longer trades (a bare FRC, whose
+        // venue is not on record): it is the run search offers with the same last session.
+        verified = matches.filter((item) => item.result?.delisting?.lastTradeDate === ended.lastTradeDate);
+      } else if (exchange && currency && Number.isFinite(quote.price) && quote.price !== 0
         && Number.isFinite(quote.lastUpdated) && quote.lastUpdated > 0) {
         const sameSecurity = matches.filter((item) => {
           const result = item.result!;
