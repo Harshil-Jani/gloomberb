@@ -21,6 +21,8 @@ import {
   type MoverRankBasis,
 } from "../../plugins/builtin/market-movers/model";
 import { MOVER_CANDIDATES } from "../../plugins/builtin/market-movers/client";
+import { fetchEconCalendarFrom } from "../../plugins/builtin/econ/calendar-source";
+import { seriesNotOnFred } from "../../sources/gloomberb-cloud/fred-series";
 import { EXTENDED_SESSION_LABELS, getQuoteSessionFields, type ExtendedSession } from "../../market-data/market/status";
 import {
   COUNTRY_CYCLE,
@@ -310,15 +312,38 @@ function parseFilter<T extends string>(value: string | undefined, values: readon
   return match;
 }
 
+/** One of the pane's regions, or any country by its two-letter code (TR, DE), upper-cased. */
+function parseCountry(value: string | undefined, ctx: Parameters<CliCommandDef["execute"]>[1]): CountryFilter {
+  if (value == null) return COUNTRY_CYCLE[0]!;
+  const text = value.trim();
+  const region = COUNTRY_CYCLE.find((candidate) => candidate.toLowerCase() === text.toLowerCase());
+  if (region) return region;
+  if (/^[a-z]{2}$/i.test(text)) return text.toUpperCase();
+  return ctx.fail(`Unknown country "${value}".`, `Use ${COUNTRY_CYCLE.join(", ")}, or a two-letter country code such as TR.`);
+}
+
+/** A country the calendar lists nothing for says which ones it does list, so a typo (UK for GB) is not read as a quiet week. */
+function unlistedCountryMessage(country: CountryFilter, events: ReadonlyArray<{ country: string }>): string | null {
+  if ((COUNTRY_CYCLE as readonly string[]).includes(country)) return null;
+  const listed = [...new Set(events.map((event) => event.country).filter((code) => /^[A-Z]{2}$/.test(code)))].sort();
+  if (listed.length === 0 || listed.includes(country)) return null;
+  return `The calendar lists no ${country} events; it lists ${listed.join(", ")}.`;
+}
+
 async function runEcon(args: string[], ctx: Parameters<CliCommandDef["execute"]>[1]) {
   const rawArgs = [...args];
-  const country: CountryFilter = parseFilter(takeOption(rawArgs, "--country"), COUNTRY_CYCLE, "country", ctx);
+  const country = parseCountry(takeOption(rawArgs, "--country"), ctx);
   const impact: ImpactFilter = parseFilter(takeOption(rawArgs, "--impact"), FILTER_CYCLE, "impact", ctx);
   const fromOption = parseDateOption(takeOption(rawArgs, "--from"), "--from", ctx);
   rejectArgs(rawArgs, ECON_USAGE, ctx, "Filter with --country and --impact.");
   await withCliServices(ctx, async () => {
-    const { data: events, fetchedAt, stale } = await loadCalendar(ctx.cliOptions.refresh);
     const todayStart = Math.floor(Date.now() / DAY_MS) * DAY_MS;
+    // An earlier day reads the stored calendar, which keeps past events after the week's listing drops them.
+    // A server without it, a server error or no network lists the current calendar (cached when offline) instead.
+    const stored = fromOption != null && fromOption < isoDate(new Date(todayStart)) ? await fetchEconCalendarFrom(fromOption) : null;
+    const past = stored?.events ? stored : null;
+    const unread = stored && !stored.events && stored.failure ? `The stored calendar could not be read (${stored.failure}); listing the current calendar` : null;
+    const { data: events, fetchedAt, stale } = past ? { data: past.events, fetchedAt: Date.now(), stale: false } : await loadCalendar(ctx.cliOptions.refresh);
     // The calendar lists from today (UTC). --from moves the first day; --tail
     // alone keeps the newest events of the whole calendar, the past week's too.
     const from = fromOption ?? (ctx.cliOptions.tail != null ? null : new Date(todayStart).toISOString().slice(0, 10));
@@ -327,6 +352,14 @@ async function runEcon(args: string[], ctx: Parameters<CliCommandDef["execute"]>
     const listedThrough = lastEvent ? lastEvent.toISOString().slice(0, 10) : null;
     // A calendar that stops short of a week ahead says so under the table.
     const listedAfter = shortCalendarEnd(events, Math.max(todayStart, fromTime)) ? `No events listed after ${listedThrough}` : null;
+    // A day before anything the calendar holds says where its listing starts.
+    const firstEvent = events.reduce<Date | null>((first, event) => (!first || event.date < first ? event.date : first), null);
+    const listedFrom = firstEvent ? firstEvent.toISOString().slice(0, 10) : null;
+    const startsLater = fromOption != null && (past ? past.storedFrom == null || past.storedFrom > fromOption : listedFrom != null && listedFrom > fromOption);
+    const listedBefore = !startsLater ? null
+      : past?.storedFrom ? `The stored calendar starts ${past.storedFrom}; nothing earlier is listed`
+      : `No events are stored before ${listedFrom ?? isoDate(new Date(todayStart))}`;
+    const footnote = [listedBefore, listedAfter].filter((note): note is string => !!note).join("\n");
     const rows = events
       .filter((event) => event.date.getTime() >= fromTime && matchesCountry(event, country) && matchesImpact(event, impact))
       .sort((left, right) => left.date.getTime() - right.date.getTime())
@@ -342,14 +375,15 @@ async function runEcon(args: string[], ctx: Parameters<CliCommandDef["execute"]>
       }));
     ctx.printResult({
       data: rows,
-      metadata: { country, impact, from, listedThrough },
+      ...(unread ? { warnings: [unread] } : {}),
+      metadata: { country, impact, from, listedThrough, storedFrom: past?.storedFrom ?? null },
       // The calendar as read, not its rows: those are scheduled, mostly ahead.
       freshness: rowsFreshness([], { status: "not-a-feed", basis: "calendar", asOf: fetchedAt }, { stale }),
     }, {
       dateKey: "date",
       defaultLimit: 50,
-      empty: econEmptyMessage(from, listedThrough, listedAfter != null),
-      ...(listedAfter ? { footnote: listedAfter } : {}),
+      empty: unlistedCountryMessage(country, events) ?? econEmptyMessage(from, listedThrough, listedAfter != null),
+      ...(footnote ? { footnote } : {}),
       columns: [
         // Text shows both halves of the event timestamp in UTC, never the host's zone; exports keep the source values.
         { key: "date", header: "Date", format: (value) => utcDateTimePart(value, "date") },
@@ -416,7 +450,8 @@ async function runFred(rawArgs: string[], ctx: Parameters<CliCommandDef["execute
   const sort = takeOption(args, "--sort");
   const changeGiven = args.some((arg) => arg === "--change" || arg.startsWith("--change="));
   const change = changeGiven ? takeOption(args, "--change") : undefined;
-  if (list) {
+  // Bare `fred` lists the series it can fetch, grouped by topic, as `fred --list` does.
+  if (list || rawArgs.length === 0) {
     if (start != null || sort != null || changeGiven) {
       ctx.fail("--list takes a filter, not --start, --sort or --change.", `Usage: gloomberb ${FRED_LIST_USAGE}`);
     }
@@ -469,7 +504,7 @@ async function runFred(rawArgs: string[], ctx: Parameters<CliCommandDef["execute
   const periodicity = periodicityOf(data.info?.frequency);
   const newestDate = rows.reduce<string | null>((newest, row) => (!newest || row.date > newest ? row.date : newest), null);
   // A newest value FRED does not list yet names its publisher, Treasury for a yield; FRED's own stay "FRED".
-  const ahead = fredProvenance(data.observations.filter((observation) => observation.date === newestDate));
+  const ahead = fredProvenance(data.observations.filter((observation) => observation.date === newestDate), seriesId);
   // FRED names the series' publisher when Gloom Cloud passes it on, and when it last updated the series.
   const publisher = ahead?.publisher ?? data.info?.source?.trim();
   const publishedAt = ahead ? ahead.publishedAt : fredPublicationTime(data.info, newestDate);
@@ -482,7 +517,7 @@ async function runFred(rawArgs: string[], ctx: Parameters<CliCommandDef["execute
       ...(latest ? { latestObservation: exportRow(latest) } : {}),
     },
     freshness: rowsFreshness(rows, {
-      source: ahead?.source ?? "FRED", status: "not-a-feed", basis: "published statistics", observedKey: "date", oldest: null,
+      source: ahead?.source ?? notOnFredSource(seriesId) ?? "FRED", status: "not-a-feed", basis: "published statistics", observedKey: "date", oldest: null,
       // A monthly or quarterly observation is dated the first of its period, not a day it was seen.
       ...(periodicity ? { periodicity } : {}),
       ...(publisher ? { publisher } : {}),
@@ -504,6 +539,12 @@ async function runFred(rawArgs: string[], ctx: Parameters<CliCommandDef["execute
       }] : []),
     ],
   });
+}
+
+/** Who a series FRED does not carry comes from, for a source line whose rows do not name it: `TurkStat via the CBRT`. */
+function notOnFredSource(seriesId: string): string | null {
+  const elsewhere = seriesNotOnFred(seriesId);
+  return elsewhere ? `${elsewhere.publisher} via ${elsewhere.via}` : null;
 }
 
 const YIELD_TENORS: Record<string, string> = { DGS3MO: "3M", DGS2: "2Y", DGS10: "10Y", DGS30: "30Y" };
@@ -656,11 +697,11 @@ export const overviewCliCommands: CliCommandDef[] = [
       group: CLI_COMMAND_GROUPS.markets,
       usage: [ECON_USAGE],
       options: [
-        { flags: "--country <region>", description: "US, G7, EU, or all (default all)" },
+        { flags: "--country <region>", description: "US, G7, EU, all (default), or one country by its two-letter code, such as TR" },
         { flags: "--impact <level>", description: "high, medium, low, or all (default all)" },
-        { flags: "--from <date>", description: `First day listed, as ${DATE_OPTION_EXAMPLES} (default today, UTC); an earlier day reaches past events` },
+        { flags: "--from <date>", description: `First day listed, as ${DATE_OPTION_EXAMPLES} (default today, UTC); an earlier day lists past events from the stored calendar and says where it starts` },
       ],
-      examples: ["econ", "econ --country US --impact high", "econ --tail 20"],
+      examples: ["econ", "econ --country US --impact high", "econ --country TR", "econ --from 2026-10-12 --country US", "econ --tail 20"],
     },
     execute: runEcon,
   },
@@ -669,11 +710,11 @@ export const overviewCliCommands: CliCommandDef[] = [
     description: "Fetch a FRED economic series, or list the ones served",
     help: {
       group: CLI_COMMAND_GROUPS.markets,
-      usage: [FRED_USAGE, FRED_LIST_USAGE],
+      usage: [FRED_USAGE, "fred", FRED_LIST_USAGE],
       options: [
         START_OPTION,
         { flags: "--sort <order>", description: "desc for newest first (default) or asc" },
-        { flags: "--list", description: "List the series Gloom Cloud serves (ID, title, group); words after it filter the list" },
+        { flags: "--list", description: "List the series Gloom Cloud serves (ID, title, group), as fred alone does; words after it filter the list" },
         {
           flags: "--change <1D|1W>",
           description: "Add each observation's change in the series' unit (bp for a spread, pp for a percent): 1D from the previous observation, 1W from the last one a week before; holidays stay blank",
@@ -682,10 +723,10 @@ export const overviewCliCommands: CliCommandDef[] = [
       sections: [{
         title: "Series",
         lines: [
-          "Gloom Cloud serves a curated set of FRED series and needs no sign-in for them. gloomberb fred --list prints them; any other ID fails with that pointer.",
+          "Gloom Cloud serves a curated set of FRED series and needs no sign-in for them. gloomberb fred (or fred --list) prints them by topic; any other ID fails with that pointer.",
         ],
       }],
-      examples: ["fred CPIAUCSL", "fred DGS10 --tail 5", "fred DGS10 --change 1D --tail 5", "fred UNRATE --start 2020-01-01 --csv", "fred --list", "fred --list fx"],
+      examples: ["fred CPIAUCSL", "fred DGS10 --tail 5", "fred DGS10 --change 1D --tail 5", "fred UNRATE --start 2020-01-01 --csv", "fred", "fred --list credit", "fred --list fx"],
     },
     execute: runFred,
   },

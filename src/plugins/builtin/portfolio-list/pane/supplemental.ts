@@ -6,11 +6,12 @@ import type { TickerRecord } from "../../../../types/ticker";
 import { useAssetData } from "../../../runtime";
 import { loadEarningsCalendar } from "../../earnings/data/cache";
 import { forwardYieldMayHaveLapsed } from "../../../../utils/forward-dividend";
+import { measuresTrailingYield } from "../../../../market-data/quotes/live-valuation";
 
 const SUPPLEMENTAL_BATCH_LIMIT = 6;
 const ANALYST_COLUMN_IDS = new Set(["target", "target_pct", "rating"]);
 const CORPORATE_COLUMN_IDS = new Set(["ex_div", "next_earn"]);
-// DIV% reads the distribution history only of a forward yield old enough to have stopped.
+// DIV% reads the distribution history of a trailing yield, measured from it, and of a forward yield old enough to have stopped.
 const DIVIDEND_YIELD_COLUMN_ID = "dividend_yield";
 const EARNINGS_COLUMN_IDS = new Set(["next_earn"]);
 
@@ -37,6 +38,24 @@ function targetsFromTickers(tickers: TickerRecord[]): SupplementalTarget[] {
     symbol: ticker.metadata.ticker,
     exchange: ticker.metadata.exchange ?? "",
   }));
+}
+
+/**
+ * Whether the pane is still mounted. A batch's results are keyed by symbol and
+ * land whenever it settles, even after the effect that started it re-ran:
+ * the targets grow as each row's fundamentals arrive, and the new run skips
+ * the symbols still in flight, so a batch dropped on cleanup would leave them
+ * unread with nothing to ask again.
+ */
+function useMountedRef() {
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  return mounted;
 }
 
 function needsAnyColumn(columns: ColumnConfig[], ids: Set<string>): boolean {
@@ -124,6 +143,7 @@ function useAnalystSupplemental(
   setState: Dispatch<SetStateAction<SupplementalState>>,
 ) {
   const inFlightRef = useRef(new Set<string>());
+  const mountedRef = useMountedRef();
   const targetsKey = targetKey(targets);
 
   useEffect(() => {
@@ -140,7 +160,6 @@ function useAnalystSupplemental(
     if (batch.length === 0) return;
     for (const target of batch) inFlightRef.current.add(target.symbol);
 
-    let cancelled = false;
     Promise.all(batch.map(async (target) => {
       try {
         const data = await provider.getAnalystResearch!(target.symbol, target.exchange);
@@ -151,14 +170,9 @@ function useAnalystSupplemental(
         inFlightRef.current.delete(target.symbol);
       }
     })).then((entries) => {
-      if (cancelled) return;
-      setState((current) => setAnalystValues(current, entries));
+      if (mountedRef.current) setState((current) => setAnalystValues(current, entries));
     }).catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, provider, setState, state.analystResearch, targetsKey]);
+  }, [enabled, mountedRef, provider, setState, state.analystResearch, targetsKey]);
 }
 
 function useCorporateSupplemental(
@@ -169,6 +183,7 @@ function useCorporateSupplemental(
   setState: Dispatch<SetStateAction<SupplementalState>>,
 ) {
   const inFlightRef = useRef(new Set<string>());
+  const mountedRef = useMountedRef();
   const targetsKey = targetKey(targets);
 
   useEffect(() => {
@@ -185,7 +200,6 @@ function useCorporateSupplemental(
     if (batch.length === 0) return;
     for (const target of batch) inFlightRef.current.add(target.symbol);
 
-    let cancelled = false;
     Promise.all(batch.map(async (target) => {
       try {
         const data = await provider.getCorporateActions!(target.symbol, target.exchange);
@@ -196,14 +210,9 @@ function useCorporateSupplemental(
         inFlightRef.current.delete(target.symbol);
       }
     })).then((entries) => {
-      if (cancelled) return;
-      setState((current) => setCorporateValues(current, entries));
+      if (mountedRef.current) setState((current) => setCorporateValues(current, entries));
     }).catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, provider, setState, state.corporateActions, targetsKey]);
+  }, [enabled, mountedRef, provider, setState, state.corporateActions, targetsKey]);
 }
 
 function useEarningsSupplemental(
@@ -214,6 +223,7 @@ function useEarningsSupplemental(
   setState: Dispatch<SetStateAction<SupplementalState>>,
 ) {
   const inFlightRef = useRef(false);
+  const mountedRef = useMountedRef();
   const targetsKey = targetKey(targets);
 
   useEffect(() => {
@@ -232,14 +242,12 @@ function useEarningsSupplemental(
     if (missingSymbols.length === 0 || inFlightRef.current) return;
 
     inFlightRef.current = true;
-    let cancelled = false;
     loadEarningsCalendar(provider, missingSymbols)
       .then(({ events }) => {
-        if (cancelled) return;
-        setState((current) => setEarningsValues(current, missingSymbols, events));
+        if (mountedRef.current) setState((current) => setEarningsValues(current, missingSymbols, events));
       })
       .catch(() => {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         setState((current) => ({
           ...current,
           earningsEvents: markMissing(
@@ -252,11 +260,7 @@ function useEarningsSupplemental(
       .finally(() => {
         inFlightRef.current = false;
       });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, provider, setState, state.earningsEvents, targetsKey]);
+  }, [enabled, mountedRef, provider, setState, state.earningsEvents, targetsKey]);
 }
 
 export function usePortfolioSupplementalData(
@@ -269,11 +273,14 @@ export function usePortfolioSupplementalData(
   const targets = useMemo(() => targetsFromTickers(tickers), [tickers]);
   const allCorporate = needsAnyColumn(columns, CORPORATE_COLUMN_IDS);
   const dividendYield = columns.some((column) => column.id === DIVIDEND_YIELD_COLUMN_ID);
-  // Every row for the ex-date and earnings columns; for DIV% alone, the rows whose yield may have lapsed.
+  // Every row for the ex-date and earnings columns; for DIV% alone, the rows whose yield is trailing or may have lapsed.
   const corporateTargets = useMemo(() => {
     if (allCorporate || !dividendYield) return targets;
     const now = new Date();
-    return targets.filter((target) => forwardYieldMayHaveLapsed(financialsMap.get(target.symbol)?.fundamentals, now));
+    return targets.filter((target) => {
+      const fundamentals = financialsMap.get(target.symbol)?.fundamentals;
+      return measuresTrailingYield(fundamentals) || forwardYieldMayHaveLapsed(fundamentals, now);
+    });
   }, [allCorporate, dividendYield, financialsMap, targets]);
   const [state, setState] = useState<SupplementalState>(() => ({
     analystResearch: new Map(),

@@ -214,11 +214,22 @@ export interface ResolvedSeries {
   points: TimeSeriesPoint[];
   /** Who a report of a loaded series cites, when its loader names the dataset and publisher. */
   attribution?: SeriesAttribution;
+  /**
+   * The ticker whose price the values are in, such as a moving average of it:
+   * the chart draws the series on that price's axis when it shows the price.
+   */
+  priceOf?: string;
   /** Rejected valuation price inputs, retained independently of usable observations. */
   valuationPriceIssues?: import("./valuation-price").ValuationPriceIssue[];
   warning?: string;
   /** Listed in the legend so it can be restored, but not drawn. */
   hidden?: boolean;
+  /**
+   * A layer of a stacked area (`stackedSeries`): a band from the layers below
+   * to its own top, each point's `value` the top and `rawValue` the layer's own
+   * amount, which the legend shows.
+   */
+  stacked?: boolean;
   /** Columns below zero take this colour instead, so a change reads by its sign. */
   negativeColor?: string;
   /**
@@ -270,6 +281,11 @@ export interface ChartResolutionResult {
   loading: boolean;
   errors: string[];
   warnings: string[];
+  /**
+   * Each charted listing that no longer trades: its symbol and label
+   * ("Delisted Oct 27, 2022"), which `warnings` carries as "TWTR: Delisted Oct 27, 2022".
+   */
+  delistings?: { symbol: string; label: string; notice: string }[];
   /** Effective inclusive bounds used to clip the resolved chart data. */
   viewport?: { start: Date; end: Date };
   /** Bar resolution the loaded market history was fetched at. */

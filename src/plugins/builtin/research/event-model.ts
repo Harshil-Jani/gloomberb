@@ -19,6 +19,7 @@ import { fundamentalsEpsCurrency } from "../../../utils/fundamentals";
 import {
   earningsDateStatus,
   earningsDetail,
+  earningsDetailParts,
   earningsEpsBasis,
   epsBasisName,
   epsSurprise,
@@ -38,7 +39,10 @@ export interface EventRow {
   date: string;
   dateType?: "announcement" | "fiscal-period-end";
   status: EventStatus;
+  /** The fiscal quarter an earnings row reports (Sep 2026), "-" when no source names it. */
   period: string;
+  /** When in the day an earnings report comes out, as the source says it ("Pre Market"). */
+  reportTime?: string;
   detail: string;
   epsCurrency?: string;
   revenueCurrency?: string;
@@ -295,6 +299,20 @@ function eventSortRank(status: EventStatus): number {
   }
 }
 
+/**
+ * An earnings row's detail; a report not out yet also says when in the day it
+ * comes, after whether its date is confirmed: `confirmed, After Hours, 17
+ * analysts`. The time is never the row's period.
+ */
+function upcomingEarningsDetail(earning: CorporateActionsData["earnings"][number]): string {
+  const time = earning.time?.trim();
+  if (earning.epsActual != null || !time) return earningsDetail(earning);
+  const parts = earningsDetailParts(earning);
+  if (parts.length === 0) return `Pending, ${time}`;
+  const at = earningsDateStatus(parts[0]) ? 1 : 0;
+  return [...parts.slice(0, at), time, ...parts.slice(at)].join(", ");
+}
+
 export function buildEventRows(
   data: CorporateActionsData | null,
   estimates: AnalystResearchData | null,
@@ -324,8 +342,10 @@ export function buildEventRows(
       date: earning.dateType === "fiscal-period-end" ? statement?.date ?? earning.date : earning.date,
       dateType: earning.dateType,
       status: "Earnings",
-      period: statement ? quarterLabel(statement.date) : earning.fiscalPeriod ? quarterLabel(earning.fiscalPeriod) : earning.time?.trim() || "-",
-      detail: earningsDetail(earning),
+      // The fiscal quarter, never the time of day ("After Hours"), which the row keeps as reportTime.
+      period: statement ? quarterLabel(statement.date) : earning.fiscalPeriod ? quarterLabel(earning.fiscalPeriod) : "-",
+      ...(earning.time?.trim() ? { reportTime: earning.time.trim() } : {}),
+      detail: upcomingEarningsDetail(earning),
       epsCurrency: earning.currency ?? (earning.epsActual == null ? feedCurrency : undefined),
       revenueCurrency: statement ? statement.currency ?? financials?.financialCurrency : undefined,
       qEps: earning.epsActual ?? earning.epsEstimate,

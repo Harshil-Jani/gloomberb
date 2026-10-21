@@ -16,6 +16,7 @@ import {
 } from "../../../time-series/resolution";
 import type { ChartResolution } from "../../../time-series/range";
 import { intradaySessionDates, intradaySessionTimeZone, loadIntradayWindow, resolveIntradayRequest, type IntradayRequest, type IntradayWindow, type LoadedIntradayWindow } from "./session-history";
+import { sessionRangeReport } from "./session-range";
 import { createSnapshotDataProvider, snapshotInstrumentKey, type SnapshotMarketData } from "../../../market-data/snapshot-provider";
 import type { InstrumentRef } from "../../../market-data/request-types";
 import type { HistorySession } from "../../../types/price-history";
@@ -28,7 +29,7 @@ import { parseChartSpec } from "./chart-spec";
 import { paneSchemas } from "./headless-schema";
 import { barHistoryFreshness, REPORTED_DATA } from "../shared/report-freshness";
 import type { BarPeriodToDate } from "../../../market-data/market/bar-period";
-import { formingHistoryBar } from "../ticker-detail/data-panes/history-bars";
+import { closedHistoryBarDay, formingHistoryBar } from "../ticker-detail/data-panes/history-bars";
 import { inferSeriesFrequency } from "../../../series/csv";
 import { isDatasetChart } from "../../../time-series/spec";
 
@@ -231,7 +232,8 @@ export async function loadChartPaneModel(
       ...(chart.priceHistoryIntegrity?.length ? { priceHistoryIntegrity: chart.priceHistoryIntegrity } : {}),
       ...(valuationPriceIssues.length ? { valuationPriceIssues } : {}),
       ...(periodCoverage.length ? { periodCoverage } : {}),
-      notices: [...chart.warnings.filter((warning) => warning === FINANCIAL_VINTAGE_NOTICE || warning === SEC_EPS_BASIS_NOTICE || warning === chart.priceComparison?.notice), ...integrityNotices],
+      notices: [...chart.warnings.filter((warning) => warning === FINANCIAL_VINTAGE_NOTICE || warning === SEC_EPS_BASIS_NOTICE || warning === chart.priceComparison?.notice
+        || chart.delistings?.some((delisting) => delisting.notice === warning)), ...integrityNotices],
       priceComparison: chart.priceComparison ?? null,
       summaries: chart.series.filter((series) => !series.profile).map((series) => ({ id: series.id, ...summarizeResolvedSeries(series) })),
     },
@@ -316,7 +318,31 @@ function chartFreshness(series: readonly HeadlessSeries[], spec: ChartSpec): Hea
   ), resolutions[0]);
   const forming = formingPriceBar(series);
   // A history: its first bars are not stale data, so the line dates it by the bar still forming alone.
-  return { ...barHistoryFreshness(coarsest), ...(forming ? { periodToDate: forming, oldest: null } : {}) };
+  if (forming) return { ...barHistoryFreshness(coarsest), periodToDate: forming, oldest: null };
+  const closedDay = closedPriceBarDay(series);
+  return { ...barHistoryFreshness(coarsest), ...(closedDay ? { asOf: closedDay } : {}) };
+}
+
+/** A series' venue and the day its newest bar starts, as the forming and closed bar checks read them. */
+function newestBar(entry: HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis" | "listing">>): { day: string; venue: string | undefined } | null {
+  const last = entry.points.at(-1);
+  const time = last ? new Date(last.date).getTime() : Number.NaN;
+  if (!entry.historyResolution || !Number.isFinite(time)) return null;
+  return { day: new Date(time).toISOString().slice(0, 10), venue: entry.timeBasis?.exchange || entry.listing?.exchange || undefined };
+}
+
+/**
+ * The day the newest complete weekly or monthly bar of the chart closed on,
+ * the latest across its series: a week of bars dated Mon 12 Oct 2026 is dated
+ * Fri 16 Oct, the day their closes are from. Null for daily and intraday bars.
+ */
+function closedPriceBarDay(series: readonly HeadlessSeries[]): string | null {
+  const days = (series as ReadonlyArray<HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis" | "listing">>>).flatMap((entry) => {
+    const bar = newestBar(entry);
+    const day = bar ? closedHistoryBarDay(entry.historyResolution!, bar.day, bar.venue, Date.now()) : null;
+    return day ? [day] : [];
+  });
+  return days.length ? days.sort().at(-1)! : null;
 }
 
 /**
@@ -327,11 +353,8 @@ function chartFreshness(series: readonly HeadlessSeries[], spec: ChartSpec): Hea
  */
 function formingPriceBar(series: readonly HeadlessSeries[]): BarPeriodToDate | null {
   for (const entry of series as ReadonlyArray<HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis" | "listing">>>) {
-    const last = entry.points.at(-1);
-    const time = last ? new Date(last.date).getTime() : Number.NaN;
-    if (!entry.historyResolution || !Number.isFinite(time)) continue;
-    const venue = entry.timeBasis?.exchange || entry.listing?.exchange || undefined;
-    const forming = formingHistoryBar(entry.historyResolution, new Date(time).toISOString().slice(0, 10), venue, Date.now());
+    const bar = newestBar(entry);
+    const forming = bar ? formingHistoryBar(entry.historyResolution!, bar.day, bar.venue, Date.now()) : null;
     if (forming) return forming;
   }
   return null;
@@ -488,6 +511,7 @@ export function chartHeadless(template: keyof typeof paneSchemas): HeadlessPaneD
           const points = data.priceHistory.filter(({ date }) => date >= start && date <= end);
           intradayHistories.push({
             target, symbol, exchange, points, bufferedPoints: data.priceHistory, start, end, session: data.priceHistorySession, sourceKey: data.priceHistorySourceKey,
+            ...data.quote ? { quote: data.quote } : {},
             rangePreset: spec.viewport.range === "1W" ? "1W" : "1D",
             resolution: historyResolution, requestedSession: null,
             sessionDates: intradaySessionDates(points, intradaySessionTimeZone(symbol, exchange)),
@@ -496,6 +520,16 @@ export function chartHeadless(template: keyof typeof paneSchemas): HeadlessPaneD
         }
       }
       model.snapshot.intradayHistories = intradayHistories;
+      // On a depeg or a crash the question is how low it went and when: each listing's low and high, with their times.
+      // Named as the series are: a window read before the listing was settled takes the venue the chart resolved.
+      const listingExchange = (symbol: string, exchange: string) => exchange || model.spec.series.flatMap(({ source }) => (
+        source.kind === "security" && source.instrument.symbol.toUpperCase() === symbol.toUpperCase() ? [source.instrument.exchange ?? ""] : []
+      )).find(Boolean) || "";
+      const ranges = sessionRangeReport(intradayHistories.map((window) => ({ ...window, exchange: listingExchange(window.symbol, window.exchange) })));
+      if (ranges.entries.length) {
+        model.stats = [...model.stats ? Array.isArray(model.stats) ? model.stats : Object.entries(model.stats).map(([label, value]) => ({ label, value })) : [], ...ranges.entries];
+        model.metadata = { ...model.metadata, sessionRanges: ranges.ranges };
+      }
       // Exports name each series by what it was asked as and the bars or frequency it came back in.
       const asked = new Map(parsed.series.map((series) => [series.id, askedSymbol(series.source)]));
       model.series = model.series.map((series) => {

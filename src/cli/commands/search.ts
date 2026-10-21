@@ -17,10 +17,11 @@ import {
   type TickerSearchCandidate,
 } from "../../tickers/search";
 import { initMarketData, withMarketData } from "../context";
-import { loadListingFate } from "../../tickers/listing-fate";
+import { listingChangeLine, loadListingFate } from "../../tickers/listing-fate";
 import { formatMarketPriceWithCurrency, quoteFormatOptions } from "../../market-data/market/format";
-import { formerIssuerLine, startTickerChangeLookup, tickerChangeLine, type TickerChangeLookup } from "../../tickers/ticker-changes";
-import { fail } from "../errors";
+import { formerIssuerLine, startTickerChangeLookup, type TickerChangeLookup } from "../../tickers/ticker-changes";
+import { fail, failRetryable } from "../errors";
+import { isProviderBusy, SEARCH_BUSY_CODE, SEARCH_BUSY_MESSAGE } from "../../sources/provider-errors";
 import type { MarketContext } from "../types";
 import type { CliCommandContext, GloomPlugin } from "../../types/plugin";
 import { indexRootFor, indexRootTryLine } from "../index-roots";
@@ -125,6 +126,8 @@ export async function searchCandidatesForCli({
       : null;
     return withQuotedNames(symbol, withHomeListingPrimary(symbol, withPrimaryListingFirst(symbol, candidates, quote)), quote).slice(0, totalLimit);
   } catch (error) {
+    // Not "No matches found": a script or a reader would take that for a name nothing lists.
+    if (isProviderBusy(error)) failRetryable(SEARCH_BUSY_MESSAGE, SEARCH_BUSY_CODE);
     logFailure("cli.commands-search", "Search ticker candidates failed")(error);
     return [];
   }
@@ -177,7 +180,7 @@ async function searchFate(
     }
     : null;
   // The row says when a listing stopped; a company that left the symbol, or merged away from it (GOGL), is a line of its own.
-  const changed = tickerChangeLine(fate.change) ?? fate.formerIssuer?.note;
+  const changed = listingChangeLine(fate);
   return { stopped, notes: changed ? [changed] : fate.note && !stopped ? [fate.note] : [] };
 }
 

@@ -2,7 +2,9 @@ import type { DataProvider } from "../../../types/data-provider";
 import { regularSessionValuationPrice } from "../../../market-data/quotes/regular-session-valuation";
 import { resolveCurrencyUnit } from "../../../utils/currency-units";
 import { cashInMajorUnits } from "../../../utils/dividend-cash";
-import { buildDividendMetrics, dividendReferencePrice, INCOMPLETE_DIVIDEND_HISTORY, MISSING_DIVIDEND_CURRENCY, toDividendPayment, type DividendData } from "./client";
+import { dividendReferencePrice } from "../../../utils/trailing-dividend";
+import { logFailure } from "../../../utils/log-failure";
+import { buildDividendMetrics, INCOMPLETE_DIVIDEND_HISTORY, MISSING_DIVIDEND_CURRENCY, toDividendPayment, type DividendData } from "./client";
 import { dividendQuotePriceMetadata } from "./reference-price";
 
 /** Custom data providers can supply their own cash history and reference quote. */
@@ -16,7 +18,8 @@ export async function fetchProviderDividendData(
   if (!provider.getCorporateActions) throw new Error("Dividend history source unavailable.");
   const [sourceActions, quote] = await Promise.all([
     provider.getCorporateActions(symbol, exchange),
-    provider.getQuote(symbol, exchange).catch(() => null),
+    provider.getQuote(symbol, exchange)
+      .catch(logFailure("dividend-yield.provider-client", "Read dividend reference quote failed", null)),
   ]);
   // In the major unit as the history arrives, as the provider router serves it.
   const actions = cashInMajorUnits(sourceActions);

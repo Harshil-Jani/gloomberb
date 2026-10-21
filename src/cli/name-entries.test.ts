@@ -4,6 +4,7 @@ import type { QuoteSubscriptionTarget } from "../types/data-provider";
 import { createTestQuote } from "../test-support/data-provider";
 import { readNameEntries, readPhraseArgument } from "./name-entries";
 import { quotedPhrase, splitSymbolArgs } from "./symbol-args";
+import { ProviderBusyError } from "../sources/provider-errors";
 
 test("an entry with spaces is a company's name when search finds one, else the symbols it holds; a plain symbol costs no search", async () => {
   const asked: string[] = [];
@@ -47,4 +48,37 @@ test("one quoted argument with spaces is a company, a line of tickers, or a phra
   // A word the source could not answer for, as in an outage, is not taken as proof of a phrase.
   const down = { ...provider, getQuotesBatch: async (targets: QuoteSubscriptionTarget[]) => targets.map((target) => ({ target, quote: null, error: new Error("timeout") })) };
   expect(await readPhraseArgument("AAPL MSFT", down)).toEqual({ kind: "symbols", symbols: ["AAPL", "MSFT"] });
+});
+
+test("a Bloomberg code is one entry when search lists its root as a US ticker; words that only look like one are a name or their words", async () => {
+  const listed: Record<string, InstrumentSearchResult[]> = {
+    JPM: [{ providerId: "test", symbol: "JPM", name: "JPMorgan Chase & Co.", exchange: "NYSE", currency: "USD", type: "Common Stock" }],
+    // GLOBAL trades only abroad.
+    GLOBAL: [{ providerId: "test", symbol: "GLOBAL", name: "Global Holdings", exchange: "JSE", currency: "ZAR", type: "Common Stock" }],
+  };
+  const fund: InstrumentSearchResult = { providerId: "test", symbol: "PUEQX", name: "Putnam US Equity Fund", exchange: "NASDAQ", currency: "USD", type: "Mutual Fund" };
+  const provider = {
+    search: async (query: string) => listed[query] ?? (/putnam/i.test(query) ? [fund] : []),
+    getQuotesBatch: async (targets: QuoteSubscriptionTarget[]) => targets.map((target) => ({ target, quote: null, error: new Error(`Not a ticker: ${target.symbol}.`) })),
+  };
+  expect(await readNameEntries(["JPM US Equity", "jpm us equity", "Putnam US Equity", "Global US Equity"], provider))
+    .toEqual(["JPM US Equity", "jpm us equity", "Putnam US Equity", "Global", "US", "Equity"]);
+  expect(await readPhraseArgument("jpm us equity", provider)).toEqual({ kind: "symbols", symbols: ["jpm us equity"] });
+  expect(await readPhraseArgument("Putnam US Equity", provider)).toEqual({ kind: "name", name: "Putnam US Equity" });
+  expect(await readPhraseArgument("Global US Equity", provider)).toEqual({ kind: "phrase", phrase: "Global US Equity" });
+});
+
+test("a name search too busy to answer is no answer: its words are not other companies' symbols, unless each has a quote", async () => {
+  // Busy, "Eagle Bulk" was quoted as EAGLE, Eagle Filters in Helsinki, and BULK (GLO-994).
+  const quoted = new Set(["EAGLE", "AAPL", "MSFT"]);
+  const busy = {
+    search: async (): Promise<InstrumentSearchResult[]> => { throw new ProviderBusyError(); },
+    getQuotesBatch: async (targets: QuoteSubscriptionTarget[]) => targets.map((target) => quoted.has(target.symbol)
+      ? { target, quote: createTestQuote({ symbol: target.symbol }) }
+      : { target, quote: null, error: new Error(`No quote provider available for ${target.symbol}`) }),
+  };
+  await expect(readPhraseArgument("Eagle Bulk", busy)).rejects.toBeInstanceOf(ProviderBusyError);
+  expect(await readPhraseArgument("AAPL MSFT", busy)).toEqual({ kind: "symbols", symbols: ["AAPL", "MSFT"] });
+  // In a list it stays whole, for its own lookup to say search was busy.
+  expect(await readNameEntries(["AAPL", "Eagle Bulk"], busy)).toEqual(["AAPL", "Eagle Bulk"]);
 });

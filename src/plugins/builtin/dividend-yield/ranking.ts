@@ -2,13 +2,23 @@ import type { HeadlessBundleResult, HeadlessPaneColumn } from "../../../types/he
 import { formatPercent } from "../../../utils/format";
 import type { DividendData } from "./client";
 import { formatDividendYield } from "./view";
+import type { FundBondFacts } from "../../../api-client/fund-facts";
+import { NOT_SEC_YIELD } from "../../../market-data/bond-funds";
 
-/** One symbol of `fn DVD A B C`: what DVD read for it, or why it read nothing. */
+/**
+ * One symbol of `fn DVD A B C`: what DVD read for it, or why it read nothing.
+ * A bond fund's facts give its SEC yield, which its cash yields are not.
+ */
 export type DividendRankingEntry =
-  | { symbol: string; data: DividendData }
+  | { symbol: string; data: DividendData; bond?: FundBondFacts | null }
   | { symbol: string; error: string };
 
 const isoDay = (date: Date | null | undefined): string | null => date ? date.toISOString().slice(0, 10) : null;
+
+/** A ratio to the sixth decimal, a percent to the fourth (0.035396 is 3.5396%), so an export carries no float noise. */
+export function roundedRatio(value: number | null | undefined): number | null {
+  return value != null && Number.isFinite(value) ? Number(value.toFixed(6)) : null;
+}
 
 /**
  * The pay date of the next distribution, when one is declared: the earliest
@@ -41,31 +51,47 @@ function incompleteReason(entry: DividendRankingEntry): string | null {
   return reasons.length > 0 ? reasons.join(" ") : null;
 }
 
+/** Whether a ranked symbol is a bond fund, whose yields are then distribution yields beside its SEC yield. */
+const isBondEntry = (entry: DividendRankingEntry) => "data" in entry && !!entry.bond;
+
+/** A bond fund's SEC yield as a ratio, as the ranking's other yields are, with its own date; empty for any other row. */
+function secYieldFields(entry: DividendRankingEntry): { secYield: number | null; secYieldAsOf: string | null } {
+  const sec = "data" in entry ? entry.bond?.secYield : null;
+  return { secYield: sec ? roundedRatio(sec.value / 100) : null, secYieldAsOf: sec?.asOf ?? null };
+}
+
 /**
  * Rows ranked by trailing yield, highest first; a symbol without one, then
  * one that failed, last, in the order typed. Yield and growth are ratios, so
- * listings in different currencies rank together.
+ * listings in different currencies rank together. With a bond fund among
+ * them, each row carries the SEC yield after its forward yield.
  */
 function rankDividendEntries(entries: readonly DividendRankingEntry[], now = new Date()): Record<string, unknown>[] {
+  const bonds = entries.some(isBondEntry);
   const rows = entries.map((entry, index) => {
     if ("error" in entry) {
-      return { index, failed: true, row: { symbol: entry.symbol, currency: null, price: null, trailingYield: null, forwardYield: null, payoutRatio: null,
-        growth1Y: null, growth3Y: null, lastExDate: null, payDate: null, frequency: null, note: incompleteNote(entry), error: entry.error } };
+      return { index, failed: true, trailingYield: null, row: { symbol: entry.symbol, currency: null, price: null, priceAsOf: null, trailingYield: null, forwardYield: null,
+        ...bonds ? secYieldFields(entry) : {}, payoutRatio: null, growth1Y: null, growth3Y: null, lastExDate: null, payDate: null, frequency: null, note: incompleteNote(entry), error: entry.error } };
     }
     const { data } = entry;
     const metrics = data.metrics;
     return {
       index,
       failed: false,
+      // Ranked on the measured yield, rounded only in the row, so two that round alike still rank higher first.
+      trailingYield: metrics.trailingYield,
       row: {
         symbol: entry.symbol,
         currency: data.currency ?? null,
         price: data.price,
-        trailingYield: metrics.trailingYield,
-        forwardYield: metrics.forwardYield,
-        payoutRatio: metrics.payoutRatio,
-        growth1Y: metrics.growth1Y,
-        growth3Y: metrics.growth3Y,
+        // When the price the yields are over is from: each row's export is dated by it.
+        priceAsOf: data.price != null ? data.priceAsOf ?? null : null,
+        trailingYield: roundedRatio(metrics.trailingYield),
+        forwardYield: roundedRatio(metrics.forwardYield),
+        ...bonds ? secYieldFields(entry) : {},
+        payoutRatio: roundedRatio(metrics.payoutRatio),
+        growth1Y: roundedRatio(metrics.growth1Y),
+        growth3Y: roundedRatio(metrics.growth3Y),
         lastExDate: isoDay(metrics.lastExDividendDate),
         payDate: declaredPayDate(data, now),
         frequency: metrics.paymentFrequency,
@@ -74,10 +100,10 @@ function rankDividendEntries(entries: readonly DividendRankingEntry[], now = new
       },
     };
   });
-  const yieldOf = (row: Record<string, unknown>) => typeof row.trailingYield === "number" && Number.isFinite(row.trailingYield) ? row.trailingYield : null;
+  const yieldOf = (value: number | null) => value != null && Number.isFinite(value) ? value : null;
   return rows.sort((left, right) => {
-    const a = yieldOf(left.row);
-    const b = yieldOf(right.row);
+    const a = yieldOf(left.trailingYield);
+    const b = yieldOf(right.trailingYield);
     if (a != null && b != null && a !== b) return b - a;
     if ((a == null) !== (b == null)) return a == null ? 1 : -1;
     return Number(left.failed) - Number(right.failed) || left.index - right.index;
@@ -105,6 +131,21 @@ const RANKING_COLUMNS: HeadlessPaneColumn[] = [
     description: "Pay date of the next declared distribution; past distributions carry ex-dates only." },
 ];
 
+/** Shown after the forward yield once a bond fund is ranked: its sponsor's SEC yield, and its date. */
+const SEC_YIELD_COLUMNS: HeadlessPaneColumn[] = [
+  { key: "secYield", header: "SEC yield", align: "right", format: ratio,
+    description: "A bond fund's 30-day SEC yield as its sponsor publishes it; its Yield TTM and Fwd yield are distribution yields, not its SEC yield. Blank for any other listing." },
+  { key: "secYieldAsOf", header: "SEC as of", format: day, shrink: false, stackPriority: 3,
+    description: "The date the sponsor gives its SEC yield as of." },
+];
+
+/** The ranking's columns: a bond fund's SEC yield after the forward yield once one is ranked. */
+function rankingColumns(bonds: boolean): HeadlessPaneColumn[] {
+  if (!bonds) return RANKING_COLUMNS;
+  const after = RANKING_COLUMNS.findIndex((column) => column.key === "forwardYield") + 1;
+  return [...RANKING_COLUMNS.slice(0, after), ...SEC_YIELD_COLUMNS, ...RANKING_COLUMNS.slice(after)];
+}
+
 /** Shown once a row is incomplete, so a missing figure never reads as a non-payer's. */
 const NOTE_COLUMN: HeadlessPaneColumn = { key: "note", header: "Note", format: (value) => typeof value === "string" ? value : "",
   description: "What the read of this ticker is missing: not read, no cash history (yields and growth), or no summary (forward yield, payout, pay date)." };
@@ -112,6 +153,7 @@ const NOTE_COLUMN: HeadlessPaneColumn = { key: "note", header: "Note", format: (
 /** `fn DVD A B C`: one table of every symbol, ranked by trailing yield. */
 export function projectDividendRanking(entries: readonly DividendRankingEntry[], now = new Date()): HeadlessBundleResult {
   const rows = rankDividendEntries(entries, now);
+  const bonds = entries.some(isBondEntry);
   // A failed read, or one without its cash history or summary, is as incomplete as single-ticker DVD says it is.
   const incomplete = entries.flatMap((entry) => {
     const reason = incompleteReason(entry);
@@ -124,9 +166,13 @@ export function projectDividendRanking(entries: readonly DividendRankingEntry[],
       errors: incomplete.map((entry) => `${entry.symbol}: ${entry.reason}`),
     } : {}),
     sections: [{
-      title: "Ranked by trailing yield; payout is over TTM diluted EPS",
-      columns: incomplete.length > 0 ? [...RANKING_COLUMNS, NOTE_COLUMN] : RANKING_COLUMNS,
+      title: `Ranked by trailing yield; payout is over TTM diluted EPS${bonds ? `; a bond fund's yields are distribution yields, ${NOT_SEC_YIELD}` : ""}`,
+      columns: incomplete.length > 0 ? [...rankingColumns(bonds), NOTE_COLUMN] : rankingColumns(bonds),
       rows,
+      // Every figure is a percent; each exported row names its ticker and the time of the price its yields are over.
+      unit: "pct",
+      rowSymbolKey: "symbol",
+      rowAsOfKey: "priceAsOf",
     }],
     metadata: {
       rankedBy: "trailingYield",
@@ -135,6 +181,7 @@ export function projectDividendRanking(entries: readonly DividendRankingEntry[],
       payoutMethod: "Trailing twelve-month dividends over trailing twelve-month diluted EPS, as the source states it.",
       growthMethod: "Trailing twelve-month cash per share now against one and three years before; 3Y is a compound annual rate.",
       payDateMethod: "Pay date of the next declared distribution; past distributions carry ex-dates only.",
+      ...bonds ? { secYieldMethod: `A bond fund's 30-day SEC yield as its sponsor publishes it, dated by secYieldAsOf, as a ratio like the other yields; its trailingYield and forwardYield are distribution yields, ${NOT_SEC_YIELD}.` } : {},
     },
   };
 }

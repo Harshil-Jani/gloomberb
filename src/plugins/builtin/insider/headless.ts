@@ -8,6 +8,7 @@ import type {
 import { formatCompact, formatCurrency } from "../../../utils/format";
 import { loadParsedInsiderFilings, type InsiderFilingsLoad } from "./client";
 import { insiderEmptyNotice } from "./issuer";
+import { FORM4_CURRENCY, withInsiderBaseValues } from "./base-values";
 import {
   buildInsiderRows,
   buildInsiderSummary,
@@ -57,6 +58,8 @@ import {
   insiderStakeValue,
   insiderUsualRatio,
 } from "./signals-model";
+import { REPORT_ROWS } from "../shared/headless-options";
+import type { FxHistoryClient } from "../../../market-data/fx-closes";
 
 const INSIDER_COLUMNS: HeadlessPaneColumn[] = [
   { key: "form", header: "Form" },
@@ -104,6 +107,20 @@ const INSIDER_COLUMNS: HeadlessPaneColumn[] = [
   // An amendment's original date, remarks and footnotes, under the amendment's own row.
   { key: "note", header: "Note", underRow: true, format: (value) => typeof value === "string" ? value : "" },
 ];
+
+/** With a base currency other than USD, the dollar columns say they are in USD ("Bought (USD)"), as $ alone is several currencies' sign. */
+function labelDollarColumns(columns: HeadlessPaneColumn[], keys: readonly string[], baseCurrency: string): HeadlessPaneColumn[] {
+  if (baseCurrency.trim().toUpperCase() === FORM4_CURRENCY) return columns;
+  return columns.map((column) => keys.includes(column.key) ? { ...column, header: `${column.header} (${FORM4_CURRENCY})` } : column);
+}
+
+/** The trades' columns with the money ones labelled by currency and the converted value and rate after them (`withInsiderBaseValues`). */
+function withMoneyColumns(money: readonly HeadlessPaneColumn[]): HeadlessPaneColumn[] {
+  const byKey = new Map(money.map((column) => [column.key, column]));
+  return INSIDER_COLUMNS.flatMap((column) => column.key === "totalValue"
+    ? money.filter((entry) => entry.key !== "pricePerShare")
+    : [byKey.get(column.key) ?? column]);
+}
 
 const figureOrDash = (value: unknown) => (typeof value === "number" ? value : null);
 
@@ -182,6 +199,7 @@ function insidersRows(activity: InsiderCompanyActivity, side: InsiderSignalSide)
       stakeBothWays: line.buyer.twoWay === true,
       bought: line.bought,
       sold: line.sold,
+      currency: FORM4_CURRENCY,
       shares: line.buyer.shares ?? null,
       last: line.buyer.lastBuy,
     }));
@@ -210,6 +228,7 @@ function signalRows(payload: InsiderSignalsPayload): HeadlessPaneRow[] {
       insiders: row.insiders,
       buys: row.buys,
       value: row.value,
+      currency: FORM4_CURRENCY,
       shares: row.shares,
       firstBuy: row.firstBuy,
       lastBuy: row.lastBuy,
@@ -250,6 +269,8 @@ function amendmentNote(entry: ParsedInsiderFiling): string {
 }
 
 export interface InsiderHeadlessDependencies {
+  /** Daily FX closes for values in a base currency other than USD; the report's API client unless a test stands in. */
+  fxHistory?: FxHistoryClient;
   loadSignals?(query: InsiderSignalsQuery, limit: number, ctx: HeadlessPaneContext): Promise<InsiderSignalsPayload>;
   loadCompany?(query: InsiderCompanyQuery, ctx: HeadlessPaneContext): Promise<InsiderCompanyActivity>;
   loadParsed(
@@ -307,7 +328,6 @@ export function createInsiderHeadless(
         description: "Exact reporting owner name.",
         type: "string",
         defaultValue: "",
-        pluginState: { pluginId: "ticker-research", key: "nameFilter" },
       },
       {
         key: "type",
@@ -322,6 +342,7 @@ export function createInsiderHeadless(
       },
       {
         key: "limit",
+        shot: REPORT_ROWS,
         aliases: ["count", "rows"],
         description: "Maximum of the company's own Form 4 and Form 4/A filings to parse; without a ticker, companies to rank.",
         type: "integer",
@@ -416,6 +437,18 @@ export function createInsiderHeadless(
       },
     ],
     columns: INSIDER_COLUMNS,
+    // The Trades view filters by insider as the pane's own filter does, kept by ticker.
+    shotState: (args, _load, given) => {
+      const name = String(args.options.name ?? "").trim();
+      if (!given.has("name") || !name) return {};
+      const symbol = args.symbols[0];
+      if (!symbol || args.options.view === "insiders") {
+        throw new Error(symbol
+          ? `--name filters ${symbol}'s trades, not its insiders. Drop --view insiders or --name from shot.`
+          : `--name filters one company's trades: gloomberb shot INS <ticker> --name ${JSON.stringify(name)}`);
+      }
+      return { pluginState: { "ticker-research": { [`insider:nameFilter:${parsePublicTickerKey(symbol).symbol}`]: name } } };
+    },
     describe: (args) => {
       const symbol = args.symbols[0];
       if (symbol) return args.options.view === "insiders" ? `Insiders | ${symbol}` : `Insider Transactions | ${symbol}`;
@@ -428,9 +461,9 @@ export function createInsiderHeadless(
         const payload = await (dependencies.loadSignals ?? defaultDependencies.loadSignals!)(query, Number(args.options.limit), ctx);
         const side = payload.side ?? "buy";
         return {
-          columns: signalColumns(side),
+          columns: labelDollarColumns(signalColumns(side), ["value"], ctx.config.baseCurrency),
           // The exports carry each row's insiders; the text leaves them to fn INS <ticker> --view insiders.
-          textColumns: signalColumns(side).filter((column) => column.key !== "buyers"),
+          textColumns: labelDollarColumns(signalColumns(side).filter((column) => column.key !== "buyers"), ["value"], ctx.config.baseCurrency),
           rows: signalRows(payload),
           ...(payload.rows.length === 0 ? { empty: insiderSignalsEmptyTitle(payload.window, side, insiderSignalsFiltered(query)) } : {}),
           metadata: {
@@ -459,7 +492,7 @@ export function createInsiderHeadless(
           .filter((notice): notice is string => !!notice))];
         const rows = insidersRows(activity, side);
         return {
-          columns: INSIDERS_COLUMNS,
+          columns: labelDollarColumns(INSIDERS_COLUMNS, ["bought", "sold"], ctx.config.baseCurrency),
           rows,
           ...(rows.length === 0 ? { empty: insiderActivityEmptyTitle(window) } : {}),
           metadata: {
@@ -490,12 +523,17 @@ export function createInsiderHeadless(
         .filter((row) => row.status !== "parsed" && row.status !== "disclosure")
         .map((row) => row.accessionNumber))];
       // A filing's lines sit together, so its note goes once, under the last of them.
-      const rows: HeadlessPaneRow[] = buildInsiderRows(filtered, parsed).map((row, index) => {
+      const filed: HeadlessPaneRow[] = buildInsiderRows(filtered, parsed).map((row, index) => {
         const entry = filtered[index]!;
         const last = filtered[index + 1]?.filing.accessionNumber !== entry.filing.accessionNumber;
         return isAmendedInsiderFiling(entry) && last ? { ...row, note: amendmentNote(entry) || null } : row;
       });
+      // Every value says its currency; a base currency other than USD gets each value converted beside it.
+      const based = await withInsiderBaseValues(filed, ctx.config.baseCurrency, dependencies.fxHistory ?? ctx.apiClient);
+      const rows = based.rows;
       return {
+        ...(based.columns ? { columns: withMoneyColumns(based.columns) } : {}),
+        ...(based.note ? { notes: [based.note] } : {}),
         rows,
         // Nothing at all: the company has no Form 4 of its own, which is the whole answer.
         ...(empty ? { empty, unavailableSymbols: [] } : {}),

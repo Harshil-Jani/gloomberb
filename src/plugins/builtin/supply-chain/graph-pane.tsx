@@ -15,10 +15,10 @@ import { useOpenDescription } from "../shared/open-description";
 import { UpgradeLabel } from "../shared/locked-rows";
 import { isCloudSessionRequired, useResearchCloudSession } from "../shared/research-cloud-session";
 import { cachedGraph, graphOptions, loadGraph, validateGraph } from "./graph-client";
-import { entityKey, entityLabel, exposureLabel, pathLabel } from "./graph-model";
+import { entityKey, entityLabel, entityTicker, exposureLabel, pathLabel } from "./graph-model";
 import { SupplyGraph } from "./graph";
 import { graphEvidenceRow } from "./graph-evidence";
-import { disclosedValue, dollars, nativeValue, ROLE_COLORS, roleLabel, shareParts } from "./model";
+import { disclosedValue, dollars, nativeValue, periodText, ROLE_COLORS, roleLabel, shareParts } from "./model";
 import { SupplySources, SupplyVerification } from "./row-evidence";
 import { evidenceDate, evidenceLabel, isUnconfirmed, trustTier } from "./trust";
 import { scrollByLines } from "../../../state/pane-scroll-registry";
@@ -67,9 +67,9 @@ function PathEvidence({ data, path, width, focused, onRecenter }: { data: GraphP
   const figures: StatItem[] = [
     { id: "score", label: "Path score", value: path.score.toFixed(4) },
     { id: "confidence", label: "Confidence", value: `${Math.round(path.confidence * 100)}%` },
-    { id: "exposure", label: "Estimated exposure", value: exposureLabel(path, data), detail: path.exposure?.period, wide: true },
+    { id: "exposure", label: "Estimated exposure", value: exposureLabel(path, data), detail: path.exposure ? periodText(path.exposure) : undefined, wide: true },
   ];
-  const company = (entity: SupplyEntity) => desktop && entity.ticker ? <Badge label={entity.ticker} tone="accent" />
+  const company = (entity: SupplyEntity) => desktop && entity.ticker ? <Badge label={entityTicker(entity)!} tone="accent" />
     : <Text fg={entity.aggregate || entity.anonymous ? colors.textDim : colors.textBright} attributes={TextAttributes.BOLD}>{entityLabel(entity)}</Text>;
   return <DetailScrollBody ref={scrollRef} resetScrollKey={path.id}><ButtonActionScope>
     <StatGrid items={figures} width={Math.max(1, width - 2)} />
@@ -90,7 +90,7 @@ function PathEvidence({ data, path, width, focused, onRecenter }: { data: GraphP
               {row.leadStatus === "verified" ? <Badge tone="positive" label="Verified" /> : null}</Box>
             <KeyValueRow label="Disclosure" value={`${evidence.reporter.name} · ${roleLabel(evidence.role)}`} color={ROLE_COLORS[evidence.role]} labelWidth={20} />
             <KeyValueRow label="Evidence class" value={`${TIER_LABELS[evidence.tier]} · ${SOURCE_LABELS[evidence.sourceKind]}`} detail={`${Math.round(evidence.confidence * 100)}% confidence`} labelWidth={20} />
-            <KeyValueRow label="Period" value={evidence.period} detail={trustTier(row) === 1 ? `filed ${row.filedDate ?? "--"}` : `published ${evidenceDate(row)}`} labelWidth={20} />
+            <KeyValueRow label="Period" value={periodText(row)} detail={trustTier(row) === 1 ? `filed ${row.filedDate ?? "--"}` : `published ${evidenceDate(row)}`} labelWidth={20} />
             {row.entityScope === "group" && !row.counterparty.aggregate ? <KeyValueRow label="Metric scope" value="Corporate group" labelWidth={20} /> : null}
             <SupplyVerification row={row} />
             {share ? <>
@@ -194,7 +194,7 @@ export function SupplyGraphPane({ symbol, tab, width, height, focused }: { symbo
                 return { text, content: desktop && route.length === path.nodeIds.length && cells <= column.width ? <Box flexDirection="row" height={1} gap={1} overflow="hidden">
                   {route.flatMap((node, index) => [
                     index ? <Text key={`arrow:${index}`} fg={state.selected ? colors.selectedText : colors.textMuted}>→</Text> : null,
-                    node.ticker ? <Badge key={node.id} label={node.ticker} tone="accent" color={state.selected ? colors.selectedText : undefined} />
+                    node.ticker ? <Badge key={node.id} label={entityTicker(node)!} tone="accent" color={state.selected ? colors.selectedText : undefined} />
                       : <Text key={node.id} fg={state.selected ? colors.selectedText : node.aggregate || node.anonymous ? colors.textDim : ink}>{node.name}</Text>,
                   ])}
                 </Box> : undefined };

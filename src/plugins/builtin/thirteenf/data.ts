@@ -12,15 +12,23 @@ import {
   searchThirteenFFunds,
 } from "./api";
 import { isoDateDaysAgo, isoDateToday, isoDateYearsAgo } from "../../../utils/calendar-date";
-import { withDeadline } from "../../../utils/async-deadline";
+import { abortable, withDeadline } from "../../../utils/async-deadline";
+import { logFailure } from "../../../utils/log-failure";
 import {
   buildBrowserRows,
   filingGapFor,
+  estimateFilingQuarterReturn,
+  hasComparable13FQuarter,
   latestLikely13FQuarter,
   oneFundPerCik,
   buildPeriodReports,
   dedupeLatestForms,
+  filingSplitCandidates,
+  type FilingQuarterReturn,
 } from "./model";
+import { mapWithConcurrency } from "../../../utils/concurrency";
+import { describeTickerChange, movedAwayChange, startTickerChangeLookup } from "../../../tickers/ticker-changes";
+import type { DataProvider } from "../../../types/data-provider";
 import type {
   FundBrowserRow,
   FundDetailData,
@@ -133,15 +141,8 @@ async function loadBrowserPage(
 
   if (tab === "performance") {
     const topFunds = await listTopThirteenFFunds(quarter, browserLimit, signal, pageApiOptions);
-    const quarters = [1, 2, 3].map(back => {
-      const year = Number(quarter.slice(0, 4));
-      const index = Number(quarter.at(-1)) - 1 - back;
-      return `${year + Math.floor(index / 4)}Q${((index % 4) + 4) % 4 + 1}`;
-    });
-    const history = await Promise.all(quarters.map(async previous => {
-      try { return new Map((await listTopThirteenFFunds(previous, 100, signal, apiOptions)).filter(fund => fund.periodOfReport === quarterToPeriod(previous)).map(fund => [fund.cik, fund.pnl])); }
-      catch (error) { if (signal?.aborted) throw error; options.onWarning?.(`${previous}: performance ranking unavailable.`); return new Map<string, number | null>(); }
-    }));
+    const quarters = priorQuarters(quarter);
+    const history = await loadRankingHistory(quarters, signal, { ...apiOptions, onWarning: options.onWarning });
     const funds: ThirteenFFund[] = topFunds.map((fund) => ({ cik: fund.cik, name: fund.name }));
     const rows = buildBrowserRows({ topFunds, source: "performance" }).map(row => ({ ...row, priorReturns: quarters.map((previous, index) => ({ quarter: previous, value: history[index]?.get(row.cik) ?? null })) }));
     const result: BrowserLoadResult = {
@@ -239,7 +240,10 @@ async function loadBrowserPage(
   }
   const found = await searchThirteenFFunds(trimmed, browserLimit, signal, pageApiOptions);
   const funds = oneFundPerCik(found);
-  const topFunds = await listTopThirteenFFunds(quarter, browserLimit, signal, apiOptions).catch((): ThirteenFTopFund[] => []);
+  const topFunds = await listTopThirteenFFunds(quarter, browserLimit, signal, apiOptions).catch((error: unknown): ThirteenFTopFund[] => {
+    if (!signal?.aborted) logFailure("thirteenf.data", "Load performance ranks for fund search failed")(error);
+    return [];
+  });
   const topByCik = new Map(topFunds.map((fund) => [fund.cik, fund]));
   const matchedTopFunds = funds
     .map((fund) => topByCik.get(fund.cik))
@@ -299,6 +303,192 @@ export async function loadFilingGap(
   } finally {
     signal?.removeEventListener("abort", abort);
   }
+}
+
+/** The three quarters before `quarter` (`2026Q2`), newest first, as the performance list's columns name them. */
+function priorQuarters(quarter: string): string[] {
+  return [1, 2, 3].map(back => {
+    const year = Number(quarter.slice(0, 4));
+    const index = Number(quarter.at(-1)) - 1 - back;
+    return `${year + Math.floor(index / 4)}Q${((index % 4) + 4) % 4 + 1}`;
+  });
+}
+
+/** Each quarter's ranked estimates by CIK; a quarter whose ranking fails is empty, with a warning. */
+async function loadRankingHistory(
+  quarters: readonly string[],
+  signal: AbortSignal | undefined,
+  options: Forms13FReadOptions,
+): Promise<Array<Map<string, number | null>>> {
+  return Promise.all(quarters.map(async previous => {
+    try { return new Map((await listTopThirteenFFunds(previous, 100, signal, options)).filter(fund => fund.periodOfReport === quarterToPeriod(previous)).map(fund => [fund.cik, fund.pnl])); }
+    catch (error) { if (signal?.aborted) throw error; options.onWarning?.(`${previous}: performance ranking unavailable.`); return new Map<string, number | null>(); }
+  }));
+}
+
+/** How far down the performance ranking a fund's own row is looked for. */
+const RANKING_LOOKUP_LIMIT = 100;
+
+/** One fund's row of the performance list, and where its estimate comes from. */
+export interface FundPerformanceResult extends BrowserLoadResult {
+  /** `ranking`: the fund's own row of the ranking; `filings`: estimated from its last two filings; null: neither has one. */
+  basis: "ranking" | "filings" | null;
+  /**
+   * The fund in its latest quarter's ranking: `ranked` (with or without a
+   * return), `unranked`, or `unavailable` when the ranking failed to load;
+   * null without a filed quarter.
+   */
+  ranking: "ranked" | "unranked" | "unavailable" | null;
+  /** Lines of a filings estimate split between the filings (priced split-adjusted) and those left out; see estimateFilingQuarterReturn. */
+  splits?: FilingQuarterReturn["splits"];
+  skipped?: FilingQuarterReturn["skipped"];
+  /** What EDGAR shows for the quarter after the fund's latest report, when it is behind (loadFundDetail). */
+  filingGap?: ThirteenFFilingGap | null;
+  /** Why there is no estimate, when there is none. */
+  unavailable?: string;
+}
+
+/** A ticker's split factor, new shares per old, after one day through another: 1 for none, null when its actions cannot be read. */
+export type SplitFactorLookup = (ticker: string, after: string, through: string) => Promise<number | null>;
+
+/** The least provider adjustment that is a share split: 5:4. A spinoff's price adjustment, nearer 1, changes no share count. */
+const MIN_SPLIT_FACTOR = 1.25;
+
+/** The share splits a ticker's own corporate actions show, as one factor; see corporateSplitFactor. */
+async function ownSplitFactor(marketData: Pick<DataProvider, "getCorporateActions">, ticker: string, after: string, through: string): Promise<number | null> {
+  if (!marketData.getCorporateActions) return null;
+  const actions = await marketData.getCorporateActions(ticker);
+  if (actions.coverage?.splits === "unavailable") return null;
+  return actions.splits.reduce((factor, split) => {
+    const ratio = split.fromFactor && split.toFactor ? split.toFactor / split.fromFactor : split.ratio;
+    const inWindow = split.date.slice(0, 10) > after && split.date.slice(0, 10) <= through;
+    return inWindow && ratio && Number.isFinite(ratio) && Math.abs(Math.log(ratio)) >= Math.log(MIN_SPLIT_FACTOR) - 1e-9 ? factor * ratio : factor;
+  }, 1);
+}
+
+/** How long a renamed ticker's change record is waited for. */
+const RENAME_LOOKUP_MS = 5_000;
+
+/**
+ * The share splits a ticker's corporate actions show after `after` through
+ * `through` (ex-dates, `YYYY-MM-DD`), as one factor of new shares per old: 1
+ * for none, null when the source has no corporate actions or says it has no
+ * splits for the ticker.
+ *
+ * A ticker its company has left (BK became BNY, VSCO became VSXY) has none of
+ * its own, so when the ticker's actions are unreadable they are asked of the
+ * symbol the company trades as now, once, when its change record says nothing
+ * lists under the old one. A ticker with no such record stays unreadable.
+ */
+export async function corporateSplitFactor(marketData: Pick<DataProvider, "getCorporateActions" | "getTickerChanges">, ticker: string, after: string, through: string): Promise<number | null> {
+  let failure: unknown;
+  const own = await ownSplitFactor(marketData, ticker, after, through).catch((error: unknown) => { failure = error; return null; });
+  if (own != null) return own;
+  const payload = await startTickerChangeLookup(marketData, ticker).settle(RENAME_LOOKUP_MS);
+  const current = movedAwayChange(describeTickerChange(ticker, payload))?.tradesAs;
+  if (!current || current.toUpperCase() === ticker.trim().toUpperCase()) {
+    if (failure) throw failure;
+    return null;
+  }
+  return ownSplitFactor(marketData, current, after, through);
+}
+
+/** Corporate-action lookups in flight at once for one fund's split candidates. */
+const SPLIT_LOOKUP_CONCURRENCY = 6;
+/** How long one ticker's corporate actions are waited for before its split reads as unconfirmed. */
+const SPLIT_LOOKUP_TIMEOUT_MS = 10_000;
+
+/**
+ * The split factor between a fund's two quarter ends for each of its split
+ * candidates (filingSplitCandidates), by row id, for estimateFilingQuarterReturn
+ * and the Holdings rows: a few lookups at once, each as the lookup answers it.
+ * A line the lookup cannot answer for (no ticker, a failure, no answer in time)
+ * is null, unconfirmed. Only an abort rejects. A fund with no candidates, or
+ * without two comparable quarters, makes no lookup.
+ */
+export async function loadSplitFactors(detail: FundDetailData, lookup: SplitFactorLookup, signal?: AbortSignal): Promise<Map<string, number | null>> {
+  const period = detail.latestForm?.periodOfReport;
+  const previousPeriod = detail.previousForm?.periodOfReport;
+  if (!period || !previousPeriod) return new Map();
+  return new Map(await mapWithConcurrency(filingSplitCandidates(detail), SPLIT_LOOKUP_CONCURRENCY, async (line) => {
+    signal?.throwIfAborted();
+    if (!line.ticker) return [line.id, null] as const;
+    const factor = await abortable(
+      withDeadline(lookup(line.ticker, previousPeriod, period), SPLIT_LOOKUP_TIMEOUT_MS, `${line.ticker} split lookup timed out`),
+      signal,
+      "Split lookup aborted",
+    ).catch((error: unknown) => {
+      if (signal?.aborted) throw error;
+      return null;
+    });
+    return [line.id, factor] as const;
+  }));
+}
+
+/**
+ * One fund's row of the performance list, with the list's columns: its
+ * ranking's return for its latest quarter when the ranking gives one,
+ * otherwise its return estimated from its own last two filings
+ * (estimateFilingQuarterReturn); `ranking` says whether the ranking lists it
+ * without a return, leaves it out, or failed to load. The prior quarters are
+ * the ranking's, as the list's are.
+ */
+export async function loadFundPerformance(
+  cik: string,
+  fallbackName: string,
+  signal?: AbortSignal,
+  options: { forceRefresh?: boolean; splitFactor?: SplitFactorLookup } = {},
+): Promise<FundPerformanceResult> {
+  const warnings: string[] = [];
+  const apiOptions = { forceRefresh: options.forceRefresh, onWarning: (warning: string) => warnings.push(warning) };
+  const detail = await loadFundDetail(cik, fallbackName, signal, options);
+  const period = detail.latestForm?.periodOfReport;
+  const quarter = period ? periodToQuarter(period) : null;
+  const quarters = quarter ? priorQuarters(quarter) : [];
+  const [ranked, history] = await Promise.all([
+    quarter
+      ? listTopThirteenFFunds(quarter, RANKING_LOOKUP_LIMIT, signal, apiOptions).catch((error: unknown): null => {
+        if (signal?.aborted) throw error;
+        warnings.push(`${quarter}: performance ranking unavailable.`);
+        return null;
+      })
+      : Promise.resolve(null),
+    loadRankingHistory(quarters, signal, apiOptions),
+  ]);
+  const own = ranked?.find((fund) => fund.cik === detail.cik && fund.periodOfReport === period);
+  const ranking = !quarter ? null : !ranked ? "unavailable" : own ? "ranked" : "unranked";
+  // A line that moved as across a split is priced by its corporate actions: split-adjusted, as a trade, or left out unread.
+  const factors = own?.pnl != null || !options.splitFactor ? new Map<string, number | null>() : await loadSplitFactors(detail, options.splitFactor, signal);
+  const filed = own?.pnl != null ? null : estimateFilingQuarterReturn(detail, factors);
+  const estimate = own?.pnl ?? filed?.percent ?? null;
+  const basis = own?.pnl != null ? "ranking" : estimate != null ? "filings" : null;
+  const latest = detail.latestReport;
+  const row: FundBrowserRow = {
+    id: `performance:${detail.cik}`,
+    cik: detail.cik,
+    name: detail.name,
+    periodOfReport: period,
+    filedAsOfDate: detail.latestForm?.filedAsOfDate,
+    // An incomplete report has no total to state, as the list leaves it out.
+    tableValueTotal: latest ? (latest.complete ? latest.tableValueTotal : null) : null,
+    tableEntryTotal: latest ? (latest.complete ? latest.tableEntryTotal : null) : null,
+    estQuarterReturn: estimate,
+    priorReturns: quarters.map((previous, index) => ({ quarter: previous, value: history[index]?.get(detail.cik) ?? null })),
+    source: "performance",
+  };
+  const unavailable = basis ? undefined
+    : !period ? "No 13F filing in the last four years."
+      : !hasComparable13FQuarter(detail) ? `No comparable quarter before ${period} to estimate a return from.`
+        : filed?.skipped.length ? `No share position held through the quarter to ${period} that could be priced across it.`
+          : `No share position held through the quarter to ${period}.`;
+  const warning = [...new Set([...(detail.warnings ?? []), ...warnings])].join(" ") || undefined;
+  return {
+    rows: [row], ...(quarter ? { quarter } : {}), ...(period ? { period } : {}), hasMore: false, basis, ranking,
+    ...(filed?.splits.length ? { splits: filed.splits } : {}),
+    ...(filed?.skipped.length ? { skipped: filed.skipped } : {}),
+    ...(detail.filingGap ? { filingGap: detail.filingGap } : {}),
+    ...(unavailable ? { unavailable } : {}), ...(warning ? { warning } : {}),
+  };
 }
 
 export async function loadFundDetail(
@@ -378,6 +568,12 @@ export async function loadFilingPositions(
     ...options, onWarning: warning => warnings.push(warning),
   });
   return { ...result, warnings };
+}
+
+/** `2026Q2` for a quarter end such as 2026-06-30. */
+function periodToQuarter(period: string): string | null {
+  const match = /^(\d{4})-(\d{2})-\d{2}$/.exec(period);
+  return match ? `${match[1]}Q${Math.floor((Number(match[2]) - 1) / 3) + 1}` : null;
 }
 
 function quarterToPeriod(quarter: string): string {

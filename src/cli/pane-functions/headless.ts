@@ -36,13 +36,15 @@ import {
 import type { ExportIdentity } from "../export-source";
 import { observationDate } from "../../time-series/price-comparison";
 import type { ResolvedSeries } from "../../time-series/types";
+import { barLastSession } from "../../market-data/market/bar-period";
 import type { PaneFunctionReport } from "./report";
 import type { ResolvedPaneFunction } from "./resolver";
 import { isRecord } from "../../utils/guards";
 import { splitSymbolWords } from "../symbol-args";
 import { formatUtcTime, localTimeSuffix } from "../../utils/utc-time";
 import { deriveHeadlessFreshness, formatFreshnessLine, staleRowsText, type ReportFreshness } from "./freshness";
-import { accessGateStatus, errorsAccessGate, isProLock } from "./access-gate";
+import { accessGateStatus, errorsAccessGate, isProLock, reportGateText } from "./access-gate";
+import { noArgumentMessage } from "./capabilities";
 import { lockedHeadlessReport } from "./lock-note";
 
 interface SerializableHeadlessColumn {
@@ -87,17 +89,36 @@ function normalizeSymbolList(value: string): string[] {
   return symbols;
 }
 
-function validateSymbolCount(
+const COUNT_WORDS = ["zero", "one", "two", "three", "four", "five"];
+const EXAMPLE_TICKERS = ["SPY", "QQQ", "IWM", "DIA", "TLT"];
+
+/**
+ * What a function that compares several tickers answers fewer: how many it
+ * needs and a command that runs, the reader's own tickers first (`CMP needs
+ * two or more tickers: fn CMP SPY,QQQ`).
+ */
+function tooFewTickersMessage(token: string, minimum: number, given: readonly string[], command: "fn" | "shot" = "fn"): string {
+  const example = [...given, ...EXAMPLE_TICKERS.filter((ticker) => !given.includes(ticker))].slice(0, Math.max(minimum, given.length + 1));
+  return `${token} needs ${COUNT_WORDS[minimum] ?? minimum} or more tickers: ${command} ${token} ${example.join(",")}`;
+}
+
+/** The tickers a function's argument lists, as its report reads them. */
+export function argumentSymbols(rawArgument: string): string[] {
+  return normalizeSymbolList(rawArgument);
+}
+
+export function validateSymbolCount(
   definition: HeadlessPaneDefinition,
   token: string,
   symbols: string[],
+  command: "fn" | "shot" = "fn",
 ): void {
   const minimum = definition.argument.minimum
     ?? (definition.argument.optional ? 0 : 1);
   const maximum = definition.argument.maximum;
   if (symbols.length < minimum) {
     if (minimum <= 1) throw requiredArgumentError(definition, token);
-    throw new Error(`${token} requires at least ${minimum} symbols.`);
+    throw new Error(tooFewTickersMessage(token, minimum, symbols, command));
   }
   if (maximum != null && symbols.length > maximum) {
     throw new Error(`${token} accepts at most ${maximum} symbols.`);
@@ -113,7 +134,7 @@ export function buildHeadlessPaneLoadArgs(
   const raw = rawArgument.trim();
   switch (definition.argument.kind) {
     case "none":
-      if (raw) throw new Error(`${token} does not accept an argument.`);
+      if (raw) throw new Error(noArgumentMessage(definition.options, token, raw));
       return { rawArgument: raw, argument: null, symbols: [], options };
     case "free-text":
       if (!raw && !definition.argument.optional) throw requiredArgumentError(definition, token);
@@ -166,12 +187,12 @@ async function loadHeadlessPaneModel(
   return result;
 }
 
-type HeadlessMarketContext = Pick<MarketContext, "config" | "store" | "refresh"> & Partial<Pick<MarketContext, "persistence" | "seriesCapabilities">> & {
+type HeadlessMarketContext = Pick<MarketContext, "config" | "store" | "refresh" | "resolveBroker"> & Partial<Pick<MarketContext, "persistence" | "seriesCapabilities">> & {
   dataProvider: HeadlessPaneContext["marketData"];
 };
 
 /** What a headless loader reads the market, the account and the saved collections through. */
-function createHeadlessPaneContext(
+export function createHeadlessPaneContext(
   resolved: ResolvedPaneFunction,
   context: HeadlessMarketContext,
   signal: AbortSignal,
@@ -184,6 +205,7 @@ function createHeadlessPaneContext(
     ...(context.refresh ? { refresh: true } : {}),
     settings: resolved.instance.settings,
     capabilities: getSharedRegistry() ?? context.seriesCapabilities,
+    resolveBroker: context.resolveBroker,
     async resolvePortfolio(id) {
       const portfolio = findNamedCollection(context.config.portfolios, id);
       if (!portfolio) return null;
@@ -299,9 +321,15 @@ function serializeBundleSection(
       ...(section.unit ? { unit: section.unit } : {}),
       ...(section.interval ? { interval: section.interval } : {}),
       ...(section.empty && section.rows.length === 0 ? { empty: section.empty } : {}),
+      ...(section.locked ? { locked: true } : {}),
     };
   }
   return { title: section.title, entries: section.entries };
+}
+
+/** A table the free view held back and left empty: the text report says so on its Pro line, not under the table. */
+function isLockedSection(section: HeadlessBundleSection): boolean {
+  return !!section.locked && "rows" in section && !!section.rows && section.rows.length === 0;
 }
 
 export function serializeHeadlessPaneResult(
@@ -330,6 +358,7 @@ export function serializeHeadlessPaneResult(
       return {
         ...common,
         sections: bundle.sections.map((section) => serializeBundleSection(section, definition.columns)),
+        ...(bundle.empty && resultRowCount(definition, result) === 0 ? { empty: bundle.empty } : {}),
       };
     }
     case "series": {
@@ -401,8 +430,8 @@ function isDateOnly(date: SeriesPointDate): boolean {
 }
 
 /** Session bars are dated by the trading date the chart and comparison notice use, not the bar's open instant. */
-function calendarSeries(series: HeadlessSeries): (HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis">>) | null {
-  const resolved = series as HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis">>;
+function calendarSeries(series: HeadlessSeries): (HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis" | "listing">>) | null {
+  const resolved = series as HeadlessSeries & Partial<Pick<ResolvedSeries, "historyResolution" | "timeBasis" | "listing">>;
   return resolved.historyResolution && CALENDAR_RESOLUTIONS.has(resolved.historyResolution) ? resolved : null;
 }
 
@@ -426,6 +455,21 @@ function seriesPointDate(series: HeadlessSeries, date: SeriesPointDate): string 
   if (!Number.isFinite(time)) return typeof date === "string" ? date : "-";
   const calendar = calendarSeries(series);
   return calendar ? observationDate(time, calendar) : formatUtcTime({ time, dateOnly: isDateOnly(date) || observesDays(series) });
+}
+
+/**
+ * The day a series' latest value is from: a weekly or monthly bar's last
+ * session (barLastSession), Fri 16 Oct 2026 for the week of Mon 12 Oct, not
+ * the day its period starts, which its row in an export keeps. Any other
+ * point as seriesPointDate dates it.
+ */
+function seriesLatestDate(series: HeadlessSeries, date: SeriesPointDate): string {
+  const calendar = calendarSeries(series);
+  const period = calendar?.historyResolution === "1wk" ? "week" : calendar?.historyResolution === "1mo" ? "month" : null;
+  const time = seriesPointTime(date);
+  if (!calendar || !period || !Number.isFinite(time)) return seriesPointDate(series, date);
+  const venue = calendar.timeBasis?.exchange || calendar.listing?.exchange || undefined;
+  return barLastSession(observationDate(time, calendar), period, venue, Date.now()) ?? seriesPointDate(series, date);
 }
 
 /** The same date for a spreadsheet: the trading date, the calendar date, or the ISO instant. */
@@ -474,7 +518,7 @@ function renderRows(
   };
   return renderTable(
     columns.map((column) => ({
-      header: displayedHeader(column),
+      header: column.textHeader ?? displayedHeader(column),
       align: column.align,
       width: column.width,
       shrink: column.shrink,
@@ -504,7 +548,8 @@ function renderBundle(
   definition: HeadlessPaneDefinition,
   result: HeadlessBundleResult,
 ): string[] {
-  return result.sections.flatMap((section, index) => [
+  // A locked table is named once, on the Pro line, not under each heading.
+  return result.sections.filter((section) => !isLockedSection(section)).flatMap((section, index) => [
     ...(index > 0 ? [""] : []),
     // A section with no title is its rows, or its empty message, alone.
     ...(section.title ? [renderSection(section.title)] : []),
@@ -527,7 +572,7 @@ function renderSeries(result: HeadlessSeriesResult): string[] {
     return {
       series: series.label,
       name: series.name?.trim() || null,
-      latest: latest ? seriesPointDate(series, latest.date) : "-",
+      latest: latest ? seriesLatestDate(series, latest.date) : "-",
       value: seriesValue(series, latest?.value ?? latest?.close ?? null),
       unit: series.unit?.trim() || null,
       points: observationCount(series),
@@ -610,25 +655,47 @@ function splitErrors(result: HeadlessPaneResult): { locked: string[]; failed: st
 }
 
 /**
- * Why a report with nothing in it is empty, when its pane gave no reason of
- * its own: the free view left it empty (the report carries a Pro line), or the
- * symbols asked for are not covered by the function (or hold nothing for the
- * options chosen). Null when something has
- * rows, a table states its own reason, an error explains it, or no symbol was
- * asked for (a board that is empty says nothing about coverage).
+ * The report's one gate line, without its label: what Gloom Pro would unlock,
+ * from the Pro lines in its errors or else the tables the free view left
+ * empty, and where to get it (reportGateText). Null when nothing is locked.
+ */
+function reportGate(definition: HeadlessPaneDefinition, result: HeadlessPaneResult): string | null {
+  const tables = definition.shape === "bundle"
+    ? (result as HeadlessBundleResult).sections.filter(isLockedSection).map((section) => section.title)
+    : [];
+  return reportGateText(splitErrors(result).locked, tables);
+}
+
+/** The gate line as the text report prints it: once, after `Pro:`. */
+function gateLine(gate: string): string {
+  return cliStyles.warning(wrapToTerminal(`Pro: ${gate}`));
+}
+
+/**
+ * Why a report with nothing in it is empty: the one reason a bundle gives
+ * for all its tables, else, when its pane gave no reason of its own, the free
+ * view left it empty (its Pro line, said here once), or the symbols asked for
+ * are not covered by the function (or hold nothing for the options chosen).
+ * Null when something has rows, a table states its own reason, an error
+ * explains it, or no symbol was asked for (a board that is empty says nothing
+ * about coverage).
  */
 function emptyReportReason(
   definition: HeadlessPaneDefinition,
   result: HeadlessPaneResult,
   args: HeadlessPaneLoadArgs,
   token: string | undefined,
+  gate: string | null,
 ): string | null {
   if (resultRowCount(definition, result) > 0) return null;
+  const bundleReason = definition.shape === "bundle" ? (result as HeadlessBundleResult).empty : undefined;
+  if (bundleReason) return bundleReason;
   const ownReason = definition.shape === "rows" ? !!(result as HeadlessRowsResult).empty
-    : definition.shape === "bundle" && (result as HeadlessBundleResult).sections.some((section) => "empty" in section && !!section.empty);
-  const { locked, failed } = splitErrors(result);
+    : definition.shape === "bundle" && (result as HeadlessBundleResult).sections.some((section) => "empty" in section && !!section.empty && !isLockedSection(section));
+  const { failed } = splitErrors(result);
   if (ownReason || failed.length) return null;
-  if (locked.length) return "Locked: Gloom Pro";
+  // The free view left everything empty: the Pro line is the whole report, said once.
+  if (gate) return gateLine(gate);
   const symbols = result.symbols ?? args.symbols;
   if (!symbols.length) return null;
   // An option the reader chose (a range, a tab) can leave a covered symbol empty, so coverage is not claimed then.
@@ -643,6 +710,26 @@ function textNotices(result: HeadlessPaneResult): string[] {
   const notices = result.metadata?.notices;
   if (!Array.isArray(notices)) return [];
   return [...new Set(notices.filter((notice): notice is string => typeof notice === "string" && notice.trim().length > 0))];
+}
+
+/**
+ * What each row of a table is of, from the fields its report names
+ * (`rowUnitKey`, `rowSymbolKey`, `rowAsOfKey`); undefined when it names none.
+ * An as-of may be an ISO date or instant, or epoch milliseconds.
+ */
+function rowIdentitiesOf(
+  rows: readonly HeadlessPaneRow[],
+  keys: { rowUnitKey?: string; rowSymbolKey?: string; rowAsOfKey?: string },
+): ExportIdentity[] | undefined {
+  const { rowUnitKey: unitKey, rowSymbolKey: symbolKey, rowAsOfKey: asOfKey } = keys;
+  if (!unitKey && !symbolKey && !asOfKey) return undefined;
+  const text = (value: unknown) => (typeof value === "string" ? value : null);
+  const instant = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? new Date(value).toISOString() : text(value);
+  return rows.map((row) => ({
+    ...(unitKey ? { currencyOrUnit: text(row[unitKey]) } : {}),
+    ...(symbolKey ? { symbolOrSeries: text(row[symbolKey]) } : {}),
+    ...(asOfKey ? { asOf: instant(row[asOfKey]) } : {}),
+  }));
 }
 
 /**
@@ -664,26 +751,39 @@ export function headlessReportTables(
   let tables: CliReportTable[];
   switch (definition.shape) {
     case "rows": {
-      const rowsResult = result as HeadlessPaneResult & { rows: HeadlessPaneRow[]; columns?: HeadlessPaneColumn[] };
+      const rowsResult = result as HeadlessRowsResult;
       const columns = displayedColumns(columnsFor(rowsResult.rows, rowsResult.columns, definition.columns));
-      tables = [exportRowsTable(title, columns, rowsResult.rows)];
+      const rowIdentities = rowIdentitiesOf(rowsResult.rows, rowsResult);
+      const own = exportRowsTable(title, columns, rowsResult.rows, { status: true });
+      const interval = rowsResult.interval?.trim();
+      tables = [{ ...own, ...(rowIdentities ? { rowIdentities } : {}), ...(interval ? { identity: { interval } } : {}) }, ...(rowsResult.exportTables ?? []).map((extra) => {
+        const identity = {
+          ...(extra.unit?.trim() ? { currencyOrUnit: extra.unit.trim() } : {}),
+          ...(extra.interval?.trim() ? { interval: extra.interval.trim() } : {}),
+        };
+        const table = exportRowsTable(extra.title, displayedColumns(extra.columns), extra.rows, { status: true });
+        return Object.keys(identity).length > 0 ? { ...table, identity } : table;
+      })];
       break;
     }
     case "bundle":
       tables = (result as HeadlessBundleResult).sections.map((section) => {
-        if (!("rows" in section && section.rows)) return exportEntriesTable(section.title, section.entries);
-        const table = exportRowsTable(section.title, displayedColumns(columnsFor(section.rows, section.columns, definition.columns)), section.rows);
+        // A section of one name or one date says so for every line it exports.
+        const named = {
+          ...(section.symbol?.trim() ? { symbolOrSeries: section.symbol.trim() } : {}),
+          ...(section.asOf?.trim() ? { asOf: section.asOf.trim() } : {}),
+        };
+        if (!("rows" in section && section.rows)) {
+          const entries = exportEntriesTable(section.title, section.entries);
+          return Object.keys(named).length > 0 ? { ...entries, identity: named } : entries;
+        }
+        const table = exportRowsTable(section.title, displayedColumns(columnsFor(section.rows, section.columns, definition.columns)), section.rows, { status: true });
         const identity = {
+          ...named,
           ...(section.unit?.trim() ? { currencyOrUnit: section.unit.trim() } : {}),
           ...(section.interval?.trim() ? { interval: section.interval.trim() } : {}),
         };
-        const unitKey = section.rowUnitKey;
-        const rowIdentities = unitKey
-          ? section.rows.map((row) => {
-            const unit = row[unitKey];
-            return { currencyOrUnit: typeof unit === "string" ? unit : null };
-          })
-          : undefined;
+        const rowIdentities = rowIdentitiesOf(section.rows, section);
         return { ...table, ...(Object.keys(identity).length > 0 ? { identity } : {}), ...(rowIdentities ? { rowIdentities } : {}) };
       });
       break;
@@ -695,7 +795,7 @@ export function headlessReportTables(
     }
     case "snapshot": {
       const snapshot = result as HeadlessSnapshotResult;
-      tables = [exportRowsTable(title, displayedColumns(columnsFor(snapshot.items, undefined, definition.columns)), snapshot.items)];
+      tables = [exportRowsTable(title, displayedColumns(columnsFor(snapshot.items, undefined, definition.columns)), snapshot.items, { status: true })];
       break;
     }
     default: {
@@ -703,14 +803,15 @@ export function headlessReportTables(
       return _exhaustive;
     }
   }
-  const { locked, failed } = splitErrors(result);
+  const { failed } = splitErrors(result);
+  const gate = reportGate(definition, result);
   return {
     tables,
     identity: reportIdentity(definition, result, args),
     footer: reportFooterLines({
       freshness,
       incomplete: incompleteDetail(result, status),
-      locked,
+      locked: gate ? [gate] : [],
       errors: failed,
       notes: [...textNotices(result), ...(definition.exportWarnings ? result.warnings ?? [] : []), ...(result.notes ?? [])],
     }),
@@ -764,13 +865,14 @@ export function renderHeadlessPaneText(
   const lines = [...wrapToTerminal(reportTitle(definition, args, result, fallbackTitle)).split("\n").map(cliStyles.bold), ""];
   const notices = textNotices(result);
   if (notices.length) lines.push(...notices, "");
-  const reason = emptyReportReason(definition, result, args, token);
+  const gate = reportGate(definition, result);
+  const reason = emptyReportReason(definition, result, args, token, gate);
   // Said once, not under the heading of each empty table.
   if (reason) lines.push(reason);
   else switch (definition.shape) {
     case "rows": {
       const rowsResult = result as HeadlessRowsResult;
-      lines.push(renderRows(rowsResult.rows, rowsResult.textColumns ?? rowsResult.columns, definition.columns, rowsResult.empty));
+      lines.push(renderRows(rowsResult.textRows ?? rowsResult.rows, rowsResult.textColumns ?? rowsResult.columns, definition.columns, rowsResult.empty));
       break;
     }
     case "bundle":
@@ -791,8 +893,10 @@ export function renderHeadlessPaneText(
     }
   }
   if (result.notes?.length) lines.push("", ...renderMessages("Notes", result.notes));
-  const { locked, failed } = splitErrors(result);
-  if (locked.length) lines.push("", ...renderMessages("Pro", locked));
+  const { failed } = splitErrors(result);
+  // One Pro line per report, whatever its tables lock; a report the free view left empty said it above.
+  const pro = gate ? gateLine(gate) : null;
+  if (pro && reason !== pro) lines.push("", pro);
   if (failed.length) lines.push("", ...renderMessages("Errors", failed));
   return [lines.join("\n").trimEnd(), "", cliStyles.muted(wrapToTerminal(formatFreshnessLine(freshness)))].join("\n");
 }
@@ -855,9 +959,9 @@ export async function buildHeadlessFunctionReport(
     loaded = await loadResolvedHeadlessPaneModel(resolved, context, rawArgument);
   } catch (error) {
     // A Pro pane the server refused reports what its wall covers, as its rendered view does.
-    const locked = lockedHeadlessReport(resolved, error, () => (
+    const locked = await lockedHeadlessReport(resolved, error, () => (
       buildHeadlessPaneLoadArgs(resolved.headless!, resolved.token, rawArgument, resolved.options).symbols
-    ));
+    ), createHeadlessPaneContext(resolved, context, new AbortController().signal));
     if (locked) return locked;
     throw error;
   }

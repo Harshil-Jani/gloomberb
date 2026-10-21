@@ -18,6 +18,12 @@ export interface BrokerInstanceConfig {
   config: Record<string, unknown>;
   enabled?: boolean;
   lastSyncedAt?: number;
+  /**
+   * The user keeps this connection's data on this device: Cloud sync leaves out the profile, its
+   * accounts' portfolios and account values, and the positions in them. Daily roundups, the weekly
+   * brief, position alerts, the mobile app and Ask Gloom's portfolio context then go without it.
+   */
+  localOnly?: boolean;
 }
 
 export interface ColumnConfig {
@@ -299,6 +305,12 @@ export interface AppConfig {
   recentTickers: string[];
   /** Pane templates recently run from the command bar, newest first. */
   recentCommands: RecentCommand[];
+  /**
+   * How many times the empty command bar has opened, counted to one past its
+   * introduction (see `command-bar-intro.ts`). A new config starts at 0; one
+   * from an earlier build has none and reads as past it. Kept on this machine only.
+   */
+  commandBarOpens?: number;
   language?: LanguagePreference;
   onboardingComplete?: boolean;
   /** App version at the last launch, used to show release notes after an update. */
@@ -995,6 +1007,7 @@ export function createDefaultConfig(dataDir: string): AppConfig {
     fontSize: 12,
     recentTickers: [],
     recentCommands: [],
+    commandBarOpens: 0,
   };
 }
 

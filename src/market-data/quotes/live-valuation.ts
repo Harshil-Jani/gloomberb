@@ -1,6 +1,8 @@
-import type { AnalystResearchData, Fundamentals, Quote } from "../../types/financials";
+import type { AnalystResearchData, CorporateActionsData, Fundamentals, Quote } from "../../types/financials";
 import { atRegularSessionPrice, regularSessionValuationPrice } from "./regular-session-valuation";
-import { hasLikelyQuoteUnitMismatch } from "../../utils/currency-units";
+import { hasLikelyQuoteUnitMismatch, resolveCurrencyUnit } from "../../utils/currency-units";
+import { cashInMajorUnits } from "../../utils/dividend-cash";
+import { cashDistribution, dividendReferencePrice, trailingDividendYield, type CashDistribution } from "../../utils/trailing-dividend";
 import { priceEarningsEps } from "../../utils/fundamentals";
 import { selectMarketCapitalization, type MarketCapitalization } from "../../utils/market-capitalization";
 import { priceEarningsOnEarnings, type PriceEarnings } from "../../utils/price-earnings";
@@ -89,6 +91,50 @@ export function liveDividendYield(quote: Quote | null | undefined, fundamentals:
   return rate / price;
 }
 
+/** Whether a listing's yield is a trailing one, which is measured from its cash history (listingDividendYield). */
+export function measuresTrailingYield(fundamentals: Pick<Fundamentals, "dividendYield" | "dividendYieldBasis"> | null | undefined): boolean {
+  return fundamentals?.dividendYieldBasis === "trailing" && fundamentals.dividendYield != null;
+}
+
+/**
+ * A trailing dividend yield as DVD measures it (trailingDividendYield): the
+ * cash history's trailing twelve months over the quote's regular session
+ * price, in the cash's currency. Null when the history cannot be read in full
+ * (a row that is no paid distribution, no currency, dividends not covered) or
+ * the price is in another currency, where DVD leaves its own blank.
+ */
+export function historyTrailingDividendYield(
+  sourceActions: CorporateActionsData,
+  quote: Quote | null | undefined,
+  now = new Date(),
+): number | null {
+  const actions = cashInMajorUnits(sourceActions);
+  const currency = resolveCurrencyUnit(actions.currency).currency;
+  if (!currency || !Array.isArray(actions.dividends) || actions.coverage?.dividends === "unavailable") return null;
+  if (actions.coverage?.dividends !== "available" && actions.dividends.length === 0) return null;
+  const payments = actions.dividends.map((row) => cashDistribution(row.exDate, row.amount));
+  if (payments.some((payment) => payment == null)) return null;
+  const price = dividendReferencePrice(regularSessionValuationPrice(quote), quote?.currency, currency);
+  return trailingDividendYield(payments as CashDistribution[], price, now);
+}
+
+/**
+ * The dividend yield a listing shows at its regular session price. A trailing
+ * one is DVD's, measured from `actions`, the listing's cash history
+ * (historyTrailingDividendYield), so the overview, DIV% and DVD read one
+ * figure; until that history is read, or when it cannot be read in full, it
+ * is Gloom Cloud's, as a forward one is (liveDividendYield).
+ */
+export function listingDividendYield(
+  quote: Quote | null | undefined,
+  fundamentals: Fundamentals | undefined,
+  actions: CorporateActionsData | null | undefined,
+  now = new Date(),
+): number | undefined {
+  const measured = actions && measuresTrailingYield(fundamentals) ? historyTrailingDividendYield(actions, quote, now) : null;
+  return measured ?? liveDividendYield(quote, fundamentals);
+}
+
 /**
  * Whether a capitalization's implied share price is one this listing traded
  * at: the prior close (a source capitalization) or anywhere in the session
@@ -141,6 +187,29 @@ export function liveFiftyTwoWeekRange(
   const low = Math.min(quote.low52w, ...session);
   const high = Math.max(quote.high52w, ...session);
   return high > low ? { low, high } : null;
+}
+
+/**
+ * The currency an analyst's targets are written in: the one the target or its
+ * research names, whatever the quote's (a target in pounds under a quote in
+ * pence stays in pounds). When neither names one, the quote's, but its major
+ * unit when the quote is in a minor one (GBp, USX) and the target's reference
+ * price, or the target itself, is a hundred times under the quote's price.
+ */
+export function analystTargetDisplayCurrency(
+  analyst: AnalystResearchData | null | undefined,
+  quoteCurrency: string,
+  currentPrice: number | null | undefined,
+): string {
+  const named = analyst?.priceTarget?.currency?.trim() || analyst?.currency?.trim();
+  if (named) return named;
+  const unit = resolveCurrencyUnit(quoteCurrency);
+  if (unit.divisor === 1 || !positive(currentPrice)) return quoteCurrency;
+  const target = analyst?.priceTarget;
+  const sample = [target?.current, target?.average, target?.median].find(positive);
+  return sample != null && sample < currentPrice
+    && hasLikelyQuoteUnitMismatch({ currency: quoteCurrency, price: sample }, { currency: quoteCurrency, price: currentPrice })
+    ? unit.currency : quoteCurrency;
 }
 
 /**

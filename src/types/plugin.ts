@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { AppTickerRepositoryPort } from "../core/app-service-ports";
-import type { HeadlessPaneDefinition, HeadlessPaneFreshness, HeadlessPaneOptionDef } from "./headless";
+import type { HeadlessPaneContext, HeadlessPaneDefinition, HeadlessPaneFreshness, HeadlessPaneOptionDef } from "./headless";
 
 export type {
   HeadlessArgumentExpansion,
@@ -28,6 +28,7 @@ export type {
   HeadlessSeries,
   HeadlessSeriesPoint,
   HeadlessSeriesResult,
+  HeadlessShotState,
   HeadlessSnapshotResult,
 } from "./headless";
 import type { ConnectionHealthRegistry } from "../core/connection-health";
@@ -122,6 +123,12 @@ export interface PaneLock {
   token?: string;
   /** The session is signed in and its email is not verified yet. */
   verifyEmail?: boolean;
+  /**
+   * Reads data as the report does, so a note can check that a free route it
+   * would name has data for the symbol before naming it. Absent where nothing
+   * can be read.
+   */
+  context?: HeadlessPaneContext;
 }
 
 export interface PaneDef {
@@ -194,9 +201,10 @@ export interface PaneDef {
    * read without it and where, and how to unlock it. A `headless` pane's report
    * prints it when the server refuses the read (401, 402 or 403). Without it
    * the report prints the wall's own words, or the refusal. Either way it cites
-   * no source, since nothing was read.
+   * no source, since nothing was read. A free route it names must have data
+   * for the symbol (`lock.context` reads it), so the note may resolve later.
    */
-  reportLockNote?(lock: PaneLock): string;
+  reportLockNote?(lock: PaneLock): string | Promise<string>;
   /**
    * What a rendered-view report needs before it shows anything, such as a
    * sign-in: `gloomberb catalog` lists it under Requires, as it does a
@@ -206,9 +214,10 @@ export interface PaneDef {
   /**
    * A `shot` without `--height` grows to the pane's natural height, up to the
    * height limit, so a fixed board (FUT) shows every row instead of cutting
-   * the last ones. Leave it off for long or paged lists.
+   * the last ones. Leave it off for long or paged lists; a pane with tabs
+   * answers for the instance shown, so only its fixed board's tab grows.
    */
-  shotFitsRows?: true;
+  shotFitsRows?: true | ((pane: PaneInstanceConfig) => boolean);
   /**
    * A report of the pane grows to the whole text of the page its reader has
    * open (a docs page), so it is not cut at the first screen. A list the reader
@@ -878,8 +887,8 @@ export interface AppNotificationRequest {
   };
   /**
    * What a built-in notice is about, so the Unread list can keep it after the
-   * toast is gone and open it again: `price:<alertId>`, `catalyst:<eventId>`
-   * or `team:<cardId>`. Other values are not kept.
+   * toast is gone and open it again: `price:<alertId>`, `catalyst:<eventId>`,
+   * `econ:<eventId>` or `team:<cardId>`. Other values are not kept.
    */
   refId?: string;
   /** Rendered next to `action`. Use for a dismissing counterpart such as snooze. */
@@ -893,6 +902,13 @@ export interface BrokerInstanceUpdateOptions {
   label?: string;
   enabled?: boolean;
   replaceConfig?: boolean;
+  /** Keep this connection's data on this device, out of Gloom Cloud sync (`BrokerInstanceConfig.localOnly`). */
+  localOnly?: boolean;
+}
+
+export interface BrokerInstanceCreateOptions {
+  /** Keep the new connection's data on this device from the start, before its first import. */
+  localOnly?: boolean;
 }
 
 export interface PinTickerOptions {
@@ -904,6 +920,8 @@ export interface PinTickerOptions {
   listing?: TickerListingRef;
   /** Select this research tab once the requested ticker has resolved. */
   tabId?: string;
+  /** Merge this state into the resolved research pane when selecting `tabId`. */
+  tabState?: Record<string, unknown>;
 }
 
 export interface GloomPluginContext {
@@ -935,6 +953,8 @@ export interface GloomPluginContext {
   getData(ticker: string): TickerFinancials | null;
   getTicker(ticker: string): TickerRecord | null;
   getConfig(): import("./config").AppConfig;
+  /** Resolve a broker registered by another plugin, without connecting it. */
+  getBrokerAdapter?(brokerType: string): BrokerAdapter | null;
   getPaneDef(paneId: string): PaneDef | undefined;
 
   readonly marketData: DataProvider;
@@ -947,7 +967,7 @@ export interface GloomPluginContext {
   readonly paneSettings: PluginPaneSettingsState;
   readonly teamState: PluginTeamState;
 
-  createBrokerInstance(brokerType: string, label: string, values: Record<string, unknown>): Promise<BrokerInstanceConfig>;
+  createBrokerInstance(brokerType: string, label: string, values: Record<string, unknown>, options?: BrokerInstanceCreateOptions): Promise<BrokerInstanceConfig>;
   updateBrokerInstance(instanceId: string, values: Record<string, unknown>, options?: BrokerInstanceUpdateOptions): Promise<void>;
   syncBrokerInstance(instanceId: string): Promise<void>;
   removeBrokerInstance(instanceId: string): Promise<void>;

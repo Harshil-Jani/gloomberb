@@ -18,6 +18,7 @@ import {
 import { createTestTicker } from "../../test-support/ticker";
 import { resolveManualPositionCurrency } from "../../portfolio/mutations";
 import { parsePublicTickerKey } from "../../utils/exchanges";
+import { ProviderBusyError } from "../../sources/provider-errors";
 
 function makeSearchResult(
   symbol: string,
@@ -576,6 +577,22 @@ describe("ticker-search utilities", () => {
     expect(await resolve("CEZ", quote("CEZ"))).toBeNull();
   });
 
+  test("a lookup search was too busy to answer is no miss: it says so, unless a saved ticker or the listing's own quote settles it", async () => {
+    const busy = async (): Promise<InstrumentSearchResult[]> => { throw new ProviderBusyError(); };
+    const resolve = (query: string, search: () => Promise<InstrumentSearchResult[]>, tickers = new Map<string, TickerRecord>()) => resolveTickerSearch({
+      query, activeTicker: null, tickers,
+      dataProvider: createTestDataProvider({ search, getQuote: async () => ({ symbol: "CEZ.PR", name: "CEZ, a. s.", listingExchangeName: "PSE",
+        currency: "CZK", price: 1365, instrumentType: "EQUITY", lastUpdated: 1, change: 0, changePercent: 0 }) }),
+    });
+    await expect(resolve("SBLK", busy)).rejects.toBeInstanceOf(ProviderBusyError);
+    // Only a search that answered with nothing is a miss.
+    expect(await resolve("SBLK", async () => [])).toBeNull();
+    const saved = createTestTicker("SBLK", "Star Bulk Carriers", { exchange: "NASDAQ" });
+    expect(await resolve("SBLK", busy, new Map([["SBLK", saved]]))).toMatchObject({ kind: "local", ticker: saved });
+    // The busy literal lookup does not cut the fallbacks short.
+    expect(await resolve("CEZ.PR", busy)).toMatchObject({ kind: "provider", symbol: "CEZ.PR", result: { exchange: "PSE" } });
+  });
+
   test("a suffixed listing whose quote never answers reads as unmatched, without waiting on it", async () => {
     jest.useFakeTimers();
     try {
@@ -1031,9 +1048,19 @@ describe("ticker-search utilities", () => {
         "ITA:ARCA", "XAR:ARCA", "PPA:ARCA", "EUAD:ARCA", "MISL:ARCA", "LMT:NYSE", "DEFN:TSXV", "DTII:OTC",
       ]);
       expect(calls.filter((call) => call.endsWith(" ETF"))).toEqual(["defense ETF"]);
-      // A word no row is tagged with is a name: no second search.
+      // "defense etf" asks for the funds by name: the name search alone holds only the tagged PPA, so the ETF search's
+      // funds lead in its order, ITA first.
+      calls.length = 0;
+      const etfs = await searchTickerCandidates({ query: "defense etf", tickers: new Map(), dataProvider, totalLimit: 10 });
+      expect(etfs.slice(0, 5).map((item) => `${item.symbol}:${item.exchangeLabel}`)).toEqual(["ITA:ARCA", "XAR:ARCA", "PPA:ARCA", "EUAD:ARCA", "MISL:ARCA"]);
+      expect(calls.filter((call) => call.endsWith(" ETF"))).toEqual(["defense ETF"]);
+      // So does a phrase no symbol is; a word no row is tagged with is a name or a symbol: no second search.
+      calls.length = 0;
+      await searchTickerCandidates({ query: "aerospace defense etf", tickers: new Map(), dataProvider, totalLimit: 10 });
+      expect(calls.filter((call) => call.endsWith(" ETF"))).toEqual(["aerospace defense ETF"]);
       calls.length = 0;
       await searchTickerCandidates({ query: "kratos", tickers: new Map(), dataProvider, totalLimit: 10 });
+      await searchTickerCandidates({ query: "kratos etf", tickers: new Map(), dataProvider, totalLimit: 10 });
       expect(calls.some((call) => call.endsWith(" ETF"))).toBe(false);
     });
 

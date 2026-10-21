@@ -9,12 +9,13 @@ import {
   type DataTableColumn,
   type StackSortPreference,
 } from "../../../../../components";
-import { getTableWidth } from "../../../../../components/ui/table-layout";
+import { getTableWidth, tableColumnWidth } from "../../../../../components/ui/table-layout";
 import type { MarketNewsItem } from "../../../../../types/news-source";
 import { colors } from "../../../../../theme/colors";
 import { collectNewsDisplayTickers } from "../../../../../news/ticker-symbols";
 import { useLoadNewsStory } from "../../../../../news/hooks";
 import { formatFeedTime } from "../../../../../utils/datetime-format";
+import { logFailure } from "../../../../../utils/log-failure";
 import { nextHeaderSort } from "../../../../../utils/sort-values";
 import { formatNewsCategory } from "../categories";
 import { useOpenTickerChoice } from "../../../shared/ticker-choice";
@@ -135,6 +136,14 @@ const COLUMN_LABELS: Record<NewsColumnId, string> = {
   importance: "SCORE",
 };
 
+/** The words behind a short label, on hover on the desktop and the web. */
+const COLUMN_TITLES: Partial<Record<NewsColumnId, string>> = {
+  sentiment: "Sentiment",
+};
+const SPELLED_SENTIMENT = "SENTIMENT";
+/** A headline at least this wide still reads with SENTIMENT spelled out beside it. */
+const SPELLED_SENTIMENT_MIN_HEADLINE_WIDTH = 60;
+
 const columnAlign = (id: NewsColumnId): "left" | "right" =>
   id === "rank" || id === "importance" ? "right" : "left";
 
@@ -181,11 +190,23 @@ export function buildColumns(width: number, requestedIds: NewsColumnId[]): NewsT
       }
     }
   }
+  // SENTIMENT in full once the headline has room to spare for it.
+  let sentimentSpelled = false;
+  if (columnIds.includes("sentiment") && columnIds.includes("title")) {
+    // Measured as drawn: a header label sets the column's floor.
+    const spelledWidth = tableColumnWidth({ width: widths.sentiment, label: SPELLED_SENTIMENT });
+    const extra = spelledWidth - tableColumnWidth({ width: widths.sentiment, label: COLUMN_LABELS.sentiment });
+    if (headlineWidth() - extra >= SPELLED_SENTIMENT_MIN_HEADLINE_WIDTH) {
+      widths.sentiment = spelledWidth;
+      sentimentSpelled = true;
+    }
+  }
   const titleWidth = Math.max(16, headlineWidth());
 
   return columnIds.map((id) => ({
     id,
-    label: COLUMN_LABELS[id],
+    label: id === "sentiment" && sentimentSpelled ? SPELLED_SENTIMENT : COLUMN_LABELS[id],
+    ...(COLUMN_TITLES[id] && !(id === "sentiment" && sentimentSpelled) ? { title: COLUMN_TITLES[id] } : {}),
     width: id === "title" ? titleWidth : widths[id],
     align: columnAlign(id),
     flexGrow: id === "title" ? 1 : undefined,
@@ -250,7 +271,7 @@ export function NewsArticleStackView({
   const loadNewsStory = useLoadNewsStory();
   const prefetchStory = useCallback((article: MarketNewsItem) => {
     if ((article.items?.length ?? 0) > 0) return;
-    void loadNewsStory(article.id).catch(() => {});
+    void loadNewsStory(article.id).catch(logFailure("news.table", "Prefetch news story failed"));
   }, [loadNewsStory]);
 
   // A crosshair pinned in the tab picks the newest story out by then, and

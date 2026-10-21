@@ -120,6 +120,12 @@ export interface ChatMessage {
   attachmentReview?: "pending" | "failed";
   /** What the message opens in the terminal (a Gloom Wire story or calendar). Only the server sets it. */
   paneLink?: ChatPaneLink;
+  /**
+   * An announcement Gloom posted, drawn as one. Only the server sets it, and
+   * only on one that still stands: a retracted announcement is the removal
+   * placeholder without it.
+   */
+  announcement?: true;
   clientStatus?: "sending" | "failed";
   clientError?: string | null;
   /** The idempotency key a local send went out with, so a retry repeats it. */
@@ -611,9 +617,25 @@ export interface CloudCdsHistoryPointPayload {
   reported: number;
   /** The contract on the run that day, e.g. "2031-12-20". */
   maturity: string;
+  /** For a line quoted upfront: that day's level in points on the line's coupon. */
+  upfrontPts?: number;
 }
 
-export interface CloudCdsHistoryResponse {
+/**
+ * Past 2,000bp a name is quoted in points upfront on its running coupon, the
+ * level and its moves alike; `spreadBp` and the bp moves stay beside them.
+ * Absent from servers before it, which read as `spread`.
+ */
+interface CloudCdsUpfrontQuote {
+  quote?: "spread" | "upfront";
+  /** The line's running coupon, bp. */
+  couponBp?: number | null;
+  upfrontPts?: number | null;
+  change1WPts?: number | null;
+  change1MPts?: number | null;
+}
+
+export interface CloudCdsHistoryResponse extends CloudCdsUpfrontQuote {
   source: string;
   /** The matched reference entity, or null when nothing on the tape matched. */
   issuer: string | null;
@@ -621,14 +643,31 @@ export interface CloudCdsHistoryResponse {
   currency: string | null;
   asOf: string | null;
   points: CloudCdsHistoryPointPayload[];
+  /**
+   * The last point's move over a week and a month in bp, on one contract and
+   * chained through the contract before across a roll, as the index board's.
+   * Null without a comparable level, or once the level is more than 5 trading
+   * days behind the tape; absent from servers before them.
+   */
+  change1W?: number | null;
+  change1M?: number | null;
+  /**
+   * Why the line has no level in the month to its newest print, when one
+   * cause explains it: `upfront-side-unknown` when the prints carry an
+   * upfront without the side that paid it and nothing else places the level.
+   */
+  noLevelReason?: string | null;
 }
 
 /** An issuer's latest 5Y level: the last point of its history over the last month. */
-export interface CloudCdsLevelPayload {
+export interface CloudCdsLevelPayload extends CloudCdsUpfrontQuote {
   /** The reference entity as the history response names it. */
   issuer: string;
   spreadBp: number;
   date: string;
+  /** As the history response's moves for the same name. */
+  change1W?: number | null;
+  change1M?: number | null;
 }
 
 export interface CloudCdsLevelsResponse {
@@ -966,6 +1005,13 @@ interface CloudProxyStatementSummaryPayload {
 }
 
 export interface CloudProxyStatementPayload extends CloudProxyStatementSummaryPayload {
+  /**
+   * `preview` for an account without Pro: each executive's total pay from
+   * the latest proxy, with the breakdown, the year before, the pay ratio,
+   * say-on-pay, highlights, key figures and other years null or empty.
+   * Absent on Pro's full statement.
+   */
+  access?: "preview";
   docUrl: string;
   ceo: (CloudExecutiveRowPayload & { priorYearTotal: number | null }) | null;
   namedExecutives: CloudExecutiveRowPayload[];
@@ -1087,6 +1133,8 @@ export interface CloudProxyStatementListPayload {
     shortName: string;
   };
   proxies: CloudProxyStatementSummaryPayload[];
+  /** `preview` for an account without Pro: the latest proxy alone, without the year before or the pay ratio. */
+  access?: "preview";
 }
 
 export interface CloudTranscriptTurnPayload {
@@ -1279,10 +1327,14 @@ interface CloudSecFilingPayload {
   primaryDocument?: string;
   primaryDocDescription?: string;
   items?: string;
+  /** SEC's period of report, YYYY-MM-DD: a 10-Q's or 10-K's balance-sheet date. Absent from older servers. */
+  reportDate?: string;
   cik: string;
   companyName?: string;
   filingUrl: string;
   primaryDocumentUrl?: string;
+  /** The filing's SEC file number for this company, empty when it has none. Absent from older servers. */
+  fileNumber?: string;
 }
 
 interface CloudSecDocumentPayload {
@@ -1511,6 +1563,11 @@ export interface CloudMarketResponse<T> {
   omittedSessions?: unknown;
   /** Untrusted until the history adapter validates its boundary dates. */
   coverage?: CloudHistoryCoverage;
+  /**
+   * Untrusted: a US listing that no longer trades, `{ status, lastTradeDate,
+   * historyStart }`. Its history ends on `lastTradeDate`. Read by parseListingDelisting.
+   */
+  delisting?: unknown;
   providerMeta?: {
     provider?: string;
     upstream?: string;

@@ -27,7 +27,7 @@ import { cliStyles, setCliColorEnabledOverride, setCliWidthOverride } from "../u
 import { setDisplayTimeZone } from "../utils/utc-time";
 import { search, searchCandidatesForCli, buildSearchReport } from "./commands/search";
 import { ticker } from "./commands/ticker";
-import { requireOneArg, takeOption } from "./commands/command-utils";
+import { requireOneArg, takeFlag, takeOption } from "./commands/command-utils";
 import { EXCHANGE_OPTION } from "./listing-arg";
 import { apiCliCommand } from "./commands/api";
 import { marketDataCliCommands } from "./commands/market";
@@ -47,11 +47,14 @@ import {
   runPaneScreenshot,
 } from "./pane-functions";
 import { catalogPointer, tickerPointer, type CatalogCommandHit } from "./unknown-command";
+import { exportCommandPointer } from "./known-gaps";
 import { catalogFredSeriesIds } from "./series-search";
+import { primeBoardCoins } from "./board-coins";
 
 const { width: SHOT_WIDTH, height: SHOT_HEIGHT } = SHOT_SIZE_LIMITS;
 
-function createCoreCliCommands(
+/** The commands the CLI itself defines (help, ticker, search, ...), which plugins' commands join. */
+export function createCoreCliCommands(
   helpEntries: () => CliHelpEntry[],
   lookupCommand: (token: string) => CliCommandDef | null,
   allCommands: () => CliCommandDef[],
@@ -120,15 +123,20 @@ function createCoreCliCommands(
       help: {
         group: CLI_COMMAND_GROUPS.research,
         usage: ["ticker <symbol>"],
-        options: [EXCHANGE_OPTION],
+        options: [
+          EXCHANGE_OPTION,
+          { flags: "--all", description: "List a bank's pricing supplements (424B2, FWP, its notes' 424B3) and the 13D/13G it filed about other companies among the recent SEC filings" },
+        ],
         examples: ["ticker AAPL", "ticker SAN:EPA", "ticker 7203.T", "ticker AAPL --json"],
       },
       execute: async (rawArgs, ctx) => {
         const args = [...rawArgs];
         const exchange = takeOption(args, "--exchange");
+        const allFilings = takeFlag(args, "--all");
         const symbol = requireOneArg(args, "ticker <symbol>", "symbol", ctx);
         await ticker(symbol, {
           exchange,
+          allFilings,
           initMarketData: ctx.initMarketData,
           fail: ctx.fail,
           ...(ctx.cliOptions.format === "text" ? {} : { printResult: ctx.printResult }),
@@ -182,8 +190,16 @@ function createCoreCliCommands(
           "fn WEI --csv --section europe > europe.csv",
           "fn 13F AAPL --view=ticker-holdings",
           "fn OVME --spot 100 --strike 100 --days 30 --volatility 25",
+          "fn HIVG SPY --event fomc --offset -6 --lookback ALL --csv",
           "fn AUCT --explain",
         ],
+        sections: [{
+          title: "Exit status",
+          lines: [
+            "0 when the report has data for what was asked, partial data with warnings about the rest included; 1 when it has none (an empty report, or rows with no value for a listing that has nothing) or the input is bad. --json ok is false exactly when the exit status is 1.",
+            "CSV headers are the same for every symbol: a reason a figure is missing goes to the status column, never into a number cell.",
+          ],
+        }],
       },
       execute: async (args, ctx) => {
         requirePaneFunctionTarget(args, "fn", ctx);
@@ -375,7 +391,9 @@ function failUnknownCommand(token: string, commands: CliCommandDef[], pointers: 
       [`Run: ${pointers.nearFn.command}`, ticker].filter(Boolean).join("\n"),
     );
   }
-  const catalog = suggestion ? null : catalogPointer(token, pointers.hits, pointers.args);
+  // Exporting is a flag, not a command: `export LMT` says how, rather than listing functions that mention exports.
+  const exported = suggestion ? null : exportCommandPointer(token, pointers.args);
+  const catalog = suggestion ? null : exported ?? catalogPointer(token, pointers.hits, pointers.args);
   const help = suggestion
     ? `Did you mean ${suggestion}? Run gloomberb help to see every command.`
     : catalog ? `${catalog}\nRun gloomberb help to see every command.` : "Run gloomberb help to see every command.";
@@ -453,6 +471,8 @@ export async function dispatchCli(args: string[], options: DispatchCliOptions = 
     );
     return normalizeCliDispatchResult(result);
   } catch (error) {
+    // A coin typed without its quote currency (USDT) is named by its one symbol (USDT-USD) in the hint.
+    if (parsed.options.format !== "json") await primeBoardCoins([error instanceof Error ? error.message : String(error)]);
     printCliError(error, parsed.options, { command: resolved.command.name, args: commandArgs,
       isFredSeries: (id) => catalogFredSeriesIds(registry.plugins).has(id) });
     process.exitCode = 1;

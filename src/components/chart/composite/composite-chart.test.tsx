@@ -30,6 +30,7 @@ import { createDefaultConfig } from "../../../types/config";
 import { AppContext, createInitialState, PaneInstanceProvider } from "../../../state/app/context";
 import { createStaticAppStore } from "../../../test-support/app-store";
 import { useTabCursorLink } from "../../../state/app/tab-cursor";
+import { PaneFocusedProvider } from "../../../state/app/activity";
 import { createTestResolvedSeries, createTestSeriesPoint as point } from "../../../test-support/time-series";
 import {
   buildCompositeNavigationFrame,
@@ -712,11 +713,11 @@ describe("CompositeChart", () => {
     await tui.render(
       <CompositeChart
         width={38}
-        height={10}
+        height={6}
         series={overflowingSeries}
         panels={[{ id: "main" }]}
       />,
-      { width: 40, height: 12 },
+      { width: 40, height: 8 },
     );
 
     await act(async () => {
@@ -734,6 +735,34 @@ describe("CompositeChart", () => {
     expect(tui.frame().split("\n")[0]).toContain("LAST LONG SERIES");
   });
 
+  test("wraps a legend that cannot share one line onto the lines a tall chart has room for", async () => {
+    const labels = ["USDT", "USDC", "USDS", "USDE", "DAI", "USD1", "Other"];
+    const stacked = labels.map((label, index) => ({
+      ...series(`series-${index}`, "main", "left", "USD", [180 / (index + 1), 181 / (index + 1)]),
+      label,
+    }));
+    const frameLines = async (height: number) => {
+      await tui.render(
+        <CompositeChart width={46} height={height} series={stacked} panels={[{ id: "main" }]} />,
+        { width: 48, height: height + 2 },
+      );
+      await act(async () => {
+        await tui.setup().renderOnce();
+        await tui.setup().renderOnce();
+      });
+      return tui.frame().split("\n");
+    };
+    const named = (line = "") => labels.filter((label) => new RegExp(` ${label} \\$[\\d.]+( |$)`).test(line));
+    // Each entry whole and none left off, two or three to a line.
+    const tall = await frameLines(20);
+    expect(tall.slice(0, 4).map((line) => named(line).length)).toEqual([3, 3, 1, 0]);
+    expect(tall.slice(0, 3).flatMap((line) => named(line))).toEqual(labels);
+    // A chart with no rows to spare keeps its plot: one line that scrolls.
+    const short = await frameLines(6);
+    expect(named(short[0]).length).toBeGreaterThan(0);
+    expect(named(short[1])).toEqual([]);
+  });
+
   test("reaches and toggles overflowing legend series from the keyboard", async () => {
     const toggled: string[] = [];
     const labels = ["FIRST LONG SERIES", "SECOND LONG SERIES", "THIRD LONG SERIES", "LAST LONG SERIES"];
@@ -745,14 +774,14 @@ describe("CompositeChart", () => {
       <InputHostProvider host={chartInputHost}>
         <CompositeChart
           width={38}
-          height={10}
+          height={6}
           focused
           series={overflowingSeries}
           panels={[{ id: "main" }]}
           onToggleSeries={(seriesId) => toggled.push(seriesId)}
         />
       </InputHostProvider>,
-      { width: 40, height: 12 },
+      { width: 40, height: 8 },
     );
 
     await act(async () => {
@@ -1688,6 +1717,41 @@ describe("CompositeChart", () => {
     expect(edits).toHaveLength(4);
   });
 
+  test("external level labels remain outside the bitmap surface and follow price updates", async () => {
+    let move!: (price: number) => void;
+    function Chart() {
+      const [value, setValue] = useState(104); move = setValue;
+      return <CaptureChartSurfaceProvider><CompositeChart width={60} height={12}
+        series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+        panels={[{ id: "main" }]} levels={{ seriesId: "price", items: [{ id: "external", value, label: `Draft ${value}`, dashed: true, color: "#00cc66", editable: false, actionable: false }] }} /></CaptureChartSurfaceProvider>;
+    }
+    await tui.render(<Chart />, { width: 62, height: 14 });
+    await tui.waitForFrameToContain("Draft 104");
+    expect(tui.frame().split("\n").find((line) => line.includes("Draft 104"))!.indexOf("Draft")).toBeGreaterThan(40);
+    const plotWidth = capturedSurfaceProps?.width;
+    // Bitmap hosts may omit their children. Labels must be siblings of the surface.
+    expect(JSON.stringify(capturedSurfaceProps?.children?.map((child: any) => child.props.children))).not.toContain("Draft");
+    await act(async () => move(106));
+    await tui.waitForFrameToContain("Draft 106");
+    expect(tui.frame()).not.toContain("Draft 104");
+    expect(capturedSurfaceProps?.width).toBe(plotWidth);
+  });
+
+  test("exact level prices ignore coarse grid formatting and yield to grid labels", async () => {
+    await tui.render(<CompositeChart width={60} height={28}
+      formatAxisValue={(value) => value.toFixed(1)}
+      series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+      panels={[{ id: "main" }]} levels={{ seriesId: "price", items: [
+        { id: "exact", value: 105.25, label: "Buy 10 working", axisLabel: "105.25", color: "#00cc66", editable: false, actionable: false },
+        { id: "on-grid", value: 104, label: "Average cost", axisLabel: "104.00", color: "#00cc66", editable: false, actionable: false },
+      ] }} />, { width: 62, height: 30 });
+    await tui.waitForFrameToContain("105.25");
+    expect(tui.frame()).toContain("104.0");
+    expect(tui.frame()).toContain("Average cost 104.00");
+    expect(tui.frame()).not.toContain("Buy 10 working 105.25");
+    expect(tui.frame().split("\n").find((line) => line.includes("Average cost"))!.slice(0, 6)).not.toContain("104.00");
+  });
+
   test("a price level on the last price's row leaves the last price on the axis", async () => {
     const price: ResolvedSeries = {
       ...series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108]),
@@ -1773,6 +1837,63 @@ describe("CompositeChart", () => {
     });
     await act(async () => tui.setup().renderOnce());
     expect(tui.frame()).not.toContain("Δ");
+  });
+
+  test("shows its tools on the focused pane only, and keeps them while one is in hand or a press drags", async () => {
+    let setFocused: (focused: boolean) => void = () => {};
+    function FocusablePane({ children }: { children: ReactNode }) {
+      const [focused, set] = useState(false);
+      setFocused = set;
+      return <PaneFocusedProvider value={focused}>{children}</PaneFocusedProvider>;
+    }
+    await tui.render(
+      <CaptureChartSurfaceProvider>
+        <FocusablePane>
+          <CompositeChart
+            width={60}
+            height={12}
+            interactive
+            series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+            panels={[{ id: "main" }]}
+          />
+        </FocusablePane>
+      </CaptureChartSurfaceProvider>,
+      { width: 62, height: 14 },
+    );
+    const RULER = "\u2194";
+    const HAND = "\u2725";
+    const frame = async () => {
+      await act(async () => tui.setup().renderOnce());
+      return tui.frame();
+    };
+    const focus = async (focused: boolean) => {
+      await act(async () => setFocused(focused));
+      return frame();
+    };
+    const press = async (glyph: string) => {
+      const lines = tui.frame().split("\n");
+      const row = lines.findIndex((line) => line.includes(glyph));
+      await act(async () => tui.setup().mockMouse.click(lines[row]!.indexOf(glyph), row));
+      return frame();
+    };
+
+    expect(await frame()).not.toContain(RULER);
+    expect(await focus(true)).toContain(RULER);
+
+    // A tool in hand stays in view after focus moves on, until it is put down.
+    await press(RULER);
+    expect(await focus(false)).toContain(RULER);
+    expect(await press(HAND)).not.toContain(RULER);
+
+    // So does a drag that started on the focused pane, until its release.
+    await focus(true);
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(30, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(24, 6));
+    });
+    expect(await focus(false)).toContain(RULER);
+    await act(async () => capturedSurfaceProps!.onMouseUp(pointerEvent(24, 6)));
+    expect(await frame()).not.toContain(RULER);
   });
 
   test("draws a line, then grabs its end to reshape it", async () => {
@@ -2014,6 +2135,37 @@ describe("CompositeChart", () => {
     expect(frame).toContain("106%");
     expect(frame).toContain("2025-01-03");
     expect(frame).toContain("────────");
+  });
+
+  // A seasonal chart rests on its latest week with no owner following its
+  // moves: the pointer moves the cursor all the same, and leaving puts it back.
+  test("a chart resting on a date follows the pointer and goes back to the date when it leaves", async () => {
+    await tui.render(
+      <CaptureChartSurfaceProvider>
+        <CompositeChart
+          width={60}
+          height={12}
+          showLegend={false}
+          navigable={false}
+          series={[series("price", "main", "left", "USD", [100, 200, 100, 100])]}
+          panels={[{ id: "main" }]}
+          cursorDate={new Date("2025-01-04T00:00:00.000Z")}
+        />
+      </CaptureChartSurfaceProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => tui.setup().renderOnce());
+    expect(tui.frame()).toContain("2025-01-04");
+
+    await act(async () => capturedSurfaceProps!.onMouseMove(pointerEvent(0, 1)));
+    await act(async () => tui.setup().renderOnce());
+    expect(tui.frame()).toContain("2025-01-01");
+    expect(tui.frame()).not.toContain("2025-01-04");
+
+    await act(async () => capturedSurfaceProps!.onMouseOut());
+    await act(async () => tui.setup().renderOnce());
+    expect(tui.frame()).toContain("2025-01-04");
+    expect(tui.frame()).not.toContain("2025-01-01");
   });
 
   test.each([

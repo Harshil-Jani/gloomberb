@@ -34,8 +34,11 @@ import {
 } from "./result";
 
 import { typedPerpetualListing } from "../perpetual-listing";
+import { readTerminalListingCode } from "../terminal-codes";
+import { isProviderBusy, ProviderBusyError, SEARCH_BUSY_MESSAGE } from "../../sources/provider-errors";
 import { settleWithin } from "../../utils/async-deadline";
 import { companyNameExtraWords } from "../company-name";
+import { delistingLabel } from "../../market-data/quotes/delisting";
 export type {
   ResolvedTickerSearch,
   TickerSearchCandidate,
@@ -55,6 +58,17 @@ const MAX_NAMED_LISTINGS = 6;
  * symbol several companies use: CAR's ASX line is its eleventh.
  */
 export const LISTING_SEARCH_LIMIT = 30;
+
+/**
+ * A listing's name as a choice between listings gives it: a listing that no
+ * longer trades says so and when ("First Republic Bank · Last traded Apr 28,
+ * 2023"), and drops a name that only repeats its symbol.
+ */
+function listingChoiceName(result: InstrumentSearchResult): string {
+  if (!result.delisting) return result.name;
+  const name = result.name && normalizeTickerSymbol(result.name) !== normalizeTickerSymbol(result.symbol) ? result.name : "";
+  return [name, delistingLabel(result.delisting)].filter(Boolean).join(" · ");
+}
 
 export class AmbiguousTickerError extends Error {
   constructor(readonly query: string, readonly listings: readonly string[], readonly listingNames: Readonly<Record<string, string>> = {}) {
@@ -104,9 +118,12 @@ interface TickerSearchCandidateOptions {
   providerPopularity?: ReadonlyMap<string, number>;
 }
 
-/** The ticker typed, upper case; a perpetual's market id (`binance:BZUSDT`) as its listing (`BZUSDT:BINANCE`). */
+/**
+ * The ticker typed, upper case; a perpetual's market id (`binance:BZUSDT`) as its listing (`BZUSDT:BINANCE`),
+ * and a terminal's code for a US listing (`WFC.N`, `JPM US Equity`) as that listing (`WFC:NYSE`, `JPM`).
+ */
 export function normalizeTickerInput(activeTicker: string | null, arg?: string): string | null {
-  const explicitTicker = arg ? (typedPerpetualListing(arg)?.key ?? arg).trim().toUpperCase() : "";
+  const explicitTicker = arg ? (typedPerpetualListing(arg)?.key ?? readTerminalListingCode(arg)?.key ?? arg).trim().toUpperCase() : "";
   if (explicitTicker) return explicitTicker;
   return activeTicker;
 }
@@ -235,13 +252,17 @@ export async function searchTickerCandidates({
     // A search that hides contracts still shows them when asked: "AAPL OPT".
     includeOptionContracts: includeOptionContracts || parseAssetClassQuery(query)?.code === "OPT",
   });
-  return assemble(await searchProviderResults(
+  const { results, busy } = await searchProviderResults(
     dataProvider,
     query,
     searchContext,
-    onPartial ? (results) => onPartial(assemble(results)) : undefined,
+    onPartial ? (found) => onPartial(assemble(found)) : undefined,
     true,
-  ));
+  );
+  const candidates = assemble(results);
+  // Saved tickers or another source's rows still answer. Nothing at all, because a source was busy, is no answer.
+  if (busy && candidates.length === 0) throw new ProviderBusyError(SEARCH_BUSY_MESSAGE);
+  return candidates;
 }
 
 export function buildTickerSearchCandidates({
@@ -361,12 +382,22 @@ export function resolveTickerSearch(options: ResolveTickerSearchOptions): Promis
   // Most input has no venue code to retry: hand back the literal lookup
   // itself, so it settles no later than it did before the retry existed.
   if (alternatives.length === 0 && !quoted) return literal;
-  return literal.then(async (resolved) => {
+  // A spelling search was too busy to answer is no miss: the others still get
+  // their turn, and only when none resolves does the lookup say search was busy.
+  let busy: ProviderBusyError | null = null;
+  const unlessBusy = (lookup: Promise<ResolvedTickerSearch | null>) => lookup.catch((error: unknown) => {
+    if (!isProviderBusy(error)) throw error;
+    busy ??= error;
+    return null;
+  });
+  return unlessBusy(literal).then(async (resolved) => {
     for (const alternative of resolved ? [] : alternatives) {
-      const match = await resolveTickerSymbol(alternative, options, null);
+      const match = await unlessBusy(resolveTickerSymbol(alternative, options, null));
       if (match) return match;
     }
-    return resolved ?? (quoted ? quotedSuffixListing(symbol, options) : null);
+    const found = resolved ?? (quoted ? await quotedSuffixListing(symbol, options) : null);
+    if (!found && busy) throw busy;
+    return found;
   });
 }
 
@@ -430,15 +461,17 @@ async function resolveTickerSymbol(
   const saved: ResolvedTickerSearch | null = local ? { kind: "local", symbol: local.metadata.ticker, ticker: local } : null;
   if (saved && !pickerQuery) return saved;
 
-  const providerItems = createProviderTickerSearchCandidates(
-    await searchProviderResults(dataProvider, symbol, searchContext),
-    tickers,
-  );
+  const { results, busy } = await searchProviderResults(dataProvider, symbol, searchContext);
+  const providerItems = createProviderTickerSearchCandidates(results, tickers);
   const literalMatches = providerItems.filter((item) => normalizeTickerSymbol(item.symbol) === symbol);
   const matches = literalMatches.length ? literalMatches
     : providerItems.filter((item) => findExactTickerSearchMatch([item], symbol));
   let exactMatch = matches[0];
-  if (!exactMatch?.result) return saved;
+  if (!exactMatch?.result) {
+    // Nothing matched while a source was too busy to answer: that is no answer, not a miss.
+    if (busy && !saved) throw new ProviderBusyError(SEARCH_BUSY_MESSAGE);
+    return saved;
+  }
 
   const contracts = new Set(matches.map((item) => item.contractKey).filter(Boolean));
   if (contracts.size > 1 || (contracts.size && matches.some((item) => !item.contractKey))) {
@@ -446,7 +479,7 @@ async function resolveTickerSymbol(
   }
   const listings = new Set(matches.map((item) => publicTickerKey(item.symbol, listingExchange(item.result!))));
   const ambiguity = (query: string) => new AmbiguousTickerError(query, [...listings], Object.fromEntries(matches.map((item) => [
-    publicTickerKey(item.symbol, listingExchange(item.result!)), item.result!.name,
+    publicTickerKey(item.symbol, listingExchange(item.result!)), listingChoiceName(item.result!),
   ])));
   if (pickerQuery && listings.size > 1) throw ambiguity(pickerQuery);
   // A code that names several venues (TSE) the symbol trades on more than one of is a choice.
@@ -464,7 +497,12 @@ async function resolveTickerSymbol(
       });
       const exchange = canonicalExchange(quote.listingExchangeName || quote.exchangeName);
       const currency = resolveCurrencyUnit(quote.currency).currency;
-      if (exchange && currency && Number.isFinite(quote.price) && quote.price !== 0
+      const ended = quote.delisting;
+      if (ended) {
+        // The symbol's own quote is a US listing that no longer trades (a bare FRC, whose
+        // venue is not on record): it is the run search offers with the same last session.
+        verified = matches.filter((item) => item.result?.delisting?.lastTradeDate === ended.lastTradeDate);
+      } else if (exchange && currency && Number.isFinite(quote.price) && quote.price !== 0
         && Number.isFinite(quote.lastUpdated) && quote.lastUpdated > 0) {
         const sameSecurity = matches.filter((item) => {
           const result = item.result!;
@@ -549,6 +587,12 @@ function searchResultPopularity(result: InstrumentSearchResult): number | undefi
   return typeof result.popularity === "number" && Number.isFinite(result.popularity) ? result.popularity : undefined;
 }
 
+interface ProviderSearch {
+  results: InstrumentSearchResult[];
+  /** A spelling went unanswered because a source was busy, so an empty list may not mean nothing matches. */
+  busy: boolean;
+}
+
 async function searchProviderResults(
   dataProvider: DataProvider,
   rawQuery: string,
@@ -556,12 +600,9 @@ async function searchProviderResults(
   onPartial?: (results: InstrumentSearchResult[]) => void,
   /** Also look for the funds of a sector word, for a list of matches rather than one resolved symbol. */
   withThemeFunds = false,
-): Promise<InstrumentSearchResult[]> {
-  // "ES FUT" looks up ES, and ES=F as well: the catalogue answers a bare root
-  // with stocks only. The ranking keeps the futures.
+): Promise<ProviderSearch> {
   const assetClass = parseAssetClassQuery(rawQuery);
   const query = assetClass?.symbolQuery ?? rawQuery;
-  const marketSymbol = assetClass ? assetClassMarketSymbol(assetClass) : null;
   // A Map rather than a list plus a seen set, because a later source can send
   // back a richer version of a symbol already recorded. Overwriting a key keeps
   // its original position, so an upgrade does not reorder the list.
@@ -577,13 +618,8 @@ async function searchProviderResults(
   // The variants are independent lookups of the same words, so they run
   // together. Awaited in turn they multiplied every per-source timeout by the
   // number of spellings tried.
-  const searchQueries = buildProviderSearchQueries(query);
-  if (marketSymbol && !searchQueries.includes(marketSymbol)) searchQueries.push(marketSymbol);
-  // A futures board code also finds its future, which the catalogue files under
-  // the continuous symbol only: NG finds NovaGold and NG=F.
-  const boardFuture = assetClass ? null : futuresContractByCode(query)?.symbol;
-  if (boardFuture && !searchQueries.includes(boardFuture)) searchQueries.push(boardFuture);
-  await Promise.all(searchQueries.map(async (searchQuery) => {
+  let busy = false;
+  await Promise.all(providerSearchQueries(rawQuery).map(async (searchQuery) => {
     try {
       const results = await dataProvider.search(searchQuery, {
         ...searchContext,
@@ -598,7 +634,8 @@ async function searchProviderResults(
       });
       add(results);
     } catch (error) {
-      logFailure("tickers-search", "Could not search ticker spelling")(error);
+      if (isProviderBusy(error)) busy = true;
+      else logFailure("tickers-search", "Could not search ticker spelling")(error);
     }
   }));
 
@@ -643,7 +680,11 @@ async function searchProviderResults(
 
   // A sector word ("defense", which the server answers with rows tagged with it) lists its small companies by
   // name; the server orders "defense ETF" by size, which a name search does not. Those funds lead the list.
-  const theme = withThemeFunds && !assetClass ? themeQueryWord([...byKey.values()], query) : null;
+  // So do they when the funds are asked for by name: "defense etf" searches "defense", whose answer holds
+  // only the few funds tagged with it (not ITA), and "gold miners etf" a phrase no symbol is.
+  const fundsAsked = assetClass?.code === "ETF" || assetClass?.code === "FUND";
+  const theme = withThemeFunds && (!assetClass || fundsAsked)
+    && (themeQueryWord([...byKey.values()], query) || (fundsAsked && /\s/.test(query.trim())));
   if (theme) {
     try {
       const { onPartial: _ignored, ...context } = searchContext ?? {};
@@ -658,7 +699,27 @@ async function searchProviderResults(
     }
   }
 
-  return [...byKey.values()];
+  return { results: [...byKey.values()], busy };
+}
+
+/**
+ * The searches a lookup of `rawQuery` asks the sources for: its spellings (BRK.B,
+ * BRK-B), and the future a board code or an asset class names. A list of symbols
+ * asks for all of them at once beforehand (`batchedListLookups`).
+ */
+export function providerSearchQueries(rawQuery: string): string[] {
+  // "ES FUT" looks up ES, and ES=F as well: the catalogue answers a bare root
+  // with stocks only. The ranking keeps the futures.
+  const assetClass = parseAssetClassQuery(rawQuery);
+  const query = assetClass?.symbolQuery ?? rawQuery;
+  const marketSymbol = assetClass ? assetClassMarketSymbol(assetClass) : null;
+  const searchQueries = buildProviderSearchQueries(query);
+  if (marketSymbol && !searchQueries.includes(marketSymbol)) searchQueries.push(marketSymbol);
+  // A futures board code also finds its future, which the catalogue files under
+  // the continuous symbol only: NG finds NovaGold and NG=F.
+  const boardFuture = assetClass ? null : futuresContractByCode(query)?.symbol;
+  if (boardFuture && !searchQueries.includes(boardFuture)) searchQueries.push(boardFuture);
+  return searchQueries;
 }
 
 function buildProviderSearchQueries(query: string): string[] {

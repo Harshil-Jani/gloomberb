@@ -5,6 +5,7 @@ import type {
   CloudSessionMoversSide,
 } from "../../../api-client/market-movers";
 import type { DataProvider } from "../../../types/data-provider";
+import { logFailure } from "../../../utils/log-failure";
 import {
   CATEGORY_MAP,
   moverRegularSession,
@@ -63,7 +64,7 @@ async function hydrateTrending(
   if (provider.getQuotesBatch) {
     const results = await provider.getQuotesBatch(
       symbols.map((symbol) => ({ symbol, exchange: "" })),
-    ).catch(() => []);
+    ).catch(logFailure("market-movers", "Trending quote batch failed", []));
     for (const result of results) {
       if (result.quote) bySymbol.set(result.target.symbol, screenerQuoteFromQuote(result.target.symbol, result.quote));
     }
@@ -72,8 +73,8 @@ async function hydrateTrending(
       try {
         const quote = await provider.getQuote(symbol, "");
         bySymbol.set(symbol, screenerQuoteFromQuote(symbol, quote));
-      } catch {
-        // Missing quotes are omitted from a ranked list.
+      } catch (error) {
+        logFailure("market-movers", "Trending quote failed")(error);
       }
     }));
   }
@@ -110,10 +111,10 @@ export async function loadMarketMoverTab(
   return { ...result, quotes: quotes.slice(0, LIST_ROWS), rankedBy, tab };
 }
 
-/** The server refused the list for the account's plan. */
+/** The server refused the list for the account's plan (gaps, without Pro). */
 export class SessionMoversAccessError extends Error {
   constructor() {
-    super("Pre-market, after-hours and gap lists need Pro");
+    super("Gap lists need Pro");
     this.name = "SessionMoversAccessError";
   }
 }

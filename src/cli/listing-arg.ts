@@ -14,7 +14,7 @@ import {
   type ListingVenue,
 } from "../tickers/listing-venues";
 import { findUsListingOfCompany, type UsListing } from "../tickers/us-listing";
-import { findListingOfCompanyName, isCompanyNameInput } from "../tickers/company-name-listing";
+import { findListingOfCompanyName, isCompanyNameInput, readTerminalCodeArg } from "../tickers/company-name-listing";
 import { movedAwayChange, startTickerChangeLookup, type MovedTickerChange } from "../tickers/ticker-changes";
 import { loadListingFate, MovedSymbolError, type ListingFate } from "../tickers/listing-fate";
 import { quotedListingName } from "../tickers/listing-name";
@@ -41,6 +41,8 @@ import { bareFuturesCode, futuresContractByCode } from "../market-data/futures-b
 import { classifyInstrumentType, kindFromListingSyntax } from "../tickers/instrument-kind";
 import type { InstrumentOfKind } from "../tickers/instrument-coverage";
 import { brokerIndexCode, brokerIndexReadAs } from "./index-roots";
+import { readTerminalListingCode, terminalCodeReadAs } from "../tickers/terminal-codes";
+import { listingAbroadVenue } from "../utils/sec";
 
 /** The `--exchange` option of every command that takes a ticker. */
 export const EXCHANGE_OPTION = {
@@ -99,13 +101,20 @@ export interface ListingArg {
 export function parseListingArg(
   rawArg: string,
   exchangeOption?: string | null,
-  { ownExchangeWins = false }: { ownExchangeWins?: boolean } = {},
+  { ownExchangeWins = false, terminalCodes = true }: {
+    ownExchangeWins?: boolean;
+    /** False for words that read as a Bloomberg code but are a name (`readTerminalCodeArg`). */
+    terminalCodes?: boolean;
+  } = {},
 ): ListingArg {
   // A pasted ticker can bring the separator or quote marks that sat beside it (`UPST;`); search would ask for them.
   const stripped = stripStrayEdges(rawArg);
   const raw = stripped.text || rawArg;
-  const listing = parseCleanListingArg(raw, exchangeOption, { ownExchangeWins });
-  return stripped.text && stripped.notes.length > 0 ? { ...listing, readAs: stripped.notes.join(" ") } : listing;
+  // A terminal's code for a US listing (WFC.N, "JPM US Equity") is that listing (WFC:NYSE, JPM).
+  const terminal = terminalCodes ? readTerminalListingCode(raw) : null;
+  const listing = parseCleanListingArg(terminal?.key ?? raw, exchangeOption, { ownExchangeWins });
+  const notes = [...stripped.text ? stripped.notes : [], ...terminal ? [terminalCodeReadAs(terminal)] : []];
+  return notes.length > 0 ? { ...listing, readAs: notes.join(" ") } : listing;
 }
 
 function parseCleanListingArg(
@@ -334,7 +343,7 @@ export function listingChoiceNote(
 }
 
 // Quotes of these never name a company's listing, so they are never a choice between companies.
-const UNLISTED_TYPES = new Set(["FUTURE", "INDEX", "CURRENCY", "CRYPTOCURRENCY", "OPTION"]);
+export const UNLISTED_TYPES = new Set(["FUTURE", "INDEX", "CURRENCY", "CRYPTOCURRENCY", "OPTION"]);
 
 /** Whether the data service chose the listing: a bare symbol, with no venue named and none saved. */
 function isBareListing(listing: Pick<CliListing, "exchange" | "saved">): boolean {
@@ -827,6 +836,13 @@ export async function loadSavedListing(store: ListingStore, listing: ListingArg)
   return null;
 }
 
+/** A row saved under a vendor's suffixed key (RY.TO) for the listing it was read as: on that venue, or on none it names. */
+async function loadSuffixedRow(store: ListingStore, key: string, exchange: string): Promise<TickerRecord | null> {
+  const ticker = await store.loadTicker(key);
+  const savedExchange = canonicalExchange(ticker?.metadata.exchange);
+  return ticker && (!savedExchange || savedExchange === exchange) ? ticker : null;
+}
+
 export interface CliListing extends ListingArg {
   saved: TickerRecord | null;
   /**
@@ -852,15 +868,54 @@ async function builderDexMarket(listing: ListingArg, deps: ListingDeps): Promise
     : null;
 }
 
+/** A symbol written with a venue's suffix, as data vendors write a listing abroad: RY.TO, 7203.T, VOD.L, 0700.HK. */
+const VENUE_SUFFIX = /^([A-Z0-9][A-Z0-9&-]*)\.([A-Z]{1,3})$/;
+
+/**
+ * RY.TO, 7203.T, VOD.L: a listing abroad written with a data vendor's venue
+ * suffix, read as the listing its own quote names (RY:TSX, 7203:JPX,
+ * VOD:LSE), the way `quote` names it, so data that is read by venue (a
+ * company's SEC filings, data that covers US listings only) finds the same
+ * listing the quote is for. A US share class (BRK.B, quoted on NYSE), a
+ * suffix no quote answers and a named venue stay as typed.
+ */
+async function readVenueSuffix(listing: ListingArg, deps: Pick<ListingDeps, "dataProvider">): Promise<ListingArg | null> {
+  const match = listing.exchange ? null : VENUE_SUFFIX.exec(listing.symbol);
+  if (!match) return null;
+  let quote: Quote | null;
+  try {
+    quote = await deps.dataProvider.getQuote(listing.symbol, "");
+  } catch (error) {
+    // The command's own request then says what is wrong with the symbol.
+    if (!isNoProviderError(error)) logFailure("cli.listing-arg", "Quote venue suffix failed")(error);
+    return null;
+  }
+  const venue = canonicalExchange(quote?.listingExchangeName || quote?.exchangeName);
+  const key = `${match[1]}:${venue}`;
+  if (!venue || !isKnownExchangeCode(venue) || !listingAbroadVenue(key)) return null;
+  return { symbol: match[1]!, exchange: venue, key, readAs: `Read ${listing.symbol} as ${key}.` };
+}
+
 export async function resolveCliListing(
   raw: string,
   exchangeOption: string | null | undefined,
   deps: ListingDeps,
-  options: { ownExchangeWins?: boolean } = {},
+  options: {
+    ownExchangeWins?: boolean;
+    /**
+     * Read a venue suffix (RY.TO) as the listing its quote names (RY:TSX).
+     * Only pane functions ask for it (`applyListingArgument`, which `fn` and
+     * `shot` run through), as their data is read by venue.
+     */
+    venueSuffix?: boolean;
+  } = {},
 ): Promise<CliListing> {
+  // "JPM US Equity" is Bloomberg's code for JPM; "Putnam US Equity", whose root is no US ticker, is a name.
+  const typed = stripStrayEdges(raw).text || raw;
+  const terminal = await readTerminalCodeArg(deps.dataProvider, typed);
   // A company's name, an entry of a comma list (`WHR, Whirlpool Corporation`), is the listing search names for it.
-  const named = await companyNameListingArg(raw, deps);
-  let parsed = named ?? parseListingArg(raw, exchangeOption, options);
+  const named = terminal ? null : await companyNameListingArg(raw, deps);
+  let parsed = named ?? parseListingArg(raw, exchangeOption, { ...options, terminalCodes: terminal != null });
   if (!parsed.symbol) throw new ListingArgError("Ticker symbol is required.");
   // $VIX is Schwab's code for ^VIX, unless a security trades as VIX: $AAPL is a cashtag.
   const index = named || parsed.exchange ? null : await readDollarIndexCode(raw, deps);
@@ -868,6 +923,10 @@ export async function resolveCliListing(
   // USD-NGN and USDNGN are the pair USDNGN=X unless a security is listed under those letters.
   const pair = parsed.exchange ? null : await readAmbiguousCurrencyPair(parsed.symbol, deps);
   if (pair) parsed = { symbol: pair, exchange: "", key: pair };
+  const suffixed = pair || named || !options.venueSuffix ? null : await readVenueSuffix(parsed, deps);
+  // The row may be saved under the suffixed key itself: a link or a layout's key is kept as it came.
+  const typedKey = suffixed ? parsed.symbol : null;
+  if (suffixed) parsed = parsed.readAs ? { ...suffixed, readAs: `${parsed.readAs} ${suffixed.readAs}` } : suffixed;
   try {
     await checkListingExchange(parsed, deps);
   } catch (error) {
@@ -876,7 +935,7 @@ export async function resolveCliListing(
     parsed = market;
   }
   let listing = await settleSharedCode(parsed, deps);
-  const saved = await loadSavedListing(deps.store, listing);
+  const saved = await loadSavedListing(deps.store, listing) ?? (typedKey ? await loadSuffixedRow(deps.store, typedKey, listing.exchange) : null);
   // A code nothing could read stays the venue it is saved on.
   const savedExchange = canonicalExchange(saved?.metadata.exchange);
   if (listing.sharedCode && savedExchange) listing = { symbol: listing.symbol, exchange: savedExchange, key: `${listing.symbol}:${savedExchange}` };

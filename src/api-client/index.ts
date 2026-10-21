@@ -54,6 +54,7 @@ export type {
   CrashReportSurface,
   CrashReportsPayload,
   FunctionUsageCount,
+  UpdateFailureReport,
   UsageCountsPayload,
   UsageCountsSurface,
 } from "./telemetry";
@@ -773,9 +774,12 @@ class GloomApiClient {
   getCloudCorporateActions = this.data.getCloudCorporateActions.bind(this.data);
   getCloudTickerChanges = this.data.getCloudTickerChanges.bind(this.data);
   getCloudOrganizationTickers = this.data.getCloudOrganizationTickers.bind(this.data);
+  getCloudTickerChangesBatch = this.data.getCloudTickerChangesBatch.bind(this.data);
+  searchInstrumentsBatch = this.data.searchInstrumentsBatch.bind(this.data);
   getCloudHistory = this.data.getCloudHistory.bind(this.data);
   getCloudExchangeRate = this.data.getCloudExchangeRate.bind(this.data);
   getCloudEconomicCalendar = this.data.getCloudEconomicCalendar.bind(this.data);
+  getCloudEconomicCalendarFrom = this.data.getCloudEconomicCalendarFrom.bind(this.data);
   getCloudMacroReleaseDays = this.data.getCloudMacroReleaseDays.bind(this.data);
   getCloudEquityDiagnostic = this.data.getCloudEquityDiagnostic.bind(this.data);
   getCloudEarningsCalendar = this.data.getCloudEarningsCalendar.bind(this.data);
@@ -783,6 +787,8 @@ class GloomApiClient {
   getCloudFredSeries = this.data.getCloudFredSeries.bind(this.data);
   getCloudFredSeriesCatalog = this.data.getCloudFredSeriesCatalog.bind(this.data);
   getCloudCryptoMarkets = this.data.getCloudCryptoMarkets.bind(this.data);
+  getCloudStablecoinSupply = this.data.getCloudStablecoinSupply.bind(this.data);
+  getCloudStablecoinSupplyHistory = this.data.getCloudStablecoinSupplyHistory.bind(this.data);
   getCloudCentralBankRates = this.data.getCloudCentralBankRates.bind(this.data);
   getMobileAlertHistory = this.data.getMobileAlertHistory.bind(this.data);
   getScannerFlowHistory = this.data.getScannerFlowHistory.bind(this.data);
@@ -797,6 +803,7 @@ class GloomApiClient {
   getCloudThemeMembers = this.data.getCloudThemeMembers.bind(this.data);
   impliedVolatility = this.data.impliedVolatility.bind(this.data);
   optionsPositioning = this.data.optionsPositioning.bind(this.data);
+  getCloudBankFigures = this.data.getCloudBankFigures.bind(this.data);
   getCloudDebtMaturities = this.data.getCloudDebtMaturities.bind(this.data);
   getCloudRevenueBreakdown = this.data.getCloudRevenueBreakdown.bind(this.data);
   getCloudMnaDeals = this.data.getCloudMnaDeals.bind(this.data);

@@ -13,10 +13,19 @@ import { getLoadablePlugins } from "../../plugins/catalog";
 import { createDefaultConfig } from "../../types/config";
 import type { MarketContext } from "../types";
 import { parseCliGlobalArgs } from "../options";
+import { COMMODITIES_VIEW_STATE } from "../../plugins/builtin/commodities-energy/view-state";
+import { cotHeadless } from "../../plugins/builtin/cot/headless";
+import { FIXED_INCOME_VIEW_STATE } from "../../plugins/builtin/fixed-income/model";
+import { futuresCurveHeadless } from "../../plugins/builtin/futures-curve/headless";
+import { jodiHeadless } from "../../plugins/builtin/jodi/headless";
+import { treasuryAuctionsHeadless } from "../../plugins/builtin/treasury-auctions/headless";
+import { yieldCurveHeadless } from "../../plugins/builtin/yield-curve/headless";
 import {
+  capabilityPaneSettings,
   capabilityPluginState,
   getPaneFunctionCapability,
   isDataPaneForDomFallback,
+  noArgumentMessage,
   normalizeCapabilityOptions,
 } from "./capabilities";
 import {
@@ -151,6 +160,22 @@ describe("pane function capabilities", () => {
     }
   });
 
+  test("COT, CTM, AUCT, JODI and GC options reach their view's own state, under the namespace its workspace wraps it with", () => {
+    const cases: Array<[HeadlessPaneDefinition, Record<string, string>, Record<string, Record<string, unknown>>, Record<string, unknown>]> = [
+      [cotHeadless, { traderClass: "commercial", scope: "all" }, { [COMMODITIES_VIEW_STATE.cot]: { class: "commercial", scope: "all" } }, {}],
+      [futuresCurveHeadless, { tab: "table", date: "2026-10-09" }, { [COMMODITIES_VIEW_STATE.curve]: { tab: "contracts" } }, { asOfDate: "2026-10-09" }],
+      [treasuryAuctionsHeadless, { filter: "bill" }, { [FIXED_INCOME_VIEW_STATE.treasuryAuctions]: { activeTab: "bill" } }, {}],
+      [jodiHeadless, { commodity: "gas" }, { [COMMODITIES_VIEW_STATE.balances]: { commodity: "gas" } }, {}],
+      [yieldCurveHeadless, { date: "2026-10-09" }, {}, { asOfDate: "2026-10-09" }],
+    ];
+    for (const [headless, raw, pluginState, settings] of cases) {
+      const capability = getPaneFunctionCapability({ id: "view", paneId: dummyPane.id, label: "View", description: "View", headless }, dummyPane);
+      const options = normalizeCapabilityOptions(capability, raw);
+      expect(capabilityPluginState(capability, options)).toMatchObject(pluginState);
+      expect(capabilityPaneSettings(capability, options)).toMatchObject(settings);
+    }
+  });
+
   test("rejects financial statement options on a price comparison", () => {
     const capability = capabilityFor("comparison-chart-pane");
     expect(() => normalizeCapabilityOptions(capability, {
@@ -170,6 +195,15 @@ describe("pane function capabilities", () => {
     // A function with no options says so.
     expect(() => normalizeCapabilityOptions({ ...intraday, options: [] }, { range: "1Y" }, { code: "CDX" }))
       .toThrow("CDX does not support --range. It has no options.");
+  });
+
+  test("a word after a function that takes none is answered with its options, and runs as the option whose value it is", () => {
+    expect(noArgumentMessage(jodiHeadless.options, "JODI", "Gas"))
+      .toBe("JODI does not accept an argument. Options: --commodity <oil|gas>. Run: gloomberb fn JODI --commodity gas");
+    // Anything else gets an example: a choice that is not the default, in the command that was run.
+    expect(noArgumentMessage(jodiHeadless.options, "JODI", "europe", "shot"))
+      .toBe("JODI does not accept an argument. Options: --commodity <oil|gas>. Example: gloomberb shot JODI --commodity gas");
+    expect(noArgumentMessage([], "CDX", "IG")).toBe("CDX does not accept an argument. Run: gloomberb fn CDX");
   });
 });
 
@@ -292,6 +326,22 @@ describe("pane catalog search", () => {
         expect(tokens[0], query).toBe("OSA");
         expect(tokens.slice(0, 3).sort(), query).toEqual(["OMON", "OSA", "VCA"]);
       }
+    } finally {
+      registry.destroy();
+    }
+  });
+
+  test("Buffett, overlap, copying a basket and active share searches list 13F first, one word or several", async () => {
+    const context = { config: createDefaultConfig("/tmp/capabilities-test") } as MarketContext;
+    const registry = await createPaneCatalog(context, getLoadablePlugins());
+    try {
+      const entries = await buildPaneCatalogEntries(registry, context);
+      for (const query of ["buffett", "berkshire", "overlap", "copy", "active share", "portfolio import"]) {
+        const ranked = filterPaneCatalogEntries(entries, query);
+        expect(selectPaneCatalogMatches(ranked, query, 10).shown[0]?.token, query).toBe("13F");
+      }
+      // The Buffett indicator is still VAL's.
+      expect(filterPaneCatalogEntries(entries, "buffett").map(({ token }) => token)).toContain("VAL");
     } finally {
       registry.destroy();
     }

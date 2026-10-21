@@ -192,6 +192,9 @@ test("historical prices mark a monthly bar whose month runs on and date it by th
     const complete = await historicalPricesHeadless.load(args(["CSCO:NASDAQ"], { range: "ALL" }), september);
     expect(complete.rows.some((row) => row.partial)).toBe(false);
     expect(complete.freshness).not.toHaveProperty("periodToDate");
+    // Dated by its last session, the day its close is from, not the 1st it is filed under.
+    expect(complete.freshness).toMatchObject({ asOf: "2026-09-30" });
+    expect(renderHeadlessPaneText(historicalPricesHeadless, complete, args(["CSCO:NASDAQ"], { range: "ALL" }), "HP CSCO")).toContain("Wed 30 Sep 2026");
   } finally {
     setSystemTime();
   }
@@ -304,6 +307,15 @@ test("returns mark a monthly bar whose month runs on, as historical prices do", 
     expect(text).toContain("2026-10 MTD");
     expect(text).toContain("2026-09");
     expect(text).not.toContain("2026-10-01");
+    // Without October's bar, September's is complete and dated by its last session.
+    const september = createTestHeadlessContext({
+      resolveInstrument: async () => ({ symbol: "CSCO", exchange: "NASDAQ" }),
+      marketData: createTestDataProvider({ getDetailedPriceHistoryWithMetadata: async () => ({ points: monthly.slice(0, 2), resolution: "1mo" }) }),
+    });
+    const complete = await returnsHeadless.load(input, september);
+    expect(complete.freshness).toMatchObject({ asOf: "2026-09-30" });
+    expect(complete.freshness).not.toHaveProperty("periodToDate");
+    expect(renderHeadlessPaneText(returnsHeadless, complete, input, "RETURN CSCO")).toContain("Wed 30 Sep 2026");
   } finally {
     setSystemTime();
   }
@@ -355,4 +367,20 @@ test("canonical missing changes survive JSON roundtrip into default Quote Monito
   expect(text.split("\n").find(line => line.trim().startsWith("MISSING "))).not.toContain("0.00%");
   expect(text.split("\n").find(line => line.trim().startsWith("ZERO "))).toContain("0.00%");
   expect(text.split("\n").find(line => line.trim().startsWith("DERIVED "))).toContain("+20.00%");
+});
+
+test("historical prices count a coin's bars without volume as history does, not the latest trade its hourly bars end with", async () => {
+  const bar = (date: string, volume?: number) => ({ date: new Date(date), open: 81_000, high: 81_100, low: 80_900, close: 81_050, volume });
+  const latest = bar("2026-10-18T15:57:53Z");
+  const load = async (points: ReturnType<typeof bar>[]) => historicalPricesHeadless.load(args(["BTC-USD"], { range: "1W" }), createTestHeadlessContext({
+    resolveInstrument: async () => ({ symbol: "BTC-USD", exchange: "CCC" }),
+    marketData: createTestDataProvider({ getPriceHistory: async () => points }),
+  }));
+  const signedIn = await load([bar("2026-10-18T13:00:00Z", 61_200_000), bar("2026-10-18T14:00:00Z", 73_800_000),
+    bar("2026-10-18T15:00:00Z", 24_100_000), latest]);
+  expect(signedIn.rows.at(-1)).toMatchObject({ date: "2026-10-18T15:57:53.000Z", volume: null });
+  // Before: "1 of 4 bars has no reported volume (—)".
+  expect(signedIn.notes).toBeUndefined();
+  const hole = await load([bar("2026-10-18T13:00:00Z", 61_200_000), bar("2026-10-18T14:00:00Z"), bar("2026-10-18T15:00:00Z", 24_100_000), latest]);
+  expect(hole.notes).toEqual(["1 of 4 bars has no reported volume (\u2014)"]);
 });

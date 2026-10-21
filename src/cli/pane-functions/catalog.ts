@@ -10,6 +10,9 @@ import {
 import {
   getHeadlessPaneDefinition,
   getPaneFunctionCapability,
+  MAX_INLINE_CHOICES,
+  optionChoices,
+  optionFlags,
   type PaneFunctionCapability,
   type PaneFunctionOptionDef,
   type PaneFunctionReadiness,
@@ -47,6 +50,8 @@ export interface PaneCatalogEntry {
   aliases: string[];
   argKind?: string;
   argPlaceholder?: string;
+  /** Arguments the examples show it with, past the placeholder (`GAS`, `EUA` for EPWR). */
+  argExamples?: readonly string[];
   /** What `shot` takes when the pane shows one ticker but the report ranks several (DVD). */
   shotArgument?: string;
   keywords: string[];
@@ -205,6 +210,21 @@ export function nearFunctionCodes(
     .sort((left, right) => left.code.localeCompare(right.code));
 }
 
+/**
+ * The functions a word that is no code asks for (`IVOL`, `IV`: HIVG and
+ * OVDV), as their `discovery.suggestFor` lists it, each by its code.
+ */
+export function suggestedFunctionCodes(registry: PaneFunctionCatalog, name: string): NearFunctionCode[] {
+  const wanted = normalizeLookupToken(name);
+  if (!wanted) return [];
+  return [...registry.paneTemplates.values()].flatMap((template) => {
+    const pane = registry.panes.get(template.paneId);
+    const words = pane ? getHeadlessPaneDefinition(template, pane)?.discovery?.suggestFor ?? [] : [];
+    const code = template.shortcut?.prefix;
+    return code && words.some((word) => normalizeLookupToken(word) === wanted) ? [{ code: code.toUpperCase(), label: template.label }] : [];
+  }).sort((left, right) => left.code.localeCompare(right.code));
+}
+
 function sampleArgForTemplate(template: PaneTemplateDef): string {
   switch (template.shortcut?.argKind) {
     case "ticker":
@@ -250,6 +270,7 @@ async function buildTemplateCatalogEntry(
     aliases: [...(template.shortcut?.aliases ?? [])],
     argKind: headless?.argument.kind ?? template.shortcut?.argKind,
     argPlaceholder: headless?.argument.placeholder ?? template.shortcut?.argPlaceholder,
+    ...(headless?.argument.examples?.length ? { argExamples: headless.argument.examples } : {}),
     ...(headless?.argument.kind === "tickers" && template.shortcut?.argKind === "ticker"
       ? { shotArgument: argumentHint({ argKind: "ticker", argPlaceholder: template.shortcut.argPlaceholder }) } : {}),
     keywords: template.keywords ?? [],
@@ -285,6 +306,7 @@ export async function buildPaneCatalogEntries(
       aliases,
       argKind: pane.headless?.argument.kind,
       argPlaceholder: pane.headless?.argument.placeholder,
+      ...(pane.headless?.argument.examples?.length ? { argExamples: pane.headless.argument.examples } : {}),
       keywords: [],
       defaultSettings: {},
       capability: getPaneFunctionCapability(undefined, pane),
@@ -384,6 +406,7 @@ function scorePaneCatalogEntry(entry: PaneCatalogEntry, query: string): CatalogM
     entry.token,
     entry.shortcut,
     ...entry.aliases,
+    ...entry.capability.suggestFor ?? [],
     entry.templateId,
     entry.paneId,
   ].filter((value): value is string => !!value).map((value) => normalizeLookupToken(value));
@@ -550,19 +573,6 @@ function readinessCell(readiness: PaneFunctionReadiness): string {
   return cliStyles.muted(label);
 }
 
-// Choices longer than this move from the flag into its description, where they can wrap.
-const MAX_INLINE_CHOICES = 24;
-
-function optionChoices(option: PaneFunctionOptionDef): string[] {
-  return option.values?.map(({ value }) => String(value)) ?? [];
-}
-
-function optionFlags(option: PaneFunctionOptionDef): string {
-  const choices = optionChoices(option).join("|");
-  const value = choices && choices.length <= MAX_INLINE_CHOICES ? choices : option.values?.length ? "value" : option.placeholder ?? option.type;
-  return `--${option.key} <${value}>`;
-}
-
 function optionDescription(option: PaneFunctionOptionDef): string {
   const choices = optionChoices(option);
   const parts = [option.description.replace(/\.$/, "")];
@@ -613,6 +623,7 @@ function renderCatalogEntry(entry: PaneCatalogEntry): string {
   lines.push("", renderSection("Examples"));
   if (capability.reportReadiness !== "unsupported") {
     lines.push(...wrapCommandLine(`gloomberb fn ${invocation}`, width));
+    for (const example of entry.argExamples ?? []) lines.push(...wrapCommandLine(`gloomberb fn ${entry.token} ${example}`, width));
     for (const option of capability.options) {
       if (option.example) lines.push(...wrapCommandLine(`gloomberb fn ${option.exampleWithoutArgument ? entry.token : invocation} ${option.example}`, width));
     }
@@ -699,13 +710,15 @@ export function renderPaneCatalogReport(
   series: readonly SeriesMatch[] = [],
   /** The `config` command a query names a setting of ("light theme"), printed last, beside the functions. */
   setting: string | null = null,
+  /** The setting answers the query ahead of the functions its words find (`csv` is the flag, not CDS): printed first. */
+  settingFirst = false,
 ): string {
   const query = args.query.trim().toLowerCase();
   const exact = query
     ? entries.find((entry) => entry.token.toLowerCase() === query)
       ?? entries.find((entry) => entry.aliases.some((alias) => alias.toLowerCase() === query))
     : undefined;
-  const withSetting = (text: string) => [text, setting ?? ""].filter(Boolean).join("\n\n");
+  const withSetting = (text: string) => (settingFirst ? [setting ?? "", text] : [text, setting ?? ""]).filter(Boolean).join("\n\n");
   if (exact) return withSetting([renderCatalogEntry(exact), renderAlsoMatches(exact, entries, query)].filter(Boolean).join("\n\n"));
 
   const width = Math.min(cliTerminalWidth() ?? CATALOG_TEXT_WIDTH, CATALOG_TEXT_WIDTH);
@@ -717,6 +730,9 @@ export function renderPaneCatalogReport(
 
   const note = (text: string) => wrapText(text, width).map((line) => cliStyles.muted(line)).join("\n");
   if (entries.length === 0) {
+    // With no function to list, the command the query names comes first: "usdt" is CRYP's stablecoins
+    // before the USD/TWD series its letters start.
+    if (setting && charted) return [gap ? wrapText(gap, width).join("\n") : "", setting, charted, terms].filter(Boolean).join("\n\n");
     if (charted) return withGap([charted, terms].filter(Boolean).join("\n\n"));
     if (glossary.exact.length > 0 || gap || setting) return withGap(terms);
     return withTerms(note(args.query

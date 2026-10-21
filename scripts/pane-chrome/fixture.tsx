@@ -56,6 +56,7 @@ import { StaticChartSurface } from "../../src/components/chart/static/chart-surf
 import { DataTableView } from "../../src/components/data-table/view";
 import { ChartTableHeader } from "../../src/components/chart-table/header";
 import { QueryBar } from "../../src/components/ui/query-bar";
+import { ColumnGrid } from "../../src/components/ui/column-grid";
 // A namespace import: the frame budget builds this file against the base
 // branch's sources too, which may not have useHeatTreemapScene.
 import * as heatSurface from "../../src/components/metric-treemap/heat-surface";
@@ -64,6 +65,7 @@ import { PaneSidebar } from "../../src/components/layout/pane/sidebar";
 import { DetachedPaneShell } from "../../src/components/layout/detached-pane-shell";
 import { usePaneTabs } from "../../src/components/layout/pane/pane-tabs";
 import { usePaneFooter } from "../../src/components/layout/pane/footer/registration";
+import { delayedFooterSegment } from "../../src/components/layout/pane/footer/model";
 import { Shell } from "../../src/components/layout/shell";
 import { Header } from "../../src/components/layout/header";
 import { StatusBar } from "../../src/components/layout/status-bar";
@@ -257,7 +259,8 @@ const PEN_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><p
  * A canvas chart (the composite chart's bitmap) over an SVG one (a sparkline),
  * on invented data, with a toolbar laid over the canvas by z-index, then the
  * CSS image layers charts draw: a dashed legend cue (a repeating gradient), a
- * colour scale (a gradient) and a toolbar icon (a colour box cut by an SVG mask).
+ * colour scale (a gradient) and a toolbar icon (a colour box cut by an SVG mask),
+ * and a ColumnGrid, whose rows are `display: contents` (DES Fundamentals, a quote book).
  */
 function ChartsPane({ width }: PaneProps) {
   const points = inventedSeries(120, 100, 18);
@@ -305,6 +308,14 @@ function ChartsPane({ width }: PaneProps) {
             maskRepeat: "no-repeat",
             maskPosition: "center",
           }}
+        />
+      </Box>
+      <Box data-shot-region="column-grid" marginTop={1} style={{ width: 360 }}>
+        <ColumnGrid
+          columns={[{ width: 10, growFrom: 10 }, { width: 12, growFrom: 8, align: "right" }]}
+          rows={[["Volume", "1.20M"], ["Market Cap", "5.00B USD"], ["P/E (TTM)", "21.5"]].map(([label, value]) => [
+            { text: label!, color: "#9aa3b2" }, { text: value!, color: "#e5e7eb" },
+          ])}
         />
       </Box>
     </Box>
@@ -428,6 +439,8 @@ function ChartRowsPane({ focused, width, height }: PaneProps) {
 
 const BOARD_TABS = [{ value: "one", label: "Stocks" }, { value: "two", label: "Rates" }];
 const BOARD_ROWS = TABLE_ROWS.slice(0, 12);
+/** The band's cursor rests on the latest close, as the inventories board's rests on the latest week. */
+const BOARD_CURSOR = CHART_SERIES[0]!.points.at(-1)!.date;
 
 /**
  * A board as the chart-table kit lays it out (inventories, money markets):
@@ -452,7 +465,7 @@ function ChartBoardPane({ paneId, focused, width, height }: PaneProps) {
             tableRows={BOARD_ROWS.length}
             tableColumns={TABLE_COLUMNS}
             query={<QueryBar width={width} meta="Invented closes" />}
-            chart={{ series: CHART_SERIES, minRows: 8 }}
+            chart={{ series: CHART_SERIES, minRows: 8, cursorDate: BOARD_CURSOR }}
           />
         )}
         selection={{ kind: "id", selectedId, getId: String, onChange: setSelectedId }}
@@ -764,7 +777,10 @@ const DES_FOOTER = params.get("footer") === "1";
 function DesPane({ width, height, focused }: PaneProps) {
   // The status and the one hint the pane's real footer carries for a delayed quote.
   usePaneFooter("des-fixture", () => DES_FOOTER ? {
-    info: [{ id: "quote", parts: [{ text: "Stale quote 2026-01-02", tone: "muted" }, { text: "15m delayed", tone: "warning" }] }],
+    info: [
+      { id: "quote", parts: [{ text: "Stale quote 2026-01-02", tone: "muted" }] },
+      delayedFooterSegment({ id: "access", detail: "15m delayed", delay: "15m", onPress: () => {} }),
+    ],
     hints: [{ id: "upgrade", key: "$", label: "upgrade", onPress: () => {} }],
   } : null, []);
   return <OverviewTab ticker={DES_TICKER} financials={DES_FINANCIALS} width={width} height={height} focused={focused} />;

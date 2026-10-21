@@ -4,6 +4,7 @@ import { isFiniteNumber } from "../../utils/guards";
 import { canonicalExchange, isKnownExchangeCode } from "../../utils/exchanges";
 import { quoteTradingDay } from "../quotes/day-range";
 import { isQuoteBeforeLatestSession } from "../quotes/freshness";
+import { delistingLabel, delistingStateLabel } from "../quotes/delisting";
 import { preMarketOpenOn, regularSessionCloseOn } from "./freshness";
 
 const CLOSED_CHANGE_MUTING_RATIO = 0.55;
@@ -66,6 +67,30 @@ export function marketStateLabel(state: MarketState): string {
 const STALE_SESSION_LABEL = "STALE";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+/** The books an extended session's bid and ask belong to, as `ticker` names them. */
+const EXTENDED_BOOK_LABELS: Partial<Record<MarketState, string>> = { PRE: "pre-market book", POST: "after-hours book" };
+
+/**
+ * What a quote's bid and ask are when the regular session is not on: the
+ * pre-market or after-hours book, or a closed market's last quote with the
+ * day it is from (ITA's $202.00 against $208.74 around a $206.65 close is no
+ * open book). Null in the regular session or without a known state, when the
+ * book is the live one. `ticker` prints it after Bid / Ask; the overview's
+ * header already names the session, so its quote book does not repeat it.
+ */
+export function quoteBookSessionLabel(quote: Quote): string | null {
+  const state = quote.marketState;
+  if (!state || state === "REGULAR") return null;
+  const extended = EXTENDED_BOOK_LABELS[state];
+  if (extended) return extended;
+  const day = quoteTradingDay(quote);
+  const date = day ? new Date(`${day}T00:00:00Z`) : null;
+  return date && Number.isFinite(date.getTime())
+    ? `last quote, ${WEEKDAYS[date.getUTCDay()]} ${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`
+    : "last quote";
+}
 
 /** `Thu close`: the weekday of the session whose close a quote still stands at. */
 function closeLabel(date: string): string {
@@ -75,9 +100,12 @@ function closeLabel(date: string): string {
 /**
  * A quote's market state as a status cell names it (marketStateLabel), STALE
  * for a print older than its venue's latest session, and the close it stands
- * at (`Thu close`) in a pre-market nothing has traded in yet.
+ * at (`Thu close`) in a pre-market nothing has traded in yet. A listing that
+ * no longer trades says so with its last session ("Delisted Oct 27, 2022"),
+ * whatever state its last print carries.
  */
 export function quoteMarketStateLabel(quote: Quote | null | undefined, now = Date.now()): string | null {
+  if (quote?.delisting) return delistingLabel(quote.delisting);
   if (!quote?.marketState) return null;
   if (isQuoteBeforeLatestSession(quote, now)) return STALE_SESSION_LABEL;
   const awaiting = preMarketCloseAwaitingPrint(quote);
@@ -160,8 +188,9 @@ function overnightSessionDisplay(quote: Quote): ExtendedSessionDisplay | null {
 }
 
 /**
- * A quote's session as a status cell names it: STALE when its last print is
- * older than its venue's latest completed session (isQuoteBeforeLatestSession),
+ * A quote's session as a status cell names it: "Delisted Oct 27, 2022" (or
+ * "Last traded ...") for a listing that no longer trades, STALE when its last
+ * print is older than its venue's latest completed session (isQuoteBeforeLatestSession),
  * the overnight session while the quote is priced by it, the close it stands
  * at (`Thu close`) in a pre-market nothing has traded in yet, else its market
  * state (marketStateLabel). The exchange stays closed overnight, so the state
@@ -174,13 +203,15 @@ export function quoteSessionLabel(quote: Quote | null | undefined, now = Date.no
 /**
  * quoteSessionLabel as an export keeps it, one of a fixed set: the market
  * state (`PRE-MKT`) in a pre-market nothing has traded in yet, where the
- * status cell names the close (`Thu close`).
+ * status cell names the close (`Thu close`), and DELISTED or INACTIVE for a
+ * listing that no longer trades, its date being the export's own field.
  */
 export function quoteSessionStateLabel(quote: Quote | null | undefined, now = Date.now()): string | null {
   return sessionLabel(quote, now, false);
 }
 
 function sessionLabel(quote: Quote | null | undefined, now: number, standingClose: boolean): string | null {
+  if (quote?.delisting) return standingClose ? delistingLabel(quote.delisting) : delistingStateLabel(quote.delisting);
   if (!quote?.marketState) return null;
   if (isQuoteBeforeLatestSession(quote, now)) return STALE_SESSION_LABEL;
   if (overnightSessionDisplay(quote)) return "OVERNIGHT";
@@ -189,11 +220,13 @@ function sessionLabel(quote: Quote | null | undefined, now: number, standingClos
 }
 
 /**
- * The color of quoteSessionLabel: STALE in the warning color every stale
- * mark uses, an extended session's while the overnight session prices the
- * quote, a closed session's for the close a pre-market still stands at.
+ * The color of quoteSessionLabel: STALE, and a listing that no longer trades,
+ * in the warning color every stale mark uses, an extended session's while the
+ * overnight session prices the quote, a closed session's for the close a
+ * pre-market still stands at.
  */
 export function quoteSessionColor(quote: Quote | null | undefined, palette: ThemeColors = colors, now = Date.now()): string {
+  if (quote?.delisting) return palette.warning;
   if (!quote?.marketState) return palette.textDim;
   if (isQuoteBeforeLatestSession(quote, now)) return palette.warning;
   if (overnightSessionDisplay(quote)) return marketStateColor("POST", palette);
@@ -206,7 +239,7 @@ export function quoteSessionColor(quote: Quote | null | undefined, palette: Them
  * with no known session rather than an open market.
  */
 export function quoteDotMarketState(quote: Quote | null | undefined, now = Date.now()): MarketState | undefined {
-  return quote && !isQuoteBeforeLatestSession(quote, now) ? quote.marketState : undefined;
+  return quote && !quote.delisting && !isQuoteBeforeLatestSession(quote, now) ? quote.marketState : undefined;
 }
 
 /** Closed prices are final snapshots, so they should not look live or directional. */
@@ -378,6 +411,8 @@ export function quoteHeadlineTime(quote: Quote): number {
  */
 export function getRegularSessionDisplay(quote: Quote | null | undefined): ActiveQuoteDisplay | null {
   if (!quote) return null;
+  // A listing that no longer trades: its last session's close, which moves no more.
+  if (quote.delisting) return { price: quote.price };
   const session = completedRegularSession(quote);
   if (session == null) return { price: quote.price, change: quote.change, changePercent: quote.changePercent };
   const { close, reported } = session;
@@ -388,6 +423,17 @@ export function getRegularSessionDisplay(quote: Quote | null | undefined): Activ
   if (reference == null) return { price: close };
   const change = close - reference;
   return { price: close, change, changePercent: (change / reference) * 100 };
+}
+
+/**
+ * The exchange-local session getRegularSessionDisplay's move belongs to: the
+ * completed session's while the headline still shows its close (a pre-market
+ * quote before anything trades, whose own session is the day ahead), the
+ * quote's declared session otherwise. Null when the quote names neither.
+ */
+export function regularSessionDisplayDate(quote: Quote | null | undefined): string | null {
+  if (!quote) return null;
+  return completedRegularSession(quote)?.date ?? quote.changeSessionDate ?? null;
 }
 
 /**
@@ -429,7 +475,7 @@ export function getRegularSessionBarClose(quote: Quote | null | undefined): { pr
  * when there is no extended print to show.
  */
 export function getExtendedSessionDisplay(quote: Quote | null | undefined): ExtendedSessionDisplay | null {
-  if (!quote) return null;
+  if (!quote || quote.delisting) return null;
   const overnight = overnightSessionDisplay(quote);
   if (overnight) return overnight;
   const state = quote.marketState;

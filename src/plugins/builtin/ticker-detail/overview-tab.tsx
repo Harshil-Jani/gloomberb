@@ -3,7 +3,9 @@ import { fundFactOverviewFields } from "../sec/fund-facts";
 import { useFundFacts } from "../sec/fund-facts-view";
 import { resolveTickerInstrumentKind } from "../../../tickers/instrument-kind";
 import { mayBeUsEquityOrFundTicker } from "../../../utils/sec";
-import type { ReactNode } from "react";
+import { ResearchTradeActions, researchTradeMatches, useResearchTrading } from "../shared/research-trading";
+import { instrumentFromTicker } from "../../../market-data/request-types";
+import { useMemo, type ReactNode } from "react";
 import { EmptyState, PaneLinkMenu, SectionHeading, usePaneNoticeFooter } from "../../../components";
 import { CompositeChart, pricePointsToResolvedSeries } from "../../../components/chart/composite";
 import { CompanyLogo, resolveCompanyLogoSrc } from "../../../components/company-logo";
@@ -22,7 +24,11 @@ import {
   quoteSessionLabel,
 } from "../../../market-data/market/status";
 import { appendQuoteToPriceReturnHistory, buildPriceReturnFields } from "../../../market-data/performance";
-import { fitFuturesContractLines, futuresContractLines, futuresSettleText, isFuturesInstrument, type FuturesContractLine } from "../../../market-data/futures-contract";
+import { changeBasisLabel, changeBasisNote, quoteChangeBasis } from "../../../market-data/market/change-basis";
+import {
+  fitFuturesContractLines, futuresContractLines, futuresSettleText, isFuturesInstrument, minorUnitPricePer,
+  type FuturesContractLine,
+} from "../../../market-data/futures-contract";
 import { useViewport } from "../../../react/input";
 import { useAppSelector } from "../../../state/app/context";
 import { colors, priceColor } from "../../../theme/colors";
@@ -46,7 +52,9 @@ import {
   textGridColumns,
 } from "./overview/components";
 import { useFuturesContractTerms } from "./overview/futures-contract";
-import type { ForwardDividendState } from "./overview/dividend-lapse";
+import type { OverviewDividendState } from "./overview/dividend";
+import { optionContractFields, useOptionContractRow } from "./overview/option-contract";
+import { resolveOptionsTarget } from "../../../utils/options";
 import { buildOverviewStats, buildPositionRows, buildProfileFields } from "./overview/model";
 import type { OverviewFunctionLink, StatField } from "./overview/types";
 import { describeFundamentalMarketCap } from "../../../utils/market-capitalization";
@@ -86,8 +94,8 @@ interface OverviewTabProps {
   onOpenChart?: () => void;
   /** A click on a figure opens its research function (beta to GR, holders to HDS). */
   onOpenFunction?: (link: OverviewFunctionLink) => void;
-  /** Whether the forward yield's dividend has stopped (useForwardDividendLapse); without it the yield stands. */
-  forwardDividend?: ForwardDividendState;
+  /** The history the dividend yield reads (useOverviewDividend): a trailing one's cash, a forward one's lapse; without it the yield stands. */
+  dividend?: OverviewDividendState;
 }
 
 export function OverviewTab(props: OverviewTabProps) {
@@ -98,8 +106,16 @@ export function OverviewTab(props: OverviewTabProps) {
 /** Where a fund's facts open: the ETF function, its facts over its filings. */
 const FUND_FACTS_LINK: OverviewFunctionLink = { name: "Fund Facts", templateId: "sec-etf-pane" };
 
-function ResolvedOverviewTab({ width, height, focused = false, ticker, financials, onOpenChart, onOpenFunction, perpetuals, forwardDividend }: OverviewTabProps & { ticker: TickerRecord }) {
+function ResolvedOverviewTab({ width, height, focused = false, ticker, financials, onOpenChart, onOpenFunction, perpetuals, dividend }: OverviewTabProps & { ticker: TickerRecord }) {
+  const trade = useResearchTrading();
   const baseCurrency = useAppSelector((state) => state.config.baseCurrency);
+  const portfolios = useAppSelector((state) => state.config.portfolios);
+  const brokerInstances = useAppSelector((state) => state.config.brokerInstances);
+  const brokerAccounts = useAppSelector((state) => state.brokerAccounts);
+  const accountNames = useMemo(
+    () => ({ portfolios, brokerInstances, brokerAccounts }),
+    [brokerAccounts, brokerInstances, portfolios],
+  );
   const { width: termWidth } = useViewport();
   const { fractionalViewport = false, nativePaneChrome, cellWidthPx = 8, cellHeightPx = 18, pixelRatio = 1 } = useUiCapabilities();
   const figureCells = useFigureCells();
@@ -114,6 +130,7 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
   // A futures symbol's settlement and contract terms load beside the quote, never in its way.
   const futuresSymbol = quote?.symbol || ticker.metadata.ticker;
   const contractTerms = useFuturesContractTerms(isFuturesInstrument(futuresSymbol, instrumentType) ? futuresSymbol : null);
+  const optionRow = useOptionContractRow(ticker);
   const exchangeRates = useFxRatesMap([
     baseCurrency,
     ticker.metadata.currency,
@@ -179,7 +196,9 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
     ],
     focused,
   });
-  const hasBidAsk = quote?.bid != null || quote?.ask != null;
+  // A listing that no longer trades has no book: its quote is its last session's close.
+  const delisted = !!quote?.delisting;
+  const hasBidAsk = !delisted && (quote?.bid != null || quote?.ask != null);
   const quoteBookInline = hasBidAsk && contentWidth >= 68;
   const quoteBookWidth = quoteBookInline ? Math.min(32, Math.max(24, Math.floor(contentWidth * 0.3))) : Math.min(contentWidth, 32);
   const quoteSummaryWidth = quoteBookInline ? Math.max(20, contentWidth - quoteBookWidth - 2) : contentWidth;
@@ -188,9 +207,16 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
   // The headline is the regular session, which stops at the close; extended trading is the line below it.
   const sessionQuote = getRegularSessionDisplay(quote);
   const extendedQuote = getExtendedSessionDisplay(quote);
-  const quotePriceText = sessionQuote ? formatMarketPriceWithCurrency(sessionQuote.price, quote?.currency, moneyOptions) : "";
-  const quoteChangeText = sessionQuote ? formatSignedMarketPrice(sessionQuote.change, moneyOptions) : "";
-  const quotePercentText = sessionQuote ? `(${formatPercentRaw(sessionQuote.changePercent)})` : "";
+  // A price in cents says what it is per (314.95¢/lb), and the move what it is measured from (vs Fri 16 Oct close).
+  const quotePriceText = sessionQuote
+    ? `${formatMarketPriceWithCurrency(sessionQuote.price, quote?.currency, moneyOptions)}${minorUnitPricePer(contractTerms, quote?.currency)}` : "";
+  // Nor a move: the close it ended on is where it stays.
+  const quoteChangeText = sessionQuote && !delisted ? formatSignedMarketPrice(sessionQuote.change, moneyOptions) : "";
+  const quotePercentText = sessionQuote && !delisted ? `(${formatPercentRaw(sessionQuote.changePercent)})` : "";
+  const changeBasis = delisted ? null : quoteChangeBasis(quote, { terms: contractTerms });
+  const changeBasisText = changeBasis ? changeBasisLabel(changeBasis) : "";
+  // The days the venue was closed since that close, under the move: "HKEX closed Mon 19 Oct, holiday".
+  const changeBasisNoteText = changeBasisNote(changeBasis);
   // The pane title already names the ticker, so the line leads with the company and drops a name that only repeats it.
   const companyName = [ticker.metadata.name, quote?.name].find((name) => name && name !== ticker.metadata.ticker) ?? "";
   const venueText = listingVenue ? (companyName ? ` (${listingVenue})` : listingVenue) : "";
@@ -217,15 +243,25 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
     ? truncateToDisplayWidth(futuresSettleText(contractTerms, quote),
       Math.max(1, quoteTextWidth - displayWidth(settleLabel) - 1))
     : "";
-  const quoteChangeCells = figureCells(quoteChangeText, "sub") + 1 + figureCells(quotePercentText, "sub");
+  const quoteChangeCells = delisted ? 0 : figureCells(quoteChangeText, "sub") + 1 + figureCells(quotePercentText, "sub");
   const stackQuoteChange = quoteChangeCells > quoteTextWidth;
   const stackQuoteSummary = figureCells(quotePriceText) + 2 + quoteChangeCells > quoteTextWidth;
+  // What the move is from follows it on its line when there is room; otherwise it takes the line
+  // under the headline, so a narrow pane never splits the move itself to fit the words.
+  const changeBasisInline = !!changeBasisText && (stackQuoteSummary ? 0 : figureCells(quotePriceText) + 2)
+    + quoteChangeCells + 1 + displayWidth(changeBasisText) <= quoteTextWidth;
   const companyNameWidth = Math.max(8, quoteTextWidth
     - displayWidth(venueText)
     - (marketStateText ? displayWidth(marketStateText) + 1 : 0));
+  // A listing that no longer trades keeps its delisting date whole on a narrow pane: the venue gives way, then the name.
+  const delistedRoom = quote?.delisting && marketStateText ? quoteTextWidth - displayWidth(marketStateText) - 1 : null;
+  const identityVenue = delistedRoom !== null && delistedRoom - displayWidth(venueText) < 8 ? "" : venueText;
+  const identityNameWidth = delistedRoom !== null ? delistedRoom - displayWidth(identityVenue) : companyNameWidth;
+  const identityName = identityNameWidth >= 4 ? companyName : "";
   const hasDayRange = quote?.low != null && quote?.high != null && quote.high > quote.low;
   const yearRange = liveFiftyTwoWeekRange(quote);
-  const dayRangeLabel = t("Day Range");
+  // A listing that no longer trades: its range is its last session's, years ago perhaps, never today's.
+  const dayRangeLabel = delisted ? t("Last Session") : t("Day Range");
   const yearRangeLabel = t("52W Range");
   const rangeLabelWidth = Math.max(
     hasDayRange ? displayWidth(dayRangeLabel) : 0,
@@ -243,7 +279,12 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
   const contractLines = contractTerms ? futuresContractLines(contractTerms, futuresSymbol) : [];
   // Columns that keep every term whole; a narrow pane stacks them in one.
   const contractColumns = textGridColumns(contractLines.map(contractField), contentWidth);
-  const contractFields = fitFuturesContractLines(contractLines, contractColumns * contractRowBudget(height)).map(contractField);
+  const futuresFields = fitFuturesContractLines(contractLines, contractColumns * contractRowBudget(height)).map(contractField);
+  // An option contract states its own terms, and the chain's open interest and IV, where a stock has a profile.
+  const optionTarget = resolveOptionsTarget(ticker);
+  const optionFields = optionTarget?.isOptionTicker ? optionContractFields(optionTarget, optionRow, quoteCurrency) : [];
+  const contractFields = futuresFields.length > 0 ? futuresFields : optionFields;
+  const contractGridColumns = futuresFields.length > 0 ? contractColumns : textGridColumns(optionFields, contentWidth);
   const stats = buildOverviewStats({
     quote,
     fundamentals,
@@ -256,10 +297,12 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
     depositaryReceipt: sharesOutstandingInReceipts(quote, fundamentals, description),
     // Report and ex-dividend dates are the listing's calendar days.
     today: zonedDateKey(Date.now(), chartTimeZone ?? "America/New_York"),
-    forwardDividend,
+    dividend,
+    bond: fundFacts?.bond ?? null,
   });
   const profileFields = buildProfileFields({
-    instrumentType: instrumentTypeLabel(instrumentType, quote?.name || ticker.metadata.name),
+    // The contract section names an option's type.
+    instrumentType: optionFields.length > 0 ? undefined : instrumentTypeLabel(instrumentType, quote?.name || ticker.metadata.name),
     sector,
     industry,
     profile,
@@ -275,6 +318,7 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
     quoteCurrency,
     baseCurrency,
     toBase,
+    accountNames,
   });
 
   return (
@@ -314,13 +358,13 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
             <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
             {hasIdentityLine && (
               <Box flexDirection="row" minWidth={0} overflow="hidden">
-                {companyName && (
-                  <ClippedText fg={colors.textDim} text={companyName} width={companyNameWidth} />
+                {identityName && (
+                  <ClippedText fg={colors.textDim} text={identityName} width={identityNameWidth} />
                 )}
-                {venueText && <Text flexShrink={0} fg={colors.textDim}>{venueText}</Text>}
-                {quote?.marketState && (
+                {identityVenue && <Text flexShrink={0} fg={colors.textDim}>{identityVenue}</Text>}
+                {marketStateText && (
                   <Text flexShrink={0} fg={quoteSessionColor(quote)}>
-                    {companyName || venueText ? " " : ""}{marketStateText}
+                    {identityName || identityVenue ? " " : ""}{marketStateText}
                   </Text>
                 )}
               </Box>
@@ -333,12 +377,26 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
                 alignItems={stackQuoteSummary ? undefined : "baseline"}
               >
                 <FigureText>{quotePriceText}</FigureText>
-                <Box flexDirection={stackQuoteChange ? "column" : "row"} gap={stackQuoteChange ? 0 : 1}>
-                  <FigureText part="sub" change={sessionQuote.change}>{quoteChangeText}</FigureText>
-                  <FigureText part="sub" change={sessionQuote.change}>{quotePercentText}</FigureText>
-                </Box>
+                {!delisted && (
+                  <Box flexDirection={stackQuoteChange ? "column" : "row"} gap={stackQuoteChange ? 0 : 1}
+                    alignItems={changeBasisInline ? "baseline" : undefined}>
+                    <FigureText part="sub" change={sessionQuote.change}>{quoteChangeText}</FigureText>
+                    <FigureText part="sub" change={sessionQuote.change}>{quotePercentText}</FigureText>
+                    {changeBasisInline ? <Text flexShrink={0} fg={colors.textDim}>{changeBasisText}</Text> : null}
+                  </Box>
+                )}
               </Box>
             )}
+            {sessionQuote && changeBasisText && !changeBasisInline ? (
+              <Box minWidth={0} overflow="hidden">
+                <ClippedText fg={colors.textDim} text={changeBasisText} width={quoteTextWidth} />
+              </Box>
+            ) : null}
+            {sessionQuote && changeBasisNoteText ? (
+              <Box minWidth={0} overflow="hidden">
+                <ClippedText fg={colors.textDim} text={changeBasisNoteText} width={quoteTextWidth} />
+              </Box>
+            ) : null}
             {extendedQuote && (
               <Box flexDirection="row" gap={2}>
                 <Text fg={colors.textDim}>{extendedSessionLineLabel(extendedQuote, t)}:</Text>
@@ -383,7 +441,7 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
                 low={quote.low!}
                 high={quote.high!}
                 label={dayRangeLabel}
-                shortLabel={t("Day")}
+                shortLabel={delisted ? t("Last") : t("Day")}
                 labelWidth={rangeLabelWidth}
                 endpointWidth={rangeEndpointCells}
                 width={rangeWidth}
@@ -413,10 +471,11 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
         {contractFields.length > 0 && (
           <Box flexDirection="column">
             <SectionHeading title={t("Contract")} />
-            <FundamentalsGrid fields={contractFields} width={contentWidth} columns={contractColumns} />
+            <FundamentalsGrid fields={contractFields} width={contentWidth} columns={contractGridColumns} />
           </Box>
         )}
 
+        <ResearchTradeActions focused={focused} />
         {hasHistory && (
           <Box
             onMouseDown={onOpenChart
@@ -436,6 +495,7 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
               interactive={false}
               series={[priceSeries]}
               panels={[{ id: "price" }]}
+              levels={trade && researchTradeMatches(trade, instrumentFromTicker(ticker)) ? { seriesId: priceSeries.id, items: trade.levels } : undefined}
               axisWidth={8}
               showLegend={false}
             />
@@ -473,6 +533,8 @@ function ResolvedOverviewTab({ width, height, focused = false, ticker, financial
             <PositionTable rows={positionRows} width={contentWidth} />
           </Box>
         )}
+
+        {trade?.orders?.(contentWidth)}
 
         {profileFields.length > 0 && (
           <Box flexDirection="column">

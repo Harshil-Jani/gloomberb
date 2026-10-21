@@ -1,4 +1,5 @@
 import { scheduleConfigSave } from "../state/config-save-scheduler";
+import { normalizeStoredBaseCurrency } from "../utils/base-currency";
 import { debugLog } from "../utils/debug-log";
 import { fnv1aHex, stableStringify } from "../utils/hash";
 import type { AppConfig, BrokerInstanceConfig, SavedLayout } from "../types/config";
@@ -33,11 +34,22 @@ import {
 import { isFiniteNumber, isRecord, recordOrNull } from "../utils/guards";
 import { getBrokerInstance } from "../utils/broker-instances";
 import { withoutMissingWatchlists } from "../portfolio/mutations";
+import { positionContractMultiplier } from "../portfolio/position-metrics";
 import {
   clearLeftoverBrokerHoldings,
   knownBrokerHoldings,
   type KnownBrokerHoldings,
 } from "../brokers/broker-portfolio-sync";
+import {
+  isLocalOnlyInstance,
+  isLocalOnlyPortfolio,
+  localOnlyScope,
+  publicConfig,
+  publicMarketData,
+  publicTickers,
+  withLocalOnlyEntries,
+  type LocalOnlyScope,
+} from "./local-only";
 
 /**
  * What a saved layout mirrors from the live session rather than from the
@@ -263,6 +275,7 @@ function sanitizePosition(position: TickerPosition): TickerPosition {
     avgCost: position.avgCost,
     currency: position.currency,
     dateAcquired: position.dateAcquired,
+    ...(position.costFxRate != null && position.costFxCurrency ? { costFxRate: position.costFxRate, costFxCurrency: position.costFxCurrency } : {}),
     broker: position.broker,
     side: position.side,
     marketValue: position.marketValue,
@@ -405,6 +418,7 @@ function collectCoreConfigPayload(config: AppConfig) {
 }
 
 function positionValueBase(
+  ticker: TickerRecord,
   position: TickerPosition,
   financials: TickerFinancials | null | undefined,
   baseCurrency: string,
@@ -418,9 +432,11 @@ function positionValueBase(
   const hasMarkPrice = typeof position.markPrice === "number" && Number.isFinite(position.markPrice);
   const hasQuotePrice = typeof financials?.quote?.price === "number" && Number.isFinite(financials.quote.price);
   const price = hasMarkPrice ? position.markPrice : hasQuotePrice ? financials!.quote!.price : position.avgCost;
-  if (!Number.isFinite(position.shares) || typeof price !== "number" || !Number.isFinite(price)) return null;
+  // The multiplier the portfolio values the lot by: a future of unknown size has no value, never one at 1x.
+  const multiplier = positionContractMultiplier(ticker, position);
+  if (!Number.isFinite(position.shares) || typeof price !== "number" || !Number.isFinite(price) || multiplier === null) return null;
   return convertCurrency(
-    Math.abs(position.shares * price * (position.multiplier ?? 1)),
+    Math.abs(position.shares * price * multiplier),
     hasQuotePrice && !hasMarkPrice ? quoteCurrency : positionCurrency,
     baseCurrency,
     exchangeRates,
@@ -508,7 +524,7 @@ function collectAnalyticsByPortfolio(
       );
       for (const position of portfolioPositions) {
         if (position.shares === 0) continue;
-        const value = positionValueBase(position, tickerFinancials, config.baseCurrency, exchangeRates);
+        const value = positionValueBase(ticker, position, tickerFinancials, config.baseCurrency, exchangeRates);
         if (value == null || !Number.isFinite(value)) {
           unsupported = true;
           continue;
@@ -607,9 +623,11 @@ function collectCoreCollectionsPayload(
   financials: Map<string, TickerFinancials>,
   exchangeRates: Map<string, number>,
   brokerAccounts: Record<string, BrokerAccount[]>,
+  /** The financials whose quotes may be uploaded: without those a source that keeps its market data local supplied. */
+  quoted: Map<string, TickerFinancials> = financials,
 ) {
   const records = [...tickers.values()]
-    .map((ticker) => sanitizeTickerMetadata(ticker.metadata, financials.get(ticker.metadata.ticker)))
+    .map((ticker) => sanitizeTickerMetadata(ticker.metadata, quoted.get(ticker.metadata.ticker)))
     .filter(isSyncableTicker);
 
   // Only the USD anchor goes on the wire, as before: readers of the snapshot
@@ -868,14 +886,38 @@ interface LayoutMergeContext {
   pushedAt?: string;
 }
 
+/** A pulled config without profiles and portfolios that are local-only here (an older build may have pushed them). */
+function publicConfigPayload(payload: Record<string, unknown>, scope: LocalOnlyScope): Record<string, unknown> {
+  const without = (entries: unknown, isLocal: (entry: Record<string, unknown>) => boolean) => (
+    Array.isArray(entries) ? entries.filter((entry) => !isRecord(entry) || !isLocal(entry)) : entries
+  );
+  return {
+    ...payload,
+    ...("brokerInstances" in payload ? { brokerInstances: without(payload.brokerInstances, (entry) => isLocalOnlyInstance({ id: String(entry.id) }, scope)) } : {}),
+    ...("portfolios" in payload ? { portfolios: without(payload.portfolios, (entry) => isLocalOnlyPortfolio(entry as unknown as Portfolio, scope)) } : {}),
+  };
+}
+
 function mergeConfigPayload(
   config: AppConfig,
   payload: unknown,
   baselineConfig: AppConfig = config,
   lastSyncedPayload?: unknown,
   layoutContext: LayoutMergeContext = {},
+  scope: LocalOnlyScope | null = null,
 ): AppConfig | null {
   if (!isRecord(payload)) return null;
+  if (scope) {
+    // Merged as if the local-only profiles and portfolios were not here, then put back as they were.
+    const local = publicConfig(config, scope);
+    const merged = mergeConfigPayload(local, publicConfigPayload(payload, scope), baselineConfig === config ? local : publicConfig(baselineConfig, scope),
+      lastSyncedPayload, layoutContext);
+    return merged && {
+      ...merged,
+      brokerInstances: withLocalOnlyEntries(merged.brokerInstances, config.brokerInstances, (instance) => isLocalOnlyInstance(instance, scope)),
+      portfolios: withLocalOnlyEntries(merged.portfolios, config.portfolios, (portfolio) => isLocalOnlyPortfolio(portfolio, scope)),
+    };
+  }
   const next: AppConfig = { ...config };
   // Two guards, both needed. baselineConfig catches edits made while this pull
   // was in flight; lastSyncedPayload catches edits made while the app was not
@@ -895,6 +937,8 @@ function mergeConfigPayload(
   };
 
   assign("baseCurrency");
+  // A device on an older version may still send a name or sign (Canadian dollar, CA$): it applies as its code, as a saved one loads.
+  if (typeof next.baseCurrency === "string" && next.baseCurrency.trim()) next.baseCurrency = normalizeStoredBaseCurrency(next.baseCurrency);
   assign("refreshIntervalMinutes");
   if ("portfolios" in payload && canApply("portfolios")) {
     const syncedPortfolios = payload.portfolios;
@@ -1143,6 +1187,8 @@ interface PulledTickersMerge {
   /** This device's live broker portfolios, each with the side holding its latest broker sync. */
   brokerPortfolios: ReadonlyMap<string, "local" | "pulled">;
   known: KnownBrokerHoldings;
+  /** Connections kept on this device: their portfolios' holdings here outlast any pull. */
+  localOnly: LocalOnlyScope | null;
 }
 
 /**
@@ -1219,7 +1265,7 @@ function mergePulledTicker(
   const portfolios: string[] = [];
   for (const portfolioId of portfolioIds) {
     const brokerSide = merge.brokerPortfolios.get(portfolioId);
-    const takePulled = brokerSide
+    const takePulled = merge.localOnly?.portfolioIds.has(portfolioId) ? false : brokerSide
       ? brokerSide === "pulled"
       : !comparable || sameAsStored(
         holdingIn(localPositions, localLinks, portfolioId),
@@ -1264,7 +1310,7 @@ export const coreConfigSyncContributor: SyncContributor = {
   id: CORE_CONFIG_CONTRIBUTOR_ID,
   schemaVersion: 1,
   collect: ({ state, baselinePayload, memo }) => withLayoutProvenance(
-    collectCoreConfigPayload(state.config) as Record<string, unknown>,
+    collectCoreConfigPayload(publicConfig(state.config, localOnlyScope(state.config))) as Record<string, unknown>,
     baselinePayload,
     memo?.get(),
   ),
@@ -1277,7 +1323,7 @@ export const coreConfigSyncContributor: SyncContributor = {
     const nextConfig = mergeConfigPayload(state.config, payload, baselineState.config, baselinePayload, {
       memo: memo?.get(),
       pushedAt,
-    });
+    }, localOnlyScope(state.config));
     if (!nextConfig) return;
     const configChanged = !valuesEqual(nextConfig, state.config);
     if (configChanged) {
@@ -1323,15 +1369,24 @@ export const coreConfigSyncContributor: SyncContributor = {
 export const coreCollectionsSyncContributor: SyncContributor = {
   id: "core.collections",
   schemaVersion: 1,
-  collect: async ({ state }) => collectCoreCollectionsPayload(
-    state.config,
-    state.tickers,
-    state.financials,
-    await loadHoldingExchangeRates(state.config, state.tickers, state.financials),
-    state.brokerAccounts,
-  ),
+  collect: async ({ state, isLocalMarketData }) => {
+    // Connections the user keeps on this device stay here, with their portfolios, account values and
+    // positions; so do the quotes and bars of a source that keeps its market data local.
+    const scope = localOnlyScope(state.config);
+    const config = publicConfig(state.config, scope);
+    const tickers = publicTickers(state.tickers, scope);
+    return collectCoreCollectionsPayload(
+      config,
+      tickers,
+      state.financials,
+      await loadHoldingExchangeRates(config, tickers, state.financials),
+      state.brokerAccounts,
+      publicMarketData(state.financials, isLocalMarketData),
+    );
+  },
   apply: async (payload, { snapshot, baselinePayload, baselineState, getState, isCurrent, dispatch, tickerRepository }) => {
     if (!isRecord(payload)) return;
+    const scope = localOnlyScope(getState().config);
     hydrateProfileAnalytics(payload);
     if (!isCurrent()) return;
     // The config contributor applies first, so this is the config this pull left.
@@ -1351,6 +1406,7 @@ export const coreCollectionsSyncContributor: SyncContributor = {
         portfolios: [pulledPortfolios, pulledConfig?.portfolios].flatMap(idEntries),
         brokerInstances: idEntries(pulledConfig?.brokerInstances),
       }),
+      localOnly: scope,
     };
     // Tickers here and pulled ones drop the ids of any watchlist that is gone
     // (removed elsewhere, or deleted by an older build that left its id on the

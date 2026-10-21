@@ -41,9 +41,12 @@ import {
 import type { NewsArticle, NewsQuery } from "../../types/news-source";
 import { normalizeNewsFeed } from "../../news/news-model";
 import { resolveCurrencyUnit } from "../../utils/currency-units";
+import { isRoundTheClockCoin } from "../../utils/crypto-pair";
 import { canonicalExchange, canonicalTickerKey, parsePublicTickerKey } from "../../utils/exchanges";
 import { normalizePriceHistory, priceHistoryIntervalMs, reachesLatestSettledSession } from "../../utils/price-history";
-import { createProviderMiss, providerMissReason } from "../provider-errors";
+import { createProviderMiss, ProviderBusyError, providerMissReason } from "../provider-errors";
+import { parseListingDelisting } from "../../market-data/quotes/delisting";
+import { isRetryableApiError } from "../../api-client/errors";
 import { assertSecRegistrantMatches } from "../sec-registrant";
 import { nonUsSecListingVenue } from "../../utils/sec";
 import { publicListingTarget } from "../listing-target";
@@ -76,11 +79,17 @@ import {
   namesPerpetualMarket,
   perpetualTarget,
   searchPerpetualMarkets,
+  boardSearchesFrom,
 } from "./perpetuals";
 import { predictionMarketListing } from "../../tickers/prediction-listing";
 import { settleWithin } from "../../utils/async-deadline";
+import { cloudSearchBatch, cloudTickerChangesBatch } from "./batched-lookups";
 
 const providerId = GLOOMBERB_CLOUD_PROVIDER_ID;
+/** How long a search that is not typed waits for perpetual markets. */
+const PERPETUAL_SEARCH_WAIT_MS = 2_000;
+/** How long a batched search waits for the board it answers every query's perpetual markets from. */
+const PERPETUAL_BOARD_WAIT_MS = 5_000;
 const CLOUD_RESOLUTION_SUPPORT = normalizeChartResolutionSupport([
   { resolution: "1m", maxRange: "1W" },
   { resolution: "5m", maxRange: "1M" },
@@ -112,6 +121,7 @@ function mapCloudSecFiling(item: {
   companyName?: string;
   filingUrl: string;
   primaryDocumentUrl?: string;
+  fileNumber?: string;
 }): SecFilingItem {
   return {
     accessionNumber: item.accessionNumber,
@@ -126,6 +136,8 @@ function mapCloudSecFiling(item: {
     companyName: item.companyName,
     filingUrl: item.filingUrl,
     primaryDocumentUrl: item.primaryDocumentUrl,
+    // Absent from an older server: no file number is not the same as an empty one.
+    ...(typeof item.fileNumber === "string" ? { fileNumber: item.fileNumber } : {}),
   };
 }
 
@@ -207,11 +219,12 @@ function mapCloudPriceHistory(
   const { divisor } = resolveCurrencyUnit(
     response.currency ?? response.providerMeta?.currency,
   );
+  const coin = isRoundTheClockCoin(ticker, exchange);
   const points = normalizePriceHistory(
     unwrapRequiredCloudResponse(
       response,
       `Cloud chart data is unavailable for ${ticker}`,
-    ).map((point) => mapPricePoint(point, divisor, exchange)),
+    ).map((point) => mapPricePoint(point, divisor, exchange, coin)),
   );
   if (stale && !reachesLatestSettledSession(points, Date.now(), { symbol: ticker, exchange, intervalMs: priceHistoryIntervalMs(interval) })) {
     throw createProviderMiss(`Cloud chart data is stale for ${ticker}`);
@@ -239,15 +252,39 @@ function mapCloudPriceHistory(
   }
   // Sessions of daily bars the answer left out for a close at or below zero.
   const nonPositiveCloseDates = resolution === "1d" ? cloudNonPositiveCloseDates(response.omittedSessions) : undefined;
+  const delisting = parseListingDelisting(response.delisting);
   return {
     points,
     resolution,
+    ...(delisting ? { delisting } : {}),
     ...(session && matchingSource && matchingIdentity ? { session } : {}),
     ...(nonPositiveCloseDates ? { nonPositiveCloseDates } : {}),
     ...(coverageStart ? { coverageStart } : {}),
     ...(coverageNote ? { coverageNote } : {}),
     ...(extendedHours ? { extendedHours: true } : {}),
   };
+}
+
+const DAY_MS = 86_400_000;
+/** Listings Gloom Cloud said no longer trade, by listing key: the day after each one's last session. */
+const delistedHistoryEnds = new Map<string, Date>();
+
+/**
+ * Where a trailing window ends for a listing that no longer trades: the day
+ * after its last session, as a window ending now ends the day after today's.
+ * A window ending now would hold none of its bars, or only the last few.
+ */
+function delistedHistoryEnd(response: CloudMarketResponse<unknown>, key: string): Date | null {
+  const delisting = parseListingDelisting(response.delisting);
+  if (!delisting) {
+    // The symbol trades again (another issuer took it): its windows end now.
+    delistedHistoryEnds.delete(key);
+    return null;
+  }
+  const end = new Date(Date.parse(`${delisting.lastTradeDate}T00:00:00Z`) + DAY_MS);
+  if (delistedHistoryEnds.size >= 1024) delistedHistoryEnds.clear();
+  delistedHistoryEnds.set(key, end);
+  return end;
 }
 
 function cloudHistoryResolution(interval: string): ManualChartResolution | null {
@@ -537,14 +574,14 @@ export class GloomberbCloudProvider implements AssetDataProvider {
         // A successful batch can contain an expired cache fallback for only
         // one listing. Match the single-quote freshness boundary and let the
         // normal router retry that item without discarding its healthy peers.
-        if (item.stale === true) {
+        // A listing that no longer trades has only that last quote: kept, flagged stale.
+        const delisted = !!parseListingDelisting(item.data?.delisting);
+        if (item.stale === true && !delisted) {
           return { target, quote: null, error: createProviderMiss(`Cloud quotes are stale for ${target.symbol}`) };
         }
         if ((item.status === "success" || item.status === "partial") && item.data) {
-          return {
-            target,
-            quote: retainRequestedQuoteSymbol(mapQuote(item.data), target.symbol),
-          };
+          const quote = retainRequestedQuoteSymbol(mapQuote(item.data), target.symbol);
+          return { target, quote: item.stale === true ? { ...quote, stale: true } : quote };
         }
         return {
           target,
@@ -578,8 +615,11 @@ export class GloomberbCloudProvider implements AssetDataProvider {
     const listings = await withCloudFallback(
       () => apiClient.searchInstruments(query, context?.limit ?? 10),
       "Cloud search is unavailable",
-    );
-    const perpetuals = await settleWithin(pending, namesPerpetualMarket(query) ? 2_000 : context?.interactive ? 250 : 2_000) ?? [];
+    ).catch((error: unknown) => {
+      // Rate limited or overloaded: the search was not run, which is not a search that found nothing.
+      throw isRetryableApiError(error) ? new ProviderBusyError("Cloud search is busy", { cause: error }) : error;
+    });
+    const perpetuals = await settleWithin(pending, namesPerpetualMarket(query) || !context?.interactive ? PERPETUAL_SEARCH_WAIT_MS : 250) ?? [];
     // Ahead of the listings, so a contract found by its plain name ("brent" for BZUSDT:BINANCE) is not cut
     // behind every warrant that names it; an exact symbol still leads.
     return perpetuals.length ? [...perpetuals, ...listings] : listings;
@@ -674,6 +714,30 @@ export class GloomberbCloudProvider implements AssetDataProvider {
     return response.status === "success" || response.status === "partial" ? response.data : null;
   }
 
+  getTickerChangesBatch(symbols: string[], options: { signal?: AbortSignal } = {}): Promise<Map<string, TickerChanges | null> | null> {
+    return cloudTickerChangesBatch(symbols, options);
+  }
+
+  async searchBatch(queries: string[], options: { limit?: number; signal?: AbortSignal } = {}): Promise<Map<string, InstrumentSearchResult[]> | null> {
+    const answers = await cloudSearchBatch(queries, options);
+    if (!answers) return null;
+    // Perpetual markets lead each answer, as `search` gives them, so a symbol in a list resolves as it does alone:
+    // one read of the board answers every query's search of it. A query that found no listing is searched again
+    // on its own, which finds them then; a board that does not answer leaves them out, as a search does.
+    const found = queries.filter((query) => answers.get(query)?.length);
+    const board = found.length
+      ? await settleWithin(apiClient.getCloudPerpsBoard().catch(logFailure("sources.gloomberb-cloud.index", "Reading the perpetual board failed", null)), PERPETUAL_BOARD_WAIT_MS)
+      : null;
+    if (!board) return answers;
+    const client = boardSearchesFrom(board);
+    for (const query of found) {
+      const perpetuals = await searchPerpetualMarkets(query, client)
+        .catch(logFailure("sources.gloomberb-cloud.index", "Searching perpetual markets failed", [] as InstrumentSearchResult[]));
+      if (perpetuals.length) answers.set(query, [...perpetuals, ...answers.get(query)!]);
+    }
+    return answers;
+  }
+
   async getArticleSummary(url: string): Promise<string | null> {
     return (await apiClient.getCloudArticleSummary(url)).summary;
   }
@@ -739,19 +803,27 @@ export class GloomberbCloudProvider implements AssetDataProvider {
     const target = cloudInstrumentTarget(ticker, exchange);
     exchange = target.exchange ?? "";
     const interval = toCloudInterval(resolution);
-    const endDate = new Date();
-    const startDate = subtractTimeRange(endDate, bufferRange);
     const includeTime = /^\d+(min|h)$/i.test(interval);
-    const { response, extendedHours } = await withCloudFallback(
-      () => loadCloudHistory(interval, (session) => apiClient.getCloudHistory(target.symbol, exchange, {
-        interval,
-        startDate: formatCloudDateTime(startDate, includeTime, exchange),
-        endDate: formatCloudHistoryEnd(endDate, includeTime, exchange),
-        ...(session ? { session } : {}),
-      }), _context),
-      `Cloud chart data is unavailable for ${ticker}`,
-    );
-    return mapCloudPriceHistory(response, target.symbol, exchange, interval, startDate, endDate, extendedHours);
+    const listingKey = canonicalTickerKey(target.symbol, exchange);
+    const load = (endDate: Date) => {
+      const startDate = subtractTimeRange(endDate, bufferRange);
+      return withCloudFallback(
+        () => loadCloudHistory(interval, (session) => apiClient.getCloudHistory(target.symbol, exchange, {
+          interval,
+          startDate: formatCloudDateTime(startDate, includeTime, exchange),
+          endDate: formatCloudHistoryEnd(endDate, includeTime, exchange),
+          ...(session ? { session } : {}),
+        }), _context),
+        `Cloud chart data is unavailable for ${ticker}`,
+      ).then((answer) => ({ ...answer, startDate, endDate }));
+    };
+    // A listing that no longer trades is read up to its last session, not up to now.
+    const knownEnd = delistedHistoryEnds.get(listingKey);
+    const now = new Date();
+    let answer = await load(knownEnd ?? now);
+    const delistedEnd = delistedHistoryEnd(answer.response, listingKey);
+    if (delistedEnd ? delistedEnd.getTime() < answer.endDate.getTime() : knownEnd) answer = await load(delistedEnd ?? now);
+    return mapCloudPriceHistory(answer.response, target.symbol, exchange, interval, answer.startDate, answer.endDate, answer.extendedHours);
   }
 
   async getDetailedPriceHistory(

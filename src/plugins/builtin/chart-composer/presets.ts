@@ -6,7 +6,7 @@ import {
 } from "../../../time-series/types";
 import type { ChartResolution, TimeRange } from "../../../components/chart/core/types";
 import { MAX_CHART_COMPOSER_SERIES } from "./chart-spec";
-import { appendChartSeries, buildCustomSeries, buildSeriesSpec, panelsForSeries } from "./chart-spec-edit";
+import { appendChartSeries, appendPlacedSeries, buildCustomSeries, buildSeriesSpec, panelsForSeries } from "./chart-spec-edit";
 import { currencyPairSpelling } from "../../../utils/currency-pair";
 import { dashedCoinPair } from "../../../utils/crypto-pair";
 import {
@@ -21,6 +21,8 @@ import {
 import { setBuiltinStudies, setPairStudies, type PairStudySelection } from "./studies";
 import { looksLikeFormula, parseFormulaExpression, type ParsedFormula } from "./formula";
 import type { SeriesCatalogSuggestion } from "./series-catalog";
+import { getSharedRegistry } from "../../registry";
+import { seriesCatalogEntry } from "../../../series/registry";
 
 function chartSpec(
   series: ChartSeriesSpec[],
@@ -43,7 +45,8 @@ export function buildEmptyChartPreset(): ChartSpec {
 /**
  * `GAA/VOO`, `GAA / VOO`, and `CL=F - ES=F` are a ratio or a spread of two series.
  * A slash that is the symbol stays one series (`EUR/USD`, `BTC/USD`), and so does
- * a field written with a slash (`AAPL:EV/EBITDA`). A comma-separated list stays a list.
+ * a field written with a slash (`AAPL:EV/EBITDA`) and the symbol a catalog series
+ * takes after one (`CAP:short-volume:ratio/AAPL`). A comma-separated list stays a list.
  */
 function derivedPair(expression: string): { series: ParsedSeriesExpression[]; formula: PairStudySelection } | null {
   const trimmed = expression.trim();
@@ -58,6 +61,7 @@ function derivedPair(expression: string): { series: ParsedSeriesExpression[]; fo
   const tight = /^([^/\s]+)\/([^/\s]+)$/.exec(trimmed);
   if (!tight) return null;
   const [leftToken, rightToken] = [tight[1]!, tight[2]!];
+  if (/^CAP:/i.test(leftToken) && !/^CAP:/i.test(rightToken)) return null;
   const quote = rightToken.split(":")[0]!;
   if (currencyPairSpelling(`${leftToken}/${quote}`) || dashedCoinPair(`${leftToken}/${quote}`)) return null;
   const left = parseSeriesExpression(leftToken);
@@ -129,14 +133,54 @@ function appendChartFormula(spec: ChartSpec, expression: string): { spec: ChartS
   };
 }
 
-/** The chart with a catalog suggestion added: one series, or a formula's legs and its study. */
+/**
+ * The chart with a catalog suggestion added: one series, a registered
+ * series' lines where it asks for them, or a formula's legs and its study.
+ */
 export function appendCatalogSuggestion(
   spec: ChartSpec,
   suggestion: SeriesCatalogSuggestion,
 ): { spec: ChartSpec; series: ChartSeriesSpec } {
-  return suggestion.formula !== undefined
-    ? appendChartFormula(spec, suggestion.formula)
-    : appendChartSeries(spec, suggestion.expression);
+  if (suggestion.formula !== undefined) return appendChartFormula(spec, suggestion.formula);
+  if (suggestion.lines || suggestion.placement) {
+    return appendPlacedSeries(spec, suggestion.lines ?? [suggestion.expression!], {
+      name: suggestion.seriesName ?? suggestion.label,
+      ...(suggestion.placement ? { placement: suggestion.placement } : {}),
+      ...(suggestion.symbol ? { symbol: suggestion.symbol } : {}),
+    });
+  }
+  return appendChartSeries(spec, suggestion.expression);
+}
+
+/**
+ * The chart CAT opens for a registered series that asks where it is drawn or
+ * draws several lines: the ticker's price with the series placed as it asks,
+ * or the lines on their own.
+ */
+export function buildRegisteredSeriesChart(
+  series: { name: string; template: string; placement?: SeriesCatalogSuggestion["placement"]; lines?: ReadonlyArray<{ name: string; expression: string; style?: ChartSeriesSpec["style"] }> },
+  symbol?: string,
+): ChartSpec {
+  const fill = (template: string) => symbol
+    ? template.replaceAll("{ticker}", template.startsWith("CAP:") ? encodeURIComponent(symbol) : symbol)
+    : template;
+  const prefix = symbol ? `${symbol} · ` : "";
+  const lines = series.lines?.length
+    ? series.lines.map((line) => {
+      const parsed = parseSeriesExpression(fill(line.expression));
+      if (!parsed) throw new Error(`"${line.expression}" is not a chart series.`);
+      return { ...parsed, label: `${prefix}${series.name} · ${line.name}`, ...(line.style ? { style: line.style } : {}) };
+    })
+    : [(() => {
+      const parsed = parseSeriesExpression(fill(series.template));
+      if (!parsed) throw new Error(`"${series.template}" is not a chart series.`);
+      return { ...parsed, label: `${prefix}${series.name}` };
+    })()];
+  const base = series.placement && symbol ? buildPriceChartPreset(symbol) : buildEmptyChartPreset();
+  return appendPlacedSeries(base, lines, {
+    name: series.name,
+    ...(series.placement && symbol ? { placement: series.placement, symbol } : {}),
+  }).spec;
 }
 
 /**
@@ -157,14 +201,32 @@ export function buildCustomChartPreset(expression: string, fallbackSymbol?: stri
     return formulaChartPreset(formula);
   }
   if (parsed.length === 0) return fallbackSymbol ? buildPriceChartPreset(fallbackSymbol) : buildEmptyChartPreset();
+  const registered = parsed.length === 1 ? placedRegisteredSeries(parsed[0]!) : null;
+  if (registered) return buildRegisteredSeriesChart(registered.series, registered.ticker);
   return chartSpec(buildCustomSeries(parsed));
 }
 
-export function buildPriceChartPreset(symbol: string): ChartSpec {
+/**
+ * A registered series typed alone (`CAP:studies:rsi/AAPL`) that says where it is
+ * drawn or draws several lines charts as CAT opens it. Naming one line
+ * (`rsi~signal/AAPL`) charts that line alone.
+ */
+function placedRegisteredSeries(expression: ParsedSeriesExpression) {
+  if (expression.kind !== "capability" || expression.seriesId.split("/")[0]!.includes("~")) return null;
+  const found = getSharedRegistry()?.series?.findLoaded(expression.capabilityId, expression.seriesId);
+  if (!found || (!found.series.definition.placement && !found.series.definition.lines?.length)) return null;
+  const entry = seriesCatalogEntry(found.series);
+  return {
+    series: { name: entry.name, template: entry.expression, placement: entry.placement, lines: entry.lines },
+    ...(found.ticker ? { ticker: found.ticker } : {}),
+  };
+}
+
+export function buildPriceChartPreset(symbol: string, range?: TimeRange): ChartSpec {
   const normalized = normalizeInstrument(symbol, true);
   if (!normalized) return buildEmptyChartPreset();
   return setBuiltinStudies(
-    chartSpec([buildSeriesSpec({ kind: "security", ...normalized, fieldId: CHART_FIELD_IDS.price }, 0)]),
+    chartSpec([buildSeriesSpec({ kind: "security", ...normalized, fieldId: CHART_FIELD_IDS.price }, 0)], { range }),
     ["volume"],
   );
 }

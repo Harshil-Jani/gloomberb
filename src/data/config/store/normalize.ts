@@ -24,9 +24,11 @@ import { migrateSavedConfig, type ConfigMigrationHost } from "./migrations";
 import { encodeBuiltinDisabledPluginIds, expandBuiltinPluginGroups } from "../../../plugins/ownership";
 import { sanitizeSavedPaneState } from "./pane-state";
 import { isRecord } from "../../../utils/guards";
+import { normalizeStoredBaseCurrency } from "../../../utils/base-currency";
 import { debugLog } from "../../../utils/debug-log";
 import { DEFAULT_THEME, themes } from "../../../theme/themes";
 import { sanitizeStarPrompt } from "../../../app/star-prompt/model";
+import { sanitizeCommandBarOpens } from "../../../app/command-bar-intro";
 import { sanitizeUpdatesConfig } from "../../../updater/channel";
 
 const configLog = debugLog.createLogger("config");
@@ -79,7 +81,9 @@ export function normalizeLoadedConfig(
   const config: AppConfig = {
     dataDir,
     configVersion: CURRENT_CONFIG_VERSION,
-    baseCurrency: typeof candidate.baseCurrency === "string" ? candidate.baseCurrency : defaults.baseCurrency,
+    // A name or sign an older version saved (Canadian dollar, CA$) reads as its code; nothing turns into USD unasked.
+    baseCurrency: typeof candidate.baseCurrency === "string" && candidate.baseCurrency.trim()
+      ? normalizeStoredBaseCurrency(candidate.baseCurrency) : defaults.baseCurrency,
     refreshIntervalMinutes: typeof candidate.refreshIntervalMinutes === "number" ? candidate.refreshIntervalMinutes : defaults.refreshIntervalMinutes,
     portfolios: sanitizePortfolios(candidate.portfolios, defaults.portfolios),
     watchlists: sanitizeWatchlists(candidate.watchlists, defaults.watchlists),
@@ -100,6 +104,7 @@ export function normalizeLoadedConfig(
     fontSize: sanitizeFontSize(candidate.fontSize, defaults.fontSize),
     recentTickers: sanitizeStringArray(candidate.recentTickers, defaults.recentTickers),
     recentCommands: sanitizeRecentCommands(candidate.recentCommands, defaults.recentCommands),
+    commandBarOpens: sanitizeCommandBarOpens(candidate.commandBarOpens),
     language: isLanguagePreference(candidate.language) ? candidate.language : undefined,
     onboardingComplete,
     onboardingProgress,
@@ -162,6 +167,7 @@ export function normalizeConfigForSave(config: AppConfig): AppConfig {
     fontSize: sanitizeFontSize(config.fontSize, defaults.fontSize),
     recentTickers: sanitizeStringArray(config.recentTickers, []),
     recentCommands: sanitizeRecentCommands(config.recentCommands, []),
+    commandBarOpens: sanitizeCommandBarOpens(config.commandBarOpens),
     onboardingComplete: onboardingProgress ? false : config.onboardingComplete,
     onboardingProgress,
   };

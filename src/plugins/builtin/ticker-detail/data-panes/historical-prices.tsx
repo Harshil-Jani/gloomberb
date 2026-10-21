@@ -21,7 +21,9 @@ import { isPlainKeyboardEvent } from "../../../../utils/keyboard";
 import { publicTickerKey } from "../../../../utils/exchanges";
 import { formatPriceObservation, quoteFormatOptions } from "../../../../market-data/market/format";
 import { cleanFloat32Price, historyPriceDecimals } from "../../../../cli/history-rows";
-import { pricePointValues, priceHistoryIntegrityNotice } from "../../../../utils/price-history-integrity";
+import {
+  MISSING_VOLUME_TEXT, missingVolumeCount, missingVolumeNotice, pricePointValues, priceHistoryIntegrityNotice,
+} from "../../../../utils/price-history-integrity";
 import {
   useAssetData,
   useDebouncedPluginPaneState,
@@ -55,8 +57,12 @@ export type HistoricalPriceRow = {
   exportDate: string;
   /** The bar carries a time of day, so the table dates it with one. */
   timed: boolean;
+  /** When the bar opens, or the time of the latest trade an intraday history can end with (latestTradeIndex). */
+  time: number;
   /** The bar's period had not ended: a week or month still running, or the day's session still trading. */
   partial: boolean;
+  /** A coin's day Gloom Cloud rebuilt from hourly bars, which has no volume of its own. */
+  filled: boolean;
   change: number | null;
   changePercent: number | null;
 };
@@ -106,8 +112,9 @@ function formatMaybePercent(value: number | null): string {
   return value == null ? "-" : formatPercent(value);
 }
 
-function formatMaybeCompact(value: number | null | undefined): string {
-  return value == null ? "-" : formatCompact(value);
+/** Volume as the table shows it; missing reads as missing (`volumeMissing`) in a history that reports volume, never 0. */
+function formatVolume(value: number | null | undefined, volumeMissing: boolean): string {
+  return value == null ? volumeMissing ? MISSING_VOLUME_TEXT : "-" : formatCompact(value);
 }
 
 interface HistoricalPriceTable {
@@ -126,7 +133,7 @@ function buildHistoricalPriceRows(points: PricePoint[], venue: string | undefine
   const sorted = points
     .flatMap((point, sourceIndex) => {
       const date = pricePointDate(point);
-      return date ? [{ point: pricePointValues(point), date, sourceIndex, partial: point.partial === true }] : [];
+      return date ? [{ point: pricePointValues(point), date, sourceIndex, partial: point.partial === true, filled: point.filled === true }] : [];
     })
     .sort((left, right) => left.date.getTime() - right.date.getTime());
   const size = historyBarSize(sorted.map((entry) => entry.date.getTime()));
@@ -135,7 +142,7 @@ function buildHistoricalPriceRows(points: PricePoint[], venue: string | undefine
   const dayToDate = size === "1d" && sorted.at(-1)?.partial === true;
   const rows = sorted.map((entry, index) => {
     const previous = sorted[index - 1]?.point;
-    const { point, date, sourceIndex } = entry;
+    const { point, date, sourceIndex, filled } = entry;
     const newest = index === sorted.length - 1;
     const partial = newest && (!!forming || dayToDate);
     const change = previous?.close != null && point.close != null ? point.close - previous.close : null;
@@ -147,7 +154,9 @@ function buildHistoricalPriceRows(points: PricePoint[], venue: string | undefine
       date: timed ? shown : historyBarDate(shown, size, partial),
       exportDate: shown,
       timed,
+      time: date.getTime(),
       partial,
+      filled,
       change,
       changePercent: previous?.close && change !== null ? change / previous.close : null,
     };
@@ -236,6 +245,10 @@ export function HistoricalPricesPane({ focused, width, height }: PaneProps) {
     [points, venue],
   );
   const integrityNotice = priceHistoryIntegrityNotice(rows.filter((row) => row.point.integrity).length);
+  const volumeMissing = useMemo(() => missingVolumeCount(rows.map((row) => ({
+    ...row.point, date: row.time, partial: row.partial, filled: row.filled,
+  }))), [rows]);
+  const volumeNotice = missingVolumeNotice(volumeMissing, rows.length);
   // Daily and longer bars are dates; only intraday bars carry a time.
   const intraday = rows.length > 0 ? rows.some((row) => row.timed) : range === "1D" || range === "1W";
   const newestRowDate = rows[0]?.date ?? "";
@@ -290,9 +303,9 @@ export function HistoricalPricesPane({ focused, width, height }: PaneProps) {
       case "changePercent":
         return { text: formatMaybePercent(row.changePercent), value: row.changePercent == null ? null : row.changePercent * 100, color: priceColor(row.changePercent ?? 0) };
       case "volume":
-        return { text: formatMaybeCompact(row.point.volume), value: row.point.volume ?? null, color: colors.textDim };
+        return { text: formatVolume(row.point.volume, volumeMissing > 0), value: row.point.volume ?? null, color: colors.textDim };
     }
-  }, [priceDecimals]);
+  }, [priceDecimals, volumeMissing]);
 
   // The range is picked in the query bar; t still steps through it. The range
   // sets the bar size, which the footer says, and a week or month still
@@ -306,7 +319,7 @@ export function HistoricalPricesPane({ focused, width, height }: PaneProps) {
 
   usePaneNoticeFooter({
     registrationId: "historical-prices:integrity",
-    notices: integrityNotice ? [integrityNotice] : [],
+    notices: [integrityNotice, volumeNotice].filter((notice): notice is string => !!notice),
     focused,
     title: "Price history data",
   });
@@ -353,6 +366,7 @@ export function HistoricalPricesPane({ focused, width, height }: PaneProps) {
         ["Status", error ? (rows.length ? "Retained after refresh failure" : "Unavailable")
           : loading ? (rows.length ? "Refreshing" : "Loading") : rows.length ? "Available" : "Empty"],
         ...(integrityNotice ? [["Warning", integrityNotice]] : []),
+        ...(volumeNotice ? [["Volume note", volumeNotice]] : []),
         ...(error ? [["Error", error]] : []),
       ]}
       emptyStateTitle={error

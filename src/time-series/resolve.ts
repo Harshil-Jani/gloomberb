@@ -1,6 +1,7 @@
 import { logFailure } from "../utils/log-failure";
 import { resolveAssetDisplayKind } from "../market-data/market/format";
 import { hasValidQuoteObservationTime } from "../market-data/quotes/freshness";
+import { delistingLabel } from "../market-data/quotes/delisting";
 import { SnapshotHistoryUnavailableError } from "../market-data/snapshot-provider";
 import { financialPeriodCoverage, financialPeriodCoverageWarnings, limitSeriesObservations } from "./financial-period-coverage";
 import { HistoryCoverageError, historyCoverageNotice } from "../sources/history-coverage";
@@ -10,6 +11,7 @@ import { getRouterEntityKey } from "../sources/provider-router/cache";
 import { publicListingTarget } from "../sources/listing-target";
 import { fetchHistoryResult } from "../sources/history-result";
 import type { HistorySession, PriceHistoryResult } from "../types/price-history";
+import type { BrokerContractRef } from "../types/instrument";
 import { FINANCIAL_VINTAGE_NOTICE, SEC_EPS_BASIS_NOTICE } from "../utils/financial-statements";
 import { appendLiveQuotePoint, hasUnknownBondHistoryBasis } from "./chart-data";
 import { LiveBarAccumulator } from "./live-bars";
@@ -63,7 +65,7 @@ import {
 } from "./studies";
 import { applyResolvedSeriesTransform } from "./transforms";
 import { clipSeriesToWindow } from "./alignment";
-import { clipPriceComparison, priceComparisonBoundsForSeries, priceComparisonSeriesIds, priceObservationWindowFilter, resolvePriceComparison, type PriceComparison } from "./price-comparison";
+import { bufferPriceComparison, clipPriceComparison, comparedBufferPoints, priceComparisonBoundsForSeries, priceComparisonSeriesIds, priceObservationWindowFilter, resolvePriceComparison, type PriceComparison } from "./price-comparison";
 import { reportingCurrencySeries } from "./reporting-currency";
 import { chartQuoteOverrideKeyForSource, compareChartQuoteRecency } from "./live-quotes";
 import { chartSeriesSourceKey } from "../capabilities/chart-series";
@@ -78,6 +80,7 @@ import {
 import {
   canonicalExchange,
   isUsListingExchange,
+  parsePublicTickerKey,
   publicTickerKey,
   resolveExchangeTimeZone,
 } from "../utils/exchanges";
@@ -753,8 +756,8 @@ export function seedChartResolutionResult(
   const axisWarnings: string[] = [];
   const bufferedSeries = assignAxes([
     ...baseSeries,
-    ...applyStudyPresentationTransforms(studies.series, spec.studies, series, comparisonBounds, undefined, priceComparison),
-  ], [...spec.series, ...spec.studies], axisWarnings).map((entry) => clipPriceComparison(entry, priceComparison));
+    ...applyStudyPresentationTransforms(studies.series, spec.studies, series, comparisonBounds, undefined, priceComparison, bounds),
+  ], [...spec.series, ...spec.studies], axisWarnings).map((entry) => bufferPriceComparison(entry, priceComparison, bounds));
   const visible = bufferedSeries.map((entry) => {
     const entryBounds = presentationBounds(entry, spec.studies, priceComparison, bounds);
     const clipped = entryBounds.start !== null && entryBounds.end !== null
@@ -1167,6 +1170,17 @@ async function loadPriceHistory(
   return { ...result, expiresAt: retryAt ?? Date.now() + HISTORY_RETENTION_MAX_AGE_MS };
 }
 
+/**
+ * A US stock or fund listing, including one a broker contract routes through
+ * SMART in dollars. Options and futures have no pre-market session.
+ */
+function tradesUsExtendedHours(exchange: string | undefined, contract: BrokerContractRef | null | undefined): boolean {
+  if (contract?.secType && !["STK", "ETF"].includes(contract.secType.toUpperCase())) return false;
+  const venue = exchange || contract?.primaryExchange || contract?.exchange;
+  return isUsListingExchange(venue) || isUsListingExchange(contract?.primaryExchange)
+    || (!!contract && canonicalExchange(venue) === "SMART" && (!contract.currency || contract.currency.toUpperCase() === "USD"));
+}
+
 function baseSecuritySeries(
   spec: ChartSeriesSpec,
   financials: TickerFinancials,
@@ -1184,7 +1198,8 @@ function baseSecuritySeries(
   const symbol = instrumentLabel(spec.source);
   const statementCurrency = field.id.startsWith("fundamental.") && field.unit.startsWith("currency")
     ? reportingCurrencySeries(points, financials.financialCurrency) : null;
-  const currency = statementCurrency ? statementCurrency.currency : financials.quote?.currency || quoteMetadata?.currency;
+  // A broker contract names its currency even before (or without) a quote.
+  const currency = statementCurrency ? statementCurrency.currency : financials.quote?.currency || quoteMetadata?.currency || spec.source.instrument.instrument?.currency;
   const assetKind = resolveAssetDisplayKind({ assetCategory: financials.quote?.instrumentType || quoteMetadata?.instrumentType });
   const unknownBondBasis = hasUnknownBondHistoryBasis(financials.quote,
     spec.source.instrument.instrument?.secType, quoteMetadata?.instrumentType);
@@ -1219,10 +1234,25 @@ function baseSecuritySeries(
     || financials.quote?.listingExchangeName
     || financials.quote?.exchangeName;
   const marketField = isMarketFieldId(spec.source.fieldId);
+  // A routing code such as a broker's SMART names no venue. The quote's
+  // listing then supplies the session clock, so closed hours stay off the axis.
+  const sessionExchange = [marketExchange, financials.quote?.listingExchangeName, quoteMetadata?.listingExchangeName, financials.quote?.exchangeName]
+    .find((value) => resolveExchangeTimeZone(value));
+  // A dollar listing saved with IBKR's SMART route and no other venue trades on
+  // the US session, and so does a dollar option, which names no venue at all.
+  const dollars = !currency || currency === "USD";
+  const usOption = dollars && (spec.source.instrument.instrument?.secType?.toUpperCase() === "OPT"
+    || /^OPTION$/i.test(financials.quote?.instrumentType ?? quoteMetadata?.instrumentType ?? ""));
+  const routedUsListing = !sessionExchange && ((canonicalExchange(marketExchange) === "SMART" && dollars) || usOption);
   const marketTimeZone = marketField
     && canonicalExchange(marketExchange) !== "CCC"
-    ? resolveExchangeTimeZone(marketExchange)
+    ? resolveExchangeTimeZone(sessionExchange) ?? (routedUsListing ? "America/New_York" : null)
     : null;
+  // A route has no hours of its own: its sessions, which the day view and
+  // VWAP follow, are the venue's, and NYSE's for an unnamed dollar listing.
+  const listingExchange = canonicalExchange(marketExchange) === "SMART" || usOption
+    ? canonicalExchange(sessionExchange) || (routedUsListing ? "NYSE" : marketExchange)
+    : marketExchange;
   const latestChangePercent = marketField && field.unit.startsWith("currency")
     && !unknownBondBasis
     && financials.quote && hasValidQuoteObservationTime(financials.quote)
@@ -1258,12 +1288,12 @@ function baseSecuritySeries(
     panelId: spec.panelId,
     interpolation: spec.interpolation,
     observationKind: marketField ? "market" : undefined,
-    ...(marketField ? { listing: { symbol: spec.source.instrument.symbol, exchange: marketExchange ?? "" } } : {}),
+    ...(marketField ? { listing: { symbol: spec.source.instrument.symbol, exchange: listingExchange ?? "" } } : {}),
     timeBasis: marketTimeZone
       ? {
           kind: "market",
           timeZone: marketTimeZone,
-          exchange: canonicalExchange(marketExchange) || undefined,
+          exchange: canonicalExchange(sessionExchange) || undefined,
           cadenceMs: marketResolution
             ? CHART_RESOLUTION_STEP_MS[marketResolution]
             : undefined,
@@ -1383,6 +1413,39 @@ function assignAxes(
   });
 }
 
+/**
+ * A series drawn in a ticker's price (a moving average of it, a band around
+ * it) takes the units of that ticker's price series when the chart has it, so
+ * the two share an axis and the line sits on the price instead of on a scale
+ * of its own.
+ */
+function adoptPriceUnits(series: ResolvedSeries[], specs: readonly ChartSeriesSpec[]): ResolvedSeries[] {
+  if (!series.some((entry) => entry.priceOf)) return series;
+  const specsById = new Map(specs.map((spec) => [spec.id, spec]));
+  const prices = series.filter((entry) => {
+    const source = specsById.get(entry.id)?.source;
+    return source?.kind === "security" && getTimeSeriesField(source.fieldId)?.unitGroup === "price"
+      && entry.transform === "raw";
+  });
+  if (prices.length === 0) return series;
+  return series.map((entry) => {
+    if (!entry.priceOf) return entry;
+    const wanted = parsePublicTickerKey(entry.priceOf.toUpperCase());
+    const key = publicTickerKey(wanted.symbol, wanted.exchange);
+    const named = (price: ResolvedSeries) => {
+      const source = specsById.get(price.id)?.source;
+      if (source?.kind !== "security") return false;
+      return publicTickerKey(source.instrument.symbol, source.instrument.exchange) === key
+        || (!wanted.exchange && source.instrument.symbol.toUpperCase() === wanted.symbol);
+    };
+    const price = prices.find((candidate) => named(candidate) && candidate.panelId === entry.panelId)
+      ?? prices.find(named);
+    return price && entry.transform === "raw"
+      ? { ...entry, unit: price.unit, unitGroup: price.unitGroup }
+      : entry;
+  });
+}
+
 function prepareBaseSeriesForStudies(
   series: ResolvedSeries,
   bounds: DateBounds,
@@ -1453,6 +1516,7 @@ function applyStudyPresentationTransforms(
   visibleBounds: DateBounds,
   fallbackBaselineBounds?: DateBounds,
   priceComparison?: PriceComparison | null,
+  view: DateBounds = visibleBounds,
 ): ResolvedSeries[] {
   const rawById = new Map(rawSeries.map((series) => [series.id, series] as const));
   return outputs.map((output) => {
@@ -1468,7 +1532,7 @@ function applyStudyPresentationTransforms(
       : undefined;
     const transformed = applyResolvedSeriesTransform(output, input.transform, { baseline });
     const inputBounds = priceComparison?.sourceBounds?.[input.id];
-    return inputBounds ? { ...transformed, points: filterPoints(transformed.points, inputBounds) } : transformed;
+    return inputBounds ? { ...transformed, points: comparedBufferPoints(transformed.points, inputBounds, view) } : transformed;
   });
 }
 
@@ -1578,6 +1642,7 @@ async function resolveChartSpecPass(
     && entry.source.kind === "security" && isFundamentalFieldId(entry.source.fieldId))
     ? [FINANCIAL_VINTAGE_NOTICE] : [];
   const priorityWarnings: string[] = [];
+  const delistings = new Map<string, { symbol: string; label: string; notice: string }>();
   const baseSeriesIds = new Set(spec.series.map((entry) => entry.id));
   const visibleSeriesIds = new Set(spec.series
     .filter((entry) => entry.visible !== false)
@@ -1779,10 +1844,10 @@ async function resolveChartSpecPass(
   const hasExplicitWindow = explicitBounds(spec) !== null || movedWindow;
   const initialCalculationBounds = calculationBounds(spec, requestVisibleBounds, initialResolution);
 
-  // Only US listings trade before and after the regular session; asking elsewhere costs a request for nothing.
+  // Only US stocks and funds trade before and after the regular session; asking elsewhere costs a request for nothing.
   const extendedHoursFor = (source: Extract<ChartSeriesSpec["source"], { kind: "security" }>, resolution: ManualChartResolution) => (
     spec.viewport.extendedHours === true && isMarketFieldId(source.fieldId) && isIntradayResolution(resolution)
-      && !source.instrument.instrument && isUsListingExchange(source.instrument.exchange)
+      && tradesUsExtendedHours(source.instrument.exchange, source.instrument.instrument)
   );
   // A history starts after the visible window because its source keeps no more.
   let retainedHistoryOnly = false;
@@ -1918,6 +1983,14 @@ async function resolveChartSpecPass(
     const history = loaded.points;
     const coverageNotice = historyCoverageNotice(loaded.coverageStart, request.visibleBounds.start);
     if (coverageNotice) priorityWarnings.push(coverageNotice);
+    // A listing that no longer trades is named so beside its bars, which end on its last session.
+    if (loaded.delisting) {
+      const symbol = parsePublicTickerKey(source.instrument.symbol).symbol;
+      const label = delistingLabel(loaded.delisting);
+      const notice = `${symbol}: ${label}`;
+      priorityWarnings.push(notice);
+      if (!delistings.has(notice)) delistings.set(notice, { symbol, label, notice });
+    }
     // Read per request: one recovered window answers every visible window that shares its acquisition.
     if (loaded.recovery && request.visibleBounds.start !== null && request.visibleBounds.start < loaded.recovery.start) {
       priorityWarnings.push(historyRetentionNotice(loaded.recovery.retention, loaded.resolution ?? request.resolution,
@@ -2260,14 +2333,15 @@ async function resolveChartSpecPass(
         comparisonBounds,
         priceComparison ? undefined : requestVisibleBounds,
         priceComparison,
+        bounds,
       ),
     ];
     warnings.push(...studyResult.warnings);
     errors.push(...studyResult.errors);
   }
 
-  const bufferedSeries = assignAxes(resolved, [...spec.series, ...spec.studies], warnings)
-    .map((entry) => clipPriceComparison(entry, priceComparison));
+  const bufferedSeries = assignAxes(adoptPriceUnits(resolved, spec.series), [...spec.series, ...spec.studies], warnings)
+    .map((entry) => bufferPriceComparison(entry, priceComparison, bounds));
   resolved = bufferedSeries.map((entry) => {
     const entryBounds = presentationBounds(entry, spec.studies, priceComparison, bounds);
     return entryBounds.start !== null && entryBounds.end !== null
@@ -2354,6 +2428,7 @@ async function resolveChartSpecPass(
     loading: false,
     errors,
     warnings: [...new Set([...priorityWarnings, ...warnings])],
+    ...(delistings.size ? { delistings: [...delistings.values()] } : {}),
     viewport,
     resolution,
   };

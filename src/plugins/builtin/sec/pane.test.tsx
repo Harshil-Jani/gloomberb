@@ -5,7 +5,7 @@ import { AppPersistence } from "../../../data/app-persistence";
 import { MarketDataCoordinator, setSharedMarketDataCoordinator } from "../../../market-data/coordinator";
 import { createOpenTuiTestHarness, settleFrame } from "../../../renderers/opentui/test-utils";
 import { AssetDataRouter } from "../../../sources/provider-router";
-import { createInitialState } from "../../../state/app/context";
+import { appReducer, createInitialState, type AppAction, type AppState } from "../../../state/app/context";
 import { createTestDataProvider } from "../../../test-support/data-provider";
 import { TestPaneProvider, createTestPaneConfig, createTestTicker } from "../../../test-support/pane";
 import { createStatefulTestPluginRuntime } from "../../../test-support/plugin-runtime";
@@ -50,9 +50,13 @@ function Harness() {
   const state = createInitialState(config);
   state.tickers = new Map([[symbol, createTestTicker(symbol)]]);
   state.focusedPaneId = PANE_ID;
+  // The filters are pane state, so the harness keeps it.
+  const [paneState, setPaneState] = useState<AppState["paneState"]>({});
+  state.paneState = paneState;
+  const dispatch = (action: AppAction) => setPaneState((current) => appReducer({ ...state, paneState: current }, action).paneState);
   const runtime = useMemo(() => createStatefulTestPluginRuntime(), []);
   return (
-    <TestPaneProvider state={state} paneId={PANE_ID} pluginId="ticker-research" runtime={runtime}>
+    <TestPaneProvider state={state} dispatch={dispatch} paneId={PANE_ID} pluginId="ticker-research" runtime={runtime}>
       <PaneFooterProvider>
         {(value) => {
           footer = value;
@@ -132,6 +136,28 @@ test("SEC reports document failures honestly and plain refresh retries only fail
   await press("r", "r");
   await settleFrame(tui.setup(), 8);
   expect(calls.filter((call) => call !== "filings").length).toBe(reads);
+});
+
+test("a bank's pricing supplements stay out of the list behind a counted toggle that lists them", async () => {
+  const supplement = (index: number, form = "424B2", primaryDocDescription = "PRICING SUPPLEMENT NO. 7"): SecFilingItem => ({
+    ...filing, form, primaryDocDescription, accessionNumber: `0001213900-26-${String(index).padStart(6, "0")}`,
+  });
+  // A note shelf's plain 424B3 term sheet counts with its supplements.
+  const shelf = [supplement(0, "424B3", "FORM 424B3"), supplement(1), supplement(2, "FWP"),
+    ...Array.from({ length: 18 }, (_, index) => supplement(3 + index))];
+  await mount(createTestDataProvider({
+    getSecFilings: async () => [...shelf, { ...filing, primaryDocDescription: "Earnings release" }],
+  }));
+  const hidden = await tui.waitForFrameToContain("Supplements (21)");
+  expect(hidden).toContain("Earnings release");
+  expect(hidden).not.toContain("424B2");
+  expect(hidden).not.toContain("424B3");
+
+  await tui.clickFrameText("[ ] Supplements");
+  await settleFrame(tui.setup(), 4);
+  expect(frame()).toContain("424B3");
+  expect(frame()).toContain("424B2");
+  expect(frame()).toContain("FWP");
 });
 
 test("cached router failures retry and true empty document results stay distinct", async () => {

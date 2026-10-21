@@ -7,13 +7,19 @@ import {
   removeTickerFromPortfolio,
   resolveManualPositionCurrency,
   setManualPortfolioPosition,
+  validatePositionShares,
+  type PositionQuantityLabel,
 } from "../../portfolio/mutations";
+import { isFuturesTicker } from "../../portfolio/futures-positions";
+import { loadFuturesEntrySize } from "../../portfolio/futures-terms";
+import { wholeUnitQuantityProblem } from "../../portfolio/position-quantity";
 import { useAppDispatch, useAppSelector, useAppStateRef } from "../../state/app/context";
 import { saveConfigImmediately } from "../../state/config-save-scheduler";
 import { resolveTickerSearch, upsertTickerFromSearchResult, type ResolvedTickerSearch } from "../../tickers/search";
 import type { Quote } from "../../types/financials";
 import type { TickerRecord } from "../../types/ticker";
 import { t } from "../../i18n";
+import { isProviderBusy } from "../../sources/provider-errors";
 import { debugLog } from "../../utils/debug-log";
 import { ambiguousNumberMessage, parseTypedNumber } from "../../utils/decimal-comma";
 import {
@@ -40,7 +46,11 @@ export interface PositionDraft {
 export type PositionPreview =
   | { status: "idle" }
   | { status: "checking"; query: string }
-  | { status: "ready"; query: string; symbol: string; name: string; quote: Quote | null; currency: string; duplicate: boolean }
+  | {
+    status: "ready"; query: string; symbol: string; name: string; quote: Quote | null; currency: string; duplicate: boolean;
+    /** A future: its size counts contracts. */
+    contracts: boolean;
+  }
   | { status: "missing"; query: string; message: string };
 
 const EMPTY_DRAFT: PositionDraft = { ticker: "", shares: "", avgCost: "", currency: "" };
@@ -72,6 +82,14 @@ function instrumentCurrency(resolved: ResolvedTickerSearch, quote: Quote | null)
     ? resolved.result.currency || resolved.result.brokerContract?.currency
     : resolved.ticker.metadata.currency;
   return (quote?.currency || listed || "").trim();
+}
+
+/** Whether the typed listing is a future, by its saved record or what the search says it is. */
+function resolvedIsFuture(resolved: ResolvedTickerSearch, ticker: TickerRecord | null): boolean {
+  if (ticker) return isFuturesTicker(ticker);
+  return resolved.kind === "local"
+    ? isFuturesTicker(resolved.ticker)
+    : isFuturesTicker({ metadata: { ticker: resolved.symbol, assetCategory: resolved.result.type } });
 }
 
 function resolvedName(resolved: ResolvedTickerSearch, ticker: TickerRecord | null): string {
@@ -176,13 +194,14 @@ export function useOnboardingPositions({
           quote: result.quote,
           currency: result.currency,
           duplicate: !!result.ticker?.metadata.portfolios.includes(portfolioId),
+          contracts: resolvedIsFuture(result.resolved, result.ticker),
         });
         if (!currencyEditedRef.current) {
           setDraft((current) => ({ ...current, currency: result.currency.toUpperCase() }));
         }
-      }).catch(() => {
+      }).catch((error: unknown) => {
         if (previewSeqRef.current === seq) {
-          setPreview({ status: "missing", query, message: t("Ticker lookup failed") });
+          setPreview({ status: "missing", query, message: isProviderBusy(error) ? t("Search is busy") : t("Ticker lookup failed") });
         }
       });
     }, PREVIEW_DEBOUNCE_MS);
@@ -216,6 +235,9 @@ export function useOnboardingPositions({
     setPreview({ status: "idle" });
   }, []);
 
+  // A future's size counts contracts: the field and its messages say so once the symbol resolves to one.
+  const quantityLabel: PositionQuantityLabel = preview.status === "ready" && preview.contracts ? "Contracts" : "Shares";
+
   const addPosition = useCallback(async (): Promise<boolean> => {
     if (submitting) return false;
     const current = draftRef.current;
@@ -226,9 +248,10 @@ export function useOnboardingPositions({
       return false;
     }
     const shares = parseAmount(current.shares);
-    if (shares !== null && (Number.isNaN(shares) || shares <= 0)) {
+    const sharesError = shares === null ? null : validatePositionShares(shares, quantityLabel);
+    if (sharesError) {
       setFieldIdx(1);
-      setError(ambiguousAmount(current.shares, "Shares") ?? t("Shares must be greater than 0."));
+      setError(ambiguousAmount(current.shares, quantityLabel) ?? t(sharesError));
       return false;
     }
     const avgCost = parseAmount(current.avgCost);
@@ -269,14 +292,23 @@ export function useOnboardingPositions({
       if (shares === null) {
         nextTicker = addTickerToPortfolio(ticker, portfolioId).ticker;
       } else {
+        // 1.250 on a listing held in whole lots could be 1,250 as well, and asks as 1,250 does.
+        const lots = wholeUnitQuantityProblem(current.shares.trim(), ticker, { label: quantityLabel });
+        if (lots) {
+          setFieldIdx(1);
+          setError(lots);
+          return false;
+        }
         const costBasis = avgCost ?? result.quote?.price;
         if (costBasis === undefined || costBasis === null || !Number.isFinite(costBasis)) {
           setFieldIdx(2);
           setError(t("No live price yet. Enter the average cost."));
           return false;
         }
+        // A future is entered in contracts, sized by its terms; a cost typed as corn is quoted counts cents.
+        const size = await loadFuturesEntrySize(ticker);
         positionCurrency = resolveManualPositionCurrency(
-          current.currency.trim() || listingCurrency || undefined,
+          current.currency.trim() || size?.currency || listingCurrency || undefined,
           ticker,
           portfolio ?? { id: portfolioId, name: portfolioId, currency: stateRef.current.config.baseCurrency },
           stateRef.current.config.baseCurrency,
@@ -285,6 +317,7 @@ export function useOnboardingPositions({
           shares,
           avgCost: costBasis,
           currency: positionCurrency,
+          ...(size ? { multiplier: size.multiplier } : {}),
         }).ticker;
       }
 
@@ -313,7 +346,8 @@ export function useOnboardingPositions({
       resetDraft();
       return true;
     } catch (caught) {
-      const message = caught instanceof Error && caught.message.trim() ? caught.message.trim() : t("Could not add that position.");
+      const message = isProviderBusy(caught) ? t("Search is busy, try again in a moment.")
+        : caught instanceof Error && caught.message.trim() ? caught.message.trim() : t("Could not add that position.");
       onboardingLog.error("Onboarding position failed", { query, error: message });
       setFieldIdx(0);
       setError(message);
@@ -321,7 +355,7 @@ export function useOnboardingPositions({
     } finally {
       setSubmitting(false);
     }
-  }, [dispatch, pluginRegistry, portfolioId, resetDraft, resolveSymbol, stateRef, submitting]);
+  }, [dispatch, pluginRegistry, portfolioId, quantityLabel, resetDraft, resolveSymbol, stateRef, submitting]);
 
   /** Enter inside the form: move to the next field, or save from the last one. */
   const submitField = useCallback(() => {
@@ -338,8 +372,9 @@ export function useOnboardingPositions({
     }
     if (fieldIdx === 1) {
       const shares = parseAmount(current.shares);
-      if (shares !== null && (Number.isNaN(shares) || shares <= 0)) {
-        setError(ambiguousAmount(current.shares, "Shares") ?? t("Shares must be greater than 0."));
+      const sharesError = shares === null ? null : validatePositionShares(shares, quantityLabel);
+      if (sharesError) {
+        setError(ambiguousAmount(current.shares, quantityLabel) ?? t(sharesError));
         return;
       }
       setError(null);
@@ -362,7 +397,7 @@ export function useOnboardingPositions({
       return;
     }
     void addPosition();
-  }, [addPosition, fieldIdx, submitting]);
+  }, [addPosition, fieldIdx, quantityLabel, submitting]);
 
   const removePosition = useCallback(async (symbol: string) => {
     const ticker = stateRef.current.tickers.get(symbol);
@@ -381,6 +416,8 @@ export function useOnboardingPositions({
     blankCurrency: (preview.status === "ready" && preview.currency ? preview.currency : fallbackCurrency).toUpperCase(),
     fieldIdx,
     preview,
+    /** What the size field counts: Contracts for a future, else Shares. */
+    quantityLabel,
     submitting,
     error,
     setField,

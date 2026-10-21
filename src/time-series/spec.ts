@@ -36,7 +36,8 @@ import { recordOrNull } from "../utils/guards";
 const RANGE_SET = new Set<TimeRange>(TIME_RANGES);
 const RESOLUTIONS = new Set<ChartResolution>(CHART_RESOLUTIONS);
 const PERIODS = new Set<SeriesPeriod>(["auto", "daily", "weekly", "monthly", "quarterly", "annual", "ttm"]);
-const STYLES = new Set<SeriesStyle>(["line", "area", "step", "columns", "points", "candles", "ohlc", "hlc"]);
+// `band` only stays on a capability series: a field's styles and an economic series' leave it out.
+const STYLES = new Set<SeriesStyle>(["line", "area", "step", "columns", "points", "candles", "ohlc", "hlc", "band"]);
 const ECONOMIC_STYLES = new Set<SeriesStyle>(["line", "area", "step", "columns", "points"]);
 const TRANSFORMS = new Set<SeriesTransform>(["raw", "percent", "index100", "yoy", "qoq", "log"]);
 const AXES = new Set<SeriesAxis>(["auto", "left", "right"]);
@@ -84,7 +85,7 @@ export function coerceSeriesInterpolationForStyle(
   return style === "step" ? "step-after" : "none";
 }
 
-export const MAX_CHART_SERIES = 10;
+export const MAX_CHART_SERIES = 20;
 
 export const DEFAULT_CHART_SPEC: ChartSpec = Object.freeze({
   version: CHART_SPEC_VERSION,

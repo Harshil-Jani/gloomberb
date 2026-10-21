@@ -498,6 +498,44 @@ export function hasPublishedSessionCalendar(exchange: string | undefined, date: 
   return !!getPublishedUsEquityCalendarYears(canonical)?.includes(year);
 }
 
+/**
+ * The venue's regular session before the one a move is dated to (`date`, its
+ * local `YYYY-MM-DD`), from its published calendar, with the days of its
+ * trading week it was closed in between (the Chung Yeung holiday HKEX took on
+ * Mon 19 Oct 2026 lies between Fri 16 and Tue 20 Oct). A `date` that is no
+ * session (a quote dated by when it was read, on a Saturday or a holiday) is
+ * the latest session on or before it: Friday's move, read on Saturday, is
+ * from Thursday's close. Null for round-the-clock and unknown venues, and
+ * when a day the walk passes is in a year whose closures the venue has not
+ * published: a holiday there would read as a session.
+ */
+export function previousPublishedSession(
+  exchange: string | undefined,
+  date: string,
+): { date: string; closed: string[] } | null {
+  const canonical = canonicalExchange(exchange);
+  const day = isoLocalDateToUtcDay(date);
+  if (day == null || ALWAYS_OPEN_EXCHANGES.has(canonical) || !sessionCalendarTimeZone(canonical)) return null;
+  let session: number | null = null;
+  const closed: string[] = [];
+  for (let offset = 0; offset <= SESSION_LOOKBACK_DAYS * 2; offset++) {
+    const at = new Date((day - offset) * MS_PER_DAY);
+    const iso = at.toISOString().slice(0, 10);
+    if (!isTradingWeekday(canonical, at.getUTCDay())) continue;
+    if (!hasPublishedSessionCalendar(canonical, iso)) return null;
+    const open = !isPublishedClosure(canonical, iso);
+    // First the session the move is from's own day, then the one before it.
+    if (session == null) {
+      if (open) session = offset;
+      continue;
+    }
+    if (offset - session > SESSION_LOOKBACK_DAYS) return null;
+    if (open) return { date: iso, closed: closed.reverse() };
+    closed.push(iso);
+  }
+  return null;
+}
+
 /** How far the delayed feed runs behind the venue's trades. */
 export function delayedFeedLagMs(exchange: string | undefined): number {
   return SLOWER_DELAYED_FEEDS.has(canonicalExchange(exchange)) ? SLOWER_DELAYED_FEED_LAG_MS : DELAYED_FEED_LAG_MS;

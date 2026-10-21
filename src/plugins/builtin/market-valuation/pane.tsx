@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import {
+  DELAYED_SEGMENT,
   PaneStatusBody, type DataTableCell,
   type DataTableColumn,
   type PaneFooterSegment
@@ -56,7 +57,7 @@ function buildColumns(width: number, stacked: boolean): Column[] {
     { id: "name", label: "INDICATOR", width: 11, flexGrow: 1, align: "left" },
     { id: "value", label: "VALUE", width: 8, align: "right" },
     { id: "zone", label: "ZONE", width: 11, align: "right" },
-    { id: "percentile", label: "RICH", width: 6, align: "right" },
+    { id: "percentile", label: "RICH", title: "Percentile against its own history; higher is more expensive", width: 6, align: "right" },
     // Where each history starts, which the percentile and trend are taken from whatever the range.
     ...(withTrend
       ? [{ id: "since" as const, label: "SINCE", width: 5, align: "right" as const },
@@ -140,7 +141,7 @@ export function MarketValuationPane({ focused, width, height }: PaneProps) {
     if (!selectedView) return [];
     const info: PaneFooterSegment[] = [
       { id: "as-of", parts: [{ text: `as of ${selectedView.asOf}`, tone: "muted" }] },
-      ...(width >= 80 ? [{ id: "delayed", parts: [{ text: "delayed", tone: "muted" as const }] }] : []),
+      ...(width >= 80 ? [DELAYED_SEGMENT] : []),
     ];
     if (selectedView.observationStale) {
       info.push({ id: "stale", parts: [{ text: "STALE", tone: "warning", bold: true }] });

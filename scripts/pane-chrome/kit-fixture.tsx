@@ -16,8 +16,11 @@ import { Badge, Divider, KeyValueRow, SectionHeading } from "../../src/component
 import { Button } from "../../src/components/ui/button";
 import { IconButton } from "../../src/components/ui/icon";
 import { Card } from "../../src/components/ui/card";
+import { quoteBlockStyle } from "../../src/components/ui/quote";
+import { ListView } from "../../src/components/ui/list-view";
+import { InputSearchBar } from "../../src/components/input-search-bar";
 import { Checkbox } from "../../src/components/ui/checkbox";
-import { DialogFrame } from "../../src/components/ui/frame";
+import { DialogFrame, FLAT_SURFACE_STYLE, TOOLTIP_SURFACE_STYLE } from "../../src/components/ui/frame";
 import { EmptyState, Notice, PaneStatusBody } from "../../src/components/ui/status";
 import { ExternalLinkText } from "../../src/components/ui/external-link";
 import { Tabs } from "../../src/components/ui/tabs";
@@ -34,7 +37,7 @@ import { DetailReader } from "../../src/components/reader/detail-reader";
 import type { DocsBlock } from "../../src/docs/content";
 import { DocsBlocks, DocsReadingColumn } from "../../src/plugins/builtin/docs/blocks";
 import { PaneHeader } from "../../src/components/layout/pane/header";
-import { PaneFooterBar } from "../../src/components/layout/pane/footer";
+import { DELAYED_SEGMENT, delayedFooterSegment, PaneFooterBar } from "../../src/components/layout/pane/footer";
 import { PageStackView } from "../../src/components/ui/page-stack-view";
 import { UpgradeLabel } from "../../src/plugins/builtin/shared/locked-rows";
 import { useThemeColors } from "../../src/theme/theme-context";
@@ -210,7 +213,13 @@ function TabsFamily() {
         </Row>
         <Row>
           <Sample label="hover on Financials" force="hover" width={420}><Box style={{ height: "var(--chrome-h)", width: "100%" }} data-kit-hover-target="Financials"><Tabs tabs={tabs} activeValue="overview" onSelect={noop} /></Box></Sample>
-          <Sample label="title-bar variant" width={420}><Box style={{ height: "var(--chrome-h)", width: "100%", "--pane-tab-active-fg": "var(--gloom-text-bright)" }}><Tabs tabs={tabs} activeValue="financials" onSelect={noop} variant="header" /></Box></Sample>
+        </Row>
+        <Row>
+          <Sample label="title-bar tabs: the active one a box open into the pane" width={420}><Box flexDirection="column" style={{ width: "100%" }}><PaneHeader title="AAPL" width={52} focused tabs={{ tabs, activeValue: "financials", onSelect: noop, focused: true }} /></Box></Sample>
+          <Sample label="title-bar tabs, hover on Holders" force="hover" width={420}><Box flexDirection="column" style={{ width: "100%" }} data-kit-hover-target="Holders"><PaneHeader title="AAPL" width={52} focused={false} tabs={{ tabs, activeValue: "financials", onSelect: noop }} /></Box></Sample>
+        </Row>
+        <Row>
+          <Sample label="closable, with add: icon buttons" width={420}><Box style={{ height: "var(--chrome-h)", width: "100%" }}><Tabs tabs={tabs.slice(0, 3).map((tab) => ({ ...tab, onClose: noop }))} activeValue="overview" onSelect={noop} closeMode="always" onAdd={noop} /></Box></Sample>
         </Row>
       </Group>
       <Group title="Segmented choice">
@@ -261,7 +270,13 @@ function FieldsFamily() {
           <Sample label="inline, in a toolbar"><SelectButton label="Currency" value="usd" options={[{ value: "usd", label: "USD" }, { value: "eur", label: "EUR" }]} onChange={noop} width={12} /></Sample>
           <Sample label="field, in a form"><SelectButton label="Currency" variant="field" value="usd" options={[{ value: "usd", label: "USD" }, { value: "eur", label: "EUR" }]} onChange={noop} width={16} /></Sample>
           <Sample label="disabled"><SelectButton label="Currency" variant="field" disabled value="usd" options={[{ value: "usd", label: "USD" }]} onChange={noop} width={16} /></Sample>
+          <Sample label="form: label above, as a text field's" width={220}><SelectButton label="Shock kind" variant="form" value="usd" options={[{ value: "usd", label: "Tariff" }, { value: "eur", label: "Rate" }]} onChange={noop} width={26} /></Sample>
         </Row>
+      </Group>
+      <Group title="Search strip">
+        <Box style={{ width: "100%", maxWidth: 640 }}>
+          <InputSearchBar appearance="strip" value="" focused={false} active={false} width="100%" focusToken={0} inputRef={{ current: null }} placeholder="Search indices" debounceMs={0} onFocus={noop} onBlur={noop} onQueryChange={noop} />
+        </Box>
       </Group>
       <Group title="Checkbox">
         <Row>
@@ -297,6 +312,8 @@ const HOLDINGS: Holding[] = [
   { id: "d", name: "Amazon.com Inc.", weight: "3.71%", change: "+0.15%", up: true },
 ];
 
+const LIST_ITEMS = [{ id: "white", label: "White Phosphor", description: "white" }, { id: "paper", label: "Paper", description: "paper" }, { id: "nord", label: "Nord", description: "nord" }];
+
 function TablesFamily() {
   const colors = useThemeColors();
   const columns = [
@@ -328,6 +345,12 @@ function TablesFamily() {
               : { text: row.change, color: row.up ? colors.positive : colors.negative }}
           />
         </Box>
+      </Group>
+      <Group title="Lists">
+        <Row>
+          <Sample label="chosen row, in a dialog (frame)" width={300}><ListView items={LIST_ITEMS} selectedIndex={1} onSelect={noop} /></Sample>
+          <Sample label="chosen row, in the command bar (fill)" width={300}><ListView items={LIST_ITEMS} selectedIndex={1} onSelect={noop} selection="fill" /></Sample>
+        </Row>
       </Group>
       <Group title="Key-value rows">
         <Box flexDirection="column" style={{ width: 360 }}>
@@ -362,6 +385,7 @@ function StatesFamily() {
 }
 
 function ContentFamily() {
+  const colors = useThemeColors();
   return (
     <>
       <Group title="Section heading">
@@ -379,7 +403,11 @@ function ContentFamily() {
           <Sample label="card" width={220}><Card><Text>AAPL</Text><Text>343.56 +0.67%</Text></Card></Sample>
           <Sample label="interactive, hover" force="hover" width={220}><Card onPress={noop}><Text>MSFT</Text><Text>512.40 -0.42%</Text></Card></Sample>
           <Sample label="chosen" width={220}><Card selected><Text>NVDA</Text><Text>187.10 +3.08%</Text></Card></Sample>
+          <Sample label="belongs to a colour (accent)" width={220}><Card accent={colors.positive}><Text>Ingram Micro</Text><Text>21% of revenue</Text></Card></Sample>
         </Row>
+      </Group>
+      <Group title="Quote">
+        <Box style={{ width: 480, ...quoteBlockStyle() }}><Text>Customer contributed 22% of our revenue in fiscal 2026.</Text></Box>
       </Group>
       <Group title="Divider">
         <Box style={{ width: 360 }}><Divider /></Box>
@@ -390,8 +418,13 @@ function ContentFamily() {
 
 function ChromeFamily() {
   const tabs = { tabs: [{ label: "Overview", value: "o" }, { label: "Financials", value: "f" }, { label: "Holders", value: "h" }], activeValue: "o", onSelect: noop, focused: true };
+  const closableTabs = { tabs: [{ label: "Ideas", value: "i", onClose: noop }, { label: "Earnings", value: "e", onClose: noop }], activeValue: "i", onSelect: noop, focused: true, closeMode: "active" as const, onAdd: noop };
   const footer = {
-    info: [{ id: "status", parts: [{ text: "15m delayed", tone: "warning" as const }] }],
+    info: [
+      delayedFooterSegment({ id: "status", detail: "15m delayed", delay: "15m", onPress: noop }),
+      { id: "as-of", parts: [{ text: "as of 14:47 UTC", tone: "muted" as const }] },
+      DELAYED_SEGMENT,
+    ],
     hints: [{ id: "a", key: "a", label: "dd" }, { id: "o", key: "o", label: "pen" }],
     menu: [],
     keys: [],
@@ -401,6 +434,8 @@ function ChromeFamily() {
       <Group title="Title bar">
         <Box flexDirection="column" style={{ width: "100%", gap: "var(--gloom-space-sm)" }}>
           <PaneHeader title="AAPL" width={Math.min(100, pageColumns())} focused showActions tabs={tabs} />
+          <PaneHeader title="AAPL" width={Math.min(100, pageColumns())} focused={false} tabs={{ ...tabs, focused: false }} />
+          <PaneHeader title="Quick Notes" width={Math.min(100, pageColumns())} focused showActions tabs={closableTabs} />
           <PaneHeader title="World Indices" width={Math.min(100, pageColumns())} focused={false} />
         </Box>
       </Group>
@@ -439,6 +474,18 @@ function SurfacesFamily() {
         <div className="gloom-popover" data-density="menu" style={{ position: "static", width: 200 }}>
           <Menu label="Pane" items={[{ id: "a", label: "Settings", hint: "," }, { id: "b", label: "Share", selected: true }, { id: "c", label: "Lock", disabled: true }]} onSelect={noop} />
         </div>
+      </Sample>
+      <Sample label="tooltip" width={220}>
+        <Box flexDirection="column" style={{ ...TOOLTIP_SURFACE_STYLE, position: "static" }}>
+          <Text>Port of Rotterdam</Text>
+          <Text fg="var(--gloom-text-dim)">12 vessels waiting</Text>
+        </Box>
+      </Sample>
+      <Sample label="a chart's key (flat)" width={220}>
+        <Box flexDirection="column" style={FLAT_SURFACE_STYLE}>
+          <Text>Tanker</Text>
+          <Text>Cargo</Text>
+        </Box>
       </Sample>
       <Sample label="toast" width={380}>
         <div className="gloom-toast" style={{ width: 360 }}>

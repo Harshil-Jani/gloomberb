@@ -72,6 +72,7 @@ import {
   futuresGenericRollFromValue,
   futuresGenericRollLabel,
   futuresGenericRollValue,
+  standardFuturesGenericRoll,
   type FuturesGenericAdjust,
 } from "../../../utils/futures-generic";
 import { chartSeriesLabel } from "./series-expression";
@@ -115,6 +116,7 @@ import { resolveChartComposerShortcut } from "./shortcuts";
 import { describeChartResolution, formatChartDateWindow, formatChartResolution } from "./viewport-labels";
 import { intradaySessionTimeZone } from "./session-history";
 import { ChartSeriesQuickAdd } from "./quick-add";
+import { ResearchTradeActions, researchTradeMatches, useResearchTrading } from "../shared/research-trading";
 import { useLiveStreamingSetting } from "../../../state/hooks/live-streaming";
 import { usePluginAppActions, usePluginConfigState } from "../../runtime";
 import { usePluginRenderContext } from "../../runtime/context";
@@ -122,6 +124,7 @@ import { activePriceAlertsFor, addLevelAlert, PRICE_ALERTS_STORE, type AlertTarg
 import { formatAlertDescription } from "../alerts/alert-engine";
 import { alertInstrument, syncAlertQuoteStream } from "../alerts/live";
 import { getSharedMarketDataCoordinator } from "../../../market-data/coordinator";
+import { useOptionChartRange } from "./option-range";
 import { getActiveQuoteDisplay } from "../../../market-data/market/status";
 import { resolveEntryData } from "../../../market-data/selectors";
 import { editPriceLevels, parsePriceLevels, PRICE_LEVELS_KEY, priceLevelTickerKey } from "./price-levels";
@@ -202,6 +205,7 @@ interface ChartComposerSurfaceProps {
 const QUICK_ADD_CAPTURE = "quick-add";
 
 const GENERIC_ROLL_OPTIONS = [
+  { value: "standard", label: "Standard" },
   { value: "oi", label: "OI switch" },
   { value: "f5", label: "5d before notice" },
   { value: "d15", label: "Day 15" },
@@ -286,6 +290,7 @@ function ChartComposerSurface({
   onCapture,
   nameSeries = true,
 }: ChartComposerSurfaceProps) {
+  const trade = useResearchTrading();
   const dialog = useDialog();
   const dispatch = useAppDispatch();
   const { cellWidthPx = 8 } = useUiCapabilities();
@@ -512,6 +517,7 @@ function ChartComposerSurface({
     return {
       seriesId: listing.seriesId,
       items: [
+        ...(trade && researchTradeMatches(trade, { ...listing.instrument, exchange: listing.target.exchange }) ? trade.levels : []),
         ...stored.map((level) => ({
           id: level.id,
           value: level.price,
@@ -530,7 +536,7 @@ function ChartComposerSurface({
       onEdit: editLevels,
       ...(alertsOn ? { action: { label: "alert", title: "Alert at Level", run: (level) => { void alertAtLevel(level.value); } } } : {}),
     };
-  }, [alertAtLevel, alertsJson, alertsOn, editLevels, levelStore, listing]);
+  }, [alertAtLevel, alertsJson, alertsOn, editLevels, levelStore, listing, trade?.levels, trade?.contract]);
   const [interactionCaptured, setInteractionCapturedState] = useState(false);
   // Typing in quick-add must not freeze the plot: it only takes the keyboard.
   const [modalCaptured, setModalCaptured] = useState(false);
@@ -947,8 +953,15 @@ function ChartComposerSurface({
     ? resolution.legendSeries?.filter((entry) => resolution.priceComparison?.seriesIds.includes(entry.id))
       .map((entry) => `${entry.label}: no observations in the selected date range.`)
     : []);
+  // A charted listing that no longer trades is said in the footer itself: "Delisted Oct 27, 2022" when it
+  // is the chart's one listing, which the title names, else "TWTR: Delisted Oct 27, 2022" for each.
+  const delistings = resolution.delistings;
+  const chartedListings = new Set(spec.series.flatMap((entry) => entry.source.kind === "security" ? [entry.source.instrument.symbol] : []));
+  const delistingKey = delistings?.length === 1 && chartedListings.size === 1 ? delistings[0]!.label
+    : delistings?.map((delisting) => delisting.notice).join(" · ") ?? "";
   const statusWarnings = resolution.warnings.filter((warning) => (
     warning !== FINANCIAL_VINTAGE_NOTICE && warning !== SEC_EPS_BASIS_NOTICE && warning !== comparisonNotice
+    && !delistings?.some((delisting) => delisting.notice === warning)
     && !FORWARD_VALUATION_BASIS_NOTICES.has(warning)
     && !duplicateErrorNotices.has(warning) && !comparisonEmptyNotices.has(warning)
     && !spec.studies.some((study) => (
@@ -1000,21 +1013,26 @@ function ChartComposerSurface({
     return newest > end ? formatCompositeDatasetDate(new Date(newest), end) : null;
   }, [activeRuntimeViewport, plottedSeries, spec, viewport]);
   usePaneFooter(footerId, () => ({
-    info: loading
-      ? [{ id: "loading", parts: [{ text: "loading", tone: "muted" as const }] }]
-      : pickingAnchor
-        ? [{ id: "anchor", parts: [{ text: "pick a bar to anchor VWAP", tone: "muted" as const }] }]
-        : newestBeyondView
-          ? [{ id: "newest", asOf: true, parts: [{ text: `newest ${newestBeyondView}`, tone: "muted" as const }] }]
-          : [],
+    info: [
+      ...(delistingKey ? [{ id: "delisted", parts: [{ text: delistingKey, tone: "warning" as const }] }] : []),
+      ...(loading
+        ? [{ id: "loading", parts: [{ text: "loading", tone: "muted" as const }] }]
+        : pickingAnchor
+          ? [{ id: "anchor", parts: [{ text: "pick a bar to anchor VWAP", tone: "muted" as const }] }]
+          : newestBeyondView
+            ? [{ id: "newest", asOf: true, parts: [{ text: `newest ${newestBeyondView}`, tone: "muted" as const }] }]
+            : []),
+    ],
     hints: [
+      // One key opens the ticket, which chooses Buy or Sell; [s]eries keeps its key with trading on.
+      ...(trade?.available ? [{ id: "trade", key: "t", label: "rade", title: "Open the trade panel", onPress: () => trade.open(), disabled: trade.busy }] : []),
       { id: "series", key: "s", label: "eries", onPress: footerSeries },
       { id: "indicators", key: "i", label: "ndicators", onPress: openIndicators, disabled: indicatorsDisabled },
       { id: "formulas", key: "f", label: "ormulas", onPress: openFormulas, disabled: formulasDisabled },
-      { id: "resolution", key: "t", label: "imeframe", onPress: footerResolution },
+      { id: "resolution", key: "b", label: "ars", title: "Bar Size", onPress: footerResolution },
       ...(anchorable ? [{ id: "vwap-anchor", key: "v", label: "wap anchor", title: "Anchor VWAP", onPress: footerAnchor }] : []),
     ],
-  }), [loading, pickingAnchor, newestBeyondView, footerSeries, openIndicators, indicatorsDisabled, openFormulas, formulasDisabled, footerResolution, anchorable, footerAnchor]);
+  }), [delistingKey, loading, pickingAnchor, newestBeyondView, footerSeries, openIndicators, indicatorsDisabled, openFormulas, formulasDisabled, footerResolution, anchorable, footerAnchor, trade]);
 
   // A fixed window (a GIP session) highlights no range, so the bar names it.
   const dateWindowLabel = useMemo(() => {
@@ -1032,9 +1050,12 @@ function ChartComposerSurface({
   const genericFilters = useMemo(() => {
     if (!generic) return [];
     const roll = futuresGenericRollValue(generic.roll);
-    const rollOptions = GENERIC_ROLL_OPTIONS.map((option) => option.value === "f5"
-      ? { ...option, label: futuresGenericNotice(generic.root) === "first notice" ? "5d before notice" : "5d before last trade" }
-      : option);
+    const notice = futuresGenericNotice(generic.root) === "first notice" ? "notice" : "last trade";
+    const standard = standardFuturesGenericRoll(generic.root);
+    const rollOptions = GENERIC_ROLL_OPTIONS.map((option) => option.value === "f5" ? { ...option, label: `5d before ${notice}` }
+      : option.value === "standard" && standard.rule === "first-notice"
+        ? { ...option, label: standard.days === 0 ? `Standard, after ${notice}` : `Standard, ${standard.days}d before ${notice}` }
+        : option);
     if (!rollOptions.some((option) => option.value === roll)) rollOptions.push({ value: roll, label: futuresGenericRollLabel(generic) });
     const update = (change: Parameters<typeof setChartFuturesGeneric>[1]) => {
       const next = setChartFuturesGeneric(specRef.current, change);
@@ -1044,7 +1065,7 @@ function ChartComposerSurface({
     return [
       { id: "roll", label: "Roll", value: roll, options: rollOptions, title: "Roll rule",
         onChange: (value: string) => {
-          const next = futuresGenericRollFromValue(value);
+          const next = futuresGenericRollFromValue(value, generic.root);
           if (next) update({ roll: next });
         } },
       { id: "adjust", label: "Adjust", value: generic.adjust, options: GENERIC_ADJUST_OPTIONS, title: "Adjustment",
@@ -1092,6 +1113,8 @@ function ChartComposerSurface({
 
   return (
     <Box flexDirection="column" width={width} height={height}>
+      {/* Renders nothing: b and s open the trade panel. The query bar keeps the full row. */}
+      <ResearchTradeActions focused={shortcutActive} />
       <QueryBar
         width={width}
         filters={[
@@ -1281,7 +1304,9 @@ export function ChartComposerPane({ paneId, focused, width, height }: PaneProps)
 export function ChartComposerResearchTab({ focused, width, height, onCapture }: TickerResearchTabProps) {
   const { symbol: paneSymbol, ticker } = usePaneTicker();
   const symbol = paneSymbol ? publicTickerKey(paneSymbol, ticker?.metadata.exchange) : null;
-  const fallback = useMemo(() => symbol ? buildPriceChartPreset(symbol) : buildEmptyChartPreset(), [symbol]);
+  // An option contract opens on the range its own history fills; a chart the researcher set keeps its range.
+  const optionRange = useOptionChartRange(ticker);
+  const fallback = useMemo(() => symbol ? buildPriceChartPreset(symbol, optionRange ?? undefined) : buildEmptyChartPreset(), [optionRange, symbol]);
   const [storedSpec, setStoredSpec] = usePaneSettingValue<unknown>(CHART_SPEC_SETTING_KEY, fallback);
   const spec = useMemo(() => parseChartSpecOr(storedSpec, fallback), [fallback, storedSpec]);
   const previousSymbolRef = useRef(symbol);
