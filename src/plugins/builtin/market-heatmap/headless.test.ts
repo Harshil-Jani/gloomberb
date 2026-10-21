@@ -62,6 +62,16 @@ describe("fn HM report", () => {
     expect(printed.metadata?.asOf).toBe("2026-10-12T15:20:00.000Z");
   });
 
+  test("a Pro account's board reads as live, everyone else's as delayed", async () => {
+    const MON = Date.UTC(2026, 9, 12, 15, 42);
+    const live = await load(board(0, 40), false, { fetchedAt: MON - 10_000, session: "REGULAR", access: "realtime" });
+    expect(formatFreshnessLine(deriveHeadlessFreshness(marketHeatmapHeadless, live, MON))).toContain("· live ·");
+    for (const access of ["delayed", undefined] as const) {
+      const delayed = await load(board(0, 40), false, { fetchedAt: MON - 10_000, session: "REGULAR", access });
+      expect(formatFreshnessLine(deriveHeadlessFreshness(marketHeatmapHeadless, delayed, MON))).toContain("· delayed ·");
+    }
+  });
+
   test("sizes, shares and the weighted move stay market cap, whatever the pane's tiles are sized by", async () => {
     // A megacap that barely moved and a small name that jumped: the map's tiles favour the second, the report does not.
     const result = await load([asset("MEGA", 900, 0.1, "Tech"), asset("JUMP", 100, 9, "Energy")]);
