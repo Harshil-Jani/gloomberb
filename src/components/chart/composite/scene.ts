@@ -20,7 +20,7 @@ import {
   projectCompositeTimestamp,
   unprojectCompositeTimestamp,
 } from "./time-scale";
-import { compositeAxisMaxTicks, seriesPriceReference } from "./format";
+import { compositeAxisMaxTicks, enclosePointAxisDomain, seriesPriceReference } from "./format";
 import type { CompositeTimeScale } from "./types";
 import { isFiniteNumber } from "../../../utils/guards";
 import { volumeProfile } from "../../../time-series/trader-studies";
@@ -332,7 +332,9 @@ function buildAxisDomain(
   const axisSeries = series.filter((entry) => entry.axis === side);
   if (axisSeries.length === 0) return undefined;
   const values = axisSeries.flatMap(seriesDomainValues);
-  const { min, max } = paddedDomain([...values, ...priorCloseInReach(axisSeries, values)], scale);
+  const padded = paddedDomain([...values, ...priorCloseInReach(axisSeries, values)], scale);
+  const { min, max } = scale === "linear" && axisSeries.some((entry) => entry.style === "points")
+    ? enclosePointAxisDomain(padded.min, padded.max) : padded;
   const first = axisSeries[0]!;
   return {
     side,

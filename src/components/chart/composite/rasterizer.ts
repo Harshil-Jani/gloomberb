@@ -583,12 +583,20 @@ export function renderCompositePanelBitmap(
         fillBand(data, width, height, series, domain, color);
         drawConnectedSeries(data, width, height, series, domain, color, false, cue);
         break;
-      case "points":
+      case "points": {
+        // Like candles, a point owns its full mark at the viewport edge.
+        // Reserve its radius and antialias fringe instead of clipping half a disc.
+        const radius = Math.min(2.4, (width - 1) / 2, (height - 1) / 2);
+        const insetX = Math.min(Math.ceil(radius + 1), (width - 1) / 2);
+        const insetY = Math.min(Math.ceil(radius + 1), (height - 1) / 2);
         for (const point of series.points) {
           const projected = pixelPoint(point, width, height);
-          drawCircle(data, width, height, projected.x, projected.y, 2.4, color);
+          drawCircle(data, width, height,
+            clamp(projected.x, insetX, width - 1 - insetX),
+            clamp(projected.y, insetY, height - 1 - insetY), radius, color);
         }
         break;
+      }
       case "candles":
       case "ohlc":
       case "hlc":
