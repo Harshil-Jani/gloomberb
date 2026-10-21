@@ -205,10 +205,12 @@ export function receivablesConcentration(rows: readonly SupplyRow[], focusId: st
   if (!focusId) return [];
   const largest = new Map<string, ConcentrationPoint>();
   for (const row of rows) {
-    if (row.role !== "customer" || row.pctBasis !== "receivables" || row.pctScope !== null || row.pctOfRevenue === null || row.pctOfRevenue > 100 || row.counterparty.aggregate
+    if (row.role !== "customer" || row.pctBasis !== "receivables" || row.pctScope !== null || row.pctOfRevenue === null || !Number.isFinite(row.pctOfRevenue) || row.pctOfRevenue < 0 || row.pctOfRevenue > 100 || row.counterparty.aggregate || row.entityScope === "group"
       || !PERIOD_END.test(row.period) || row.reportingEntity.id !== focusId || !shareParts(row, focusId)) continue;
+    const date = new Date(`${row.period}T00:00:00Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== row.period) continue;
     const held = largest.get(row.period);
-    if (!held || row.pctOfRevenue > held.pct) largest.set(row.period, { period: row.period, date: new Date(`${row.period}T00:00:00Z`), pct: row.pctOfRevenue, rowId: row.id });
+    if (!held || row.pctOfRevenue > held.pct) largest.set(row.period, { period: row.period, date, pct: row.pctOfRevenue, rowId: row.id });
   }
   const points = [...largest.values()].filter((point) => Number.isFinite(point.date.getTime())).sort((a, b) => a.period.localeCompare(b.period));
   return points.length >= 3 ? points : [];

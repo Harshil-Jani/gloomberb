@@ -229,14 +229,14 @@ function SupplyView({ symbol, width, height, focused }: Pick<PaneProps, "width" 
   ] });
   const focusId = data?.entity?.id;
   // Over the table, how much of the receivables one customer holds at each period end the company disclosed.
-  const concentration = useMemo(() => tab === "table" && view === "says" ? receivablesConcentration(rows, focusId) : [], [tab, view, rows, focusId]);
+  const concentration = useMemo(() => tab === "table" && view === "says" ? receivablesConcentration(tableRows, focusId) : [], [tab, view, tableRows, focusId]);
   const concentrationDates = useMemo(() => new Map(concentration.map((point) => [point.rowId, point.date])), [concentration]);
   const getConcentrationDate = useCallback((row: SupplyRow) => concentrationDates.get(row.id) ?? null, [concentrationDates]);
-  const chartSelection = useChartTableSelection({ rows, getId: rowId, getDate: getConcentrationDate,
+  const chartSelection = useChartTableSelection({ rows: tableRows, getId: rowId, getDate: getConcentrationDate,
     selectedId: selected?.id ?? null, onSelect: setSelected, focused: focused && !openRow, enabled: concentration.length > 0 });
   const concentrationSeries = useMemo(() => [{ ...staticSeries(concentration.map((point) => ({ date: point.date, observedAt: point.date, value: point.pct })),
-    { id: "receivables-concentration", label: "Largest customer % of receivables", color: ROLE_COLORS.customer, calendarSpaced: true }), unit: "%", unitGroup: "percent" }], [concentration]);
-  const concentrationChart = concentration.length ? { series: concentrationSeries, formatValue: formatShare, formatAxisValue: formatPercentAxis, ...chartSelection } : null;
+    { id: "receivables-concentration", label: "Largest disclosed customer · receivables", color: ROLE_COLORS.customer, calendarSpaced: true, style: "points" }), unit: "%", unitGroup: "percent" }], [concentration]);
+  const concentrationChart = concentration.length ? { series: concentrationSeries, formatValue: formatShare, formatAxisValue: formatPercentAxis, strip: null, ...chartSelection } : null;
   const values = tableRows.filter((row) => nativeValue(row) !== null || row.usd !== null);
   const valueWidth = values.length ? Math.min(28, Math.max(...values.map((row) => displayWidth(disclosedValue(row).replace(/ (disclosed|derived)$/, ""))))) : null;
   const bases = tableRows.flatMap((row) => { const share = shareParts(row, focusId); return share ? [displayWidth(share.basis)] : []; });
