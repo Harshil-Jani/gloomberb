@@ -74,6 +74,7 @@ import {
   resolveCliListing, type CliListing, type ListingDataRequest,
 } from "../listing-arg";
 import { movedAwayChange } from "../../tickers/ticker-changes";
+import { companyMemberships, loadCompanyMemberships, type CompanyMemberships, type ListMembership } from "../issuer-membership";
 import { isNotATickerMessage } from "../not-a-ticker";
 import { sharesOutstandingInReceipts } from "../../utils/depositary-receipt";
 import { cliFreshnessFooter } from "../result";
@@ -321,8 +322,9 @@ async function appendTickerPositions(lines: string[], tickerFile: TickerRecord |
       const currentPrice = getPortfolioQuoteDisplay(metrics, quote)?.price ?? null;
       const currentPriceBase = currentPrice != null && quoteCurrency ? await toBase(currentPrice, quoteCurrency) : null;
       const positionRate = positionCurrency ? await toBase(1, positionCurrency) : Number.NaN;
-      if (positionCurrency) converted.add(positionCurrency.toUpperCase());
-      if (quoteCurrency && currentPrice != null) converted.add(quoteCurrency.toUpperCase());
+      // By the major currency the converter states its rate in: pence (GBp, GBX) at GBP's.
+      if (positionCurrency) converted.add(heldCurrencyUnit(positionCurrency).currency);
+      if (quoteCurrency && currentPrice != null) converted.add(heldCurrencyUnit(quoteCurrency).currency);
       const baseMetrics = getPortfolioPositionMetrics({ ...tickerFile, metadata: { ...tickerFile.metadata, positions: [position] } }, undefined, quoteCurrency,
         { currency: config.baseCurrency, convert: value => value * positionRate }, quote);
       // A cost bought at an entered rate into the base currency converts at it, as its P&L does, and says so; any other at today's.
@@ -386,11 +388,11 @@ interface ReportRateNotes {
   boughtAt: ReadonlySet<string>;
 }
 
-/** The currencies of the shown lots whose cost converts into the base currency at the rate they were bought at. */
+/** The currencies of the shown lots whose cost converts into the base currency at the rate they were bought at, pence as GBP. */
 function boughtRateCurrencies(tickerFile: TickerRecord | null, quoteCurrency: string, baseCurrency: string): Set<string> {
   return new Set((tickerFile?.metadata.positions ?? []).flatMap((position) => {
     const currency = (position.currency || quoteCurrency).trim();
-    return position.shares !== 0 && currency && lotCostFxRate(position, currency, baseCurrency) !== null ? [currency.toUpperCase()] : [];
+    return position.shares !== 0 && currency && lotCostFxRate(position, currency, baseCurrency) !== null ? [heldCurrencyUnit(currency).currency] : [];
   }));
 }
 
@@ -977,8 +979,11 @@ export async function buildTickerReport({
   distributions = null,
   statementFilings = null,
   bondFund = null,
+  memberships,
 }: {
   symbol: string;
+  /** The lists holding the company, by any of its listings (loadCompanyMemberships); the saved listing's own lists when absent. */
+  memberships?: CompanyMemberships;
   /** The filings behind the latest statements, and a newer quarter's results release. */
   statementFilings?: StatementFilingsReport | null;
   /** A bond fund's SEC yield, yield to worst and duration (loadReportBondFacts). */
@@ -1049,14 +1054,15 @@ export async function buildTickerReport({
     lines.push(cliStyles.muted(metadataParts.join(METADATA_SEPARATOR)));
   }
 
-  const portfolioNames = tickerFile ? formatPortfolioNames(config, tickerFile.metadata.portfolios) : [];
-  const watchlistNames = tickerFile ? formatWatchlistNames(config, tickerFile.metadata.watchlists) : [];
+  // A list that holds the company as another of its listings says which: "Watchlists R (as RCI.B:TSX)".
+  const lists = memberships ?? companyMemberships(config, tickerFile, [], null);
+  const listNames = (held: readonly ListMembership[]) => held.map((list) => list.via ? `${list.name} (as ${list.via})` : list.name).join(", ");
   const membershipParts = [
-    portfolioNames.length > 0
-      ? `Portfolios ${portfolioNames.join(", ")}`
+    lists.portfolios.length > 0
+      ? `Portfolios ${listNames(lists.portfolios)}`
       : undefined,
-    watchlistNames.length > 0
-      ? `Watchlists ${watchlistNames.join(", ")}`
+    lists.watchlists.length > 0
+      ? `Watchlists ${listNames(lists.watchlists)}`
       : undefined,
   ].filter((part): part is string => !!part);
   if (membershipParts.length > 0) {
@@ -1214,9 +1220,11 @@ function buildTickerStructuredData({
   distributions,
   statementFilings,
   bondFund = null,
+  memberships,
 }: {
   symbol: string;
   listing: CliListing;
+  memberships: CompanyMemberships;
   statementFilings: StatementFilingsReport | null;
   bondFund?: FundBondFacts | null;
   futuresContract: FuturesContractTermsPayload | null;
@@ -1272,6 +1280,8 @@ function buildTickerStructuredData({
       watchlists: formatWatchlistNames(config, tickerFile.metadata.watchlists),
       positions: tickerFile.metadata.positions,
     } : null,
+    // The lists holding the company by any of its listings; `via` names the other listing a list holds it as.
+    memberships,
     fundamentals: financials.fundamentals || priceReturns.return1Y != null || priceReturns.return3Y != null ? exportedDividendFundamentals(exportedFundamentals({
       ...priced.fundamentals,
       ...priceReturns,
@@ -1404,6 +1414,15 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
       quarter: latestFinancialPeriod(resolvedFinancials.quarterlyStatements, (row) => row.date),
       annual: latestFinancialPeriod(resolvedFinancials.annualStatements, (row) => row.date),
     });
+    // A list holding the company as another of its listings counts (a list of RCI.B:TSX holds RCI); read beside the rest. It never fails.
+    const membershipsLoad = loadCompanyMemberships({
+      config,
+      own: tickerFile,
+      symbol: listing.symbol,
+      exchange: canonicalExchange(listing.exchange || quote?.listingExchangeName || quote?.exchangeName || tickerFile?.metadata.exchange),
+      loadTickers: () => store.loadAllTickers(),
+      dataProvider,
+    });
     const [notesResult, newsResult, secFilingsResult] = await Promise.allSettled([
       notesFiles.load(tickerFile?.metadata.ticker ?? normalized),
       dataProvider.getNews({
@@ -1437,6 +1456,7 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
     const coinNote = listing.exchange ? null
       : notTheCoinNote(listing.symbol, quote ?? (tickerFile ? { name: tickerFile.metadata.name, instrumentType: tickerFile.metadata.assetCategory } : null));
     const listingNote = [choiceNote, coinNote].filter((note): note is string => !!note).join("\n") || undefined;
+    const memberships = await membershipsLoad;
     if (dependencies.printResult) {
       const warnings = [choiceNote, coinNote, quoteNote].filter((note): note is string => !!note);
       dependencies.printResult({
@@ -1456,6 +1476,7 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
           distributions: await distributions,
           statementFilings: await statementFilings,
           bondFund: await bondFund,
+          memberships,
         }),
       });
       return;
@@ -1478,6 +1499,7 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
         distributions: await distributions,
         statementFilings: await statementFilings,
         bondFund: await bondFund,
+        memberships,
     }));
     if (freshness) console.log(`\n${cliFreshnessFooter(freshness)}`);
   });

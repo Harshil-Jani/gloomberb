@@ -108,23 +108,32 @@ describe("insider client", () => {
   });
 
   test("a foreign private issuer whose Form 4s are all filed as an owner has none, and says why", async () => {
+    let lookups = 0;
     const load = (filings: SecFilingItem[]) => createInsiderHeadless().load(args("", 20), {
       ...createTestHeadlessContext(),
       marketData: createTestDataProvider({
         getSecFilings: async () => filings,
         getSecFilingContent: async (filing) => form4(filing.accessionNumber === "own" ? "2488" : "1580608", "BANCO SANTANDER"),
+        // Its listings place the company at home, Spain, whose managers report under MAR.
+        getIssuerListings: async () => {
+          lookups += 1;
+          return { issuer: "cik:891478", name: "Banco Santander, S.A.", country: "ES", listings: [] };
+        },
       }),
     });
     const owned = [listed("owned-1", "4", "2022-01-31"), listed("owned-2", "4/A", "2008-05-20")];
 
     const foreign = await load([listed("6k", "6-K", "2026-10-08"), ...owned, listed("annual", "20-F", "2026-03-01"), listed("old", "10-K", "2001-03-01")]);
     expect(foreign.rows).toEqual([]);
-    expect(foreign.empty).toBe("No Form 4 insiders: foreign private issuers file none.");
+    expect(foreign.empty).toBe("No Form 4 insiders: foreign private issuers file none. European insider reports (MAR managers' transactions) not covered.");
     expect(foreign.metadata?.foreignPrivateIssuer).toBe(true);
 
     // A company that moved to domestic reports is not one, though it once filed a 20-F.
+    expect(lookups).toBe(1);
     const domestic = await load([listed("10k", "10-K", "2026-02-01"), ...owned, listed("annual", "20-F", "2020-03-01")]);
     expect(domestic.empty).toBe("No Form 4 insider filings.");
+    // A US listing filing as a domestic company has no home market to look up.
+    expect(lookups).toBe(1);
 
     // Its own Form 4s, from before it reported as a foreign private issuer, are still shown.
     const history = await load([listed("6k", "6-K", "2026-10-08"), ...owned, listed("own", "4", "2005-01-01")]);
@@ -141,7 +150,7 @@ describe("insider client", () => {
         getQuote: async (_symbol, exchange) => createTestQuote({ symbol: "CAR.AX", name: "CAR Group Limited", currency: "AUD", listingExchangeName: exchange }),
       }),
     });
-    expect((await load("CAR:ASX")).empty).toBe("CAR Group (ASX) files no SEC reports.");
+    expect((await load("CAR:ASX")).empty).toBe("CAR Group (ASX) files no SEC reports. Australian insider reports (Appendix 3Y) not covered.");
     // A US symbol the SEC lists nothing for has no Form 4, which is all the report knows.
     expect((await load("ZZZZ")).empty).toBe("No Form 4 insider filings.");
   });
@@ -330,7 +339,7 @@ describe("insider report without a ticker", () => {
   });
 });
 
-test("the ranking's text fits 120 columns whole, and on 80 the size against usual, the nth trade and the company move under the row", async () => {
+test("the ranking's text fits 120 columns with the company wrapped, and on 80 the size against usual, the nth trade and the company move under the row", async () => {
   // Invented company and people.
   const rows: InsiderSignalsPayload["rows"] = [{
     ticker: "NWBI", issuerCik: "9900001", company: "Northwind Biologics Incorporated", score: 78, reasons: ["3 insiders, $1.2M in 14 days"],
@@ -359,8 +368,9 @@ test("the ranking's text fits 120 columns whole, and on 80 the size against usua
     };
     const wide = text(120);
     expect(wide).toContain("Ticker  Company                        Score  Role           Nth  Vs Usual   Stake  Buyers  Bought  Last Buy  Filed");
-    // Every column stays; a long company name is cut.
-    expect(wide).toContain("NWBI    Northwind Biologics Incorpor\u2026     78  10% owner +2  12th     100x+     25x       3  $1.15M  10/14/26  2026-10-14");
+    // Every column stays; a long company name wraps in its cell, never cut.
+    expect(wide).toContain("NWBI    Northwind Biologics               78  10% owner +2  12th     100x+     25x       3  $1.15M  10/14/26  2026-10-14");
+    expect(wide).toContain("        Incorporated");
     // Traded both ways: dashes for the nth trade and size, the stake marked.
     expect(wide).toContain("TRNT    Tailspin Toys                     40  CFO             --        --  +12% \u00b1       1   $496k  10/4/26   2026-10-05");
     // Each row's insiders are the opened company's, as in the pane; the exports keep them.

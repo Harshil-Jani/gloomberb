@@ -18,7 +18,9 @@ import { VERSION } from "../version";
  * failures are posted to Gloom's API, which forwards them to error tracking;
  * the app never talks to an analytics service itself. What leaves the
  * machine is the error (type, message, stack), the surface, the app version
- * and the OS. Nothing from the workspace goes along: no portfolio, config,
+ * and the OS. A plugin load failure can add a line of state about the
+ * plugin's files to the message (see `CrashReportContext.detail`). Nothing
+ * from the workspace goes along: no portfolio, config,
  * query, ticker list or layout. The user's home directory is replaced by `~`
  * before sending.
  *
@@ -71,6 +73,12 @@ export interface CrashReportContext {
   componentStack?: string | null;
   /** A failed update step (update-failures.ts), sent as it is: it holds no free text. */
   update?: UpdateFailureReport;
+  /**
+   * State that explains the failure, appended to the message in brackets.
+   * The message, not the stack: error tracking keeps only frames from the
+   * stack, and an import error has none.
+   */
+  detail?: string;
 }
 
 interface PendingError {
@@ -105,11 +113,14 @@ function isOptOut(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
-/** Replaces the home directory, in native, forward-slash and URL-encoded forms, with `~`. */
+/**
+ * Replaces the home directory, in native, forward-slash, URL-encoded and
+ * escaped (a Windows path in JSON or a string literal) forms, with `~`.
+ */
 export function stripHomeDir(text: string, homeDir: string | null | undefined): string {
   const home = homeDir?.trim().replace(/[\\/]+$/, "");
   if (!home || home.length < 3) return text;
-  const forms = new Set([home, home.replaceAll("\\", "/")]);
+  const forms = new Set([home, home.replaceAll("\\", "/"), home.replaceAll("\\", "\\\\")]);
   for (const form of [...forms]) forms.add(encodeURI(form));
   let result = text;
   for (const form of forms) {
@@ -155,7 +166,9 @@ function topFrame(stack: string | undefined, type: string): string {
 }
 
 function toReportError(error: unknown, context: CrashReportContext): PendingError {
-  const described = describeError(error);
+  const thrown = describeError(error);
+  const detail = readString(context.detail?.trim());
+  const described = detail ? { ...thrown, message: `${thrown.message} [${detail}]` } : thrown;
   const componentStack = readString(context.componentStack?.trim());
   const stack = [
     described.stack ? clip(described.stack, MAX_STACK_LENGTH) : null,
