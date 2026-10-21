@@ -6,7 +6,6 @@ import {
   renderCompositePanelBitmap,
   resolveCompositeOhlcWidth,
 } from "./rasterizer";
-import { compositeAxisTicks } from "./format";
 import { buildCompositeColumnLayout } from "./column-layout";
 import { buildCompositeChartScene, projectCompositeValue } from "./scene";
 import {
@@ -75,19 +74,6 @@ describe("composite chart renderers", () => {
     });
     expect(counts[4]).toBeGreaterThan(0);
     expect(counts).toEqual(Array(5).fill(counts[4]));
-  });
-
-  test("point-chart axis labels enclose sparse observations while line scales stay unchanged", () => {
-    const sceneFor = (style: ResolvedSeries["style"]) => buildCompositeChartScene(
-      [series("disclosures", style, [12, 25, 22], "right")],
-      [{ id: "main" }], { width: 80, height: 12 },
-    )!;
-    const domain = sceneFor("points").panels[0]!.axes.right!;
-    const values = compositeAxisTicks({ ...domain, tickRows: undefined }).map((tick) => tick.value);
-    expect(Math.min(...values)).toBeLessThan(12);
-    expect(Math.max(...values)).toBeGreaterThan(25);
-    expect(sceneFor("line").panels[0]!.axes.right!.min).toBeCloseTo(11.22);
-    expect(sceneFor("line").panels[0]!.axes.right!.max).toBeCloseTo(25.78);
   });
 
   test("groups same-date columns into adjacent terminal cells", () => {

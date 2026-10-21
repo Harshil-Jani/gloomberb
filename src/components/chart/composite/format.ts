@@ -142,15 +142,6 @@ function niceCeilStep(raw: number): number {
   return Number((factor * power).toPrecision(12));
 }
 
-/** Round a point chart's padded extent outward so its edge observations sit
- * between labelled gridlines, rather than in the unlabelled axis margins. */
-export function enclosePointAxisDomain(min: number, max: number): { min: number; max: number } {
-  const step = niceCeilStep((max - min) / (DEFAULT_AXIS_MAX_TICKS - 1));
-  if (!Number.isFinite(step) || step <= 0) return { min, max };
-  return { min: Number((Math.floor(min / step) * step).toPrecision(12)),
-    max: Number((Math.ceil(max / step) * step).toPrecision(12)) };
-}
-
 function stepMultiples(min: number, max: number, step: number): number[] {
   const tolerance = step * 1e-9;
   const first = Math.ceil((min - tolerance) / step);
