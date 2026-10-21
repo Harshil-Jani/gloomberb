@@ -5,6 +5,7 @@ import { colors, priceColor } from "../../../theme/colors";
 import { isPlainKey } from "../../../utils/keyboard";
 import { formatCompact, formatPercentRaw } from "../../../utils/format";
 import { formatMarketPrice, formatSignedMarketPrice, liveQuoteFormatOptions } from "../../../market-data/market/format";
+import { getRegularSessionDisplay } from "../../../market-data/market/status";
 import { chainOptionContract, formatExpDate, optionContractName, resolveOptionsTarget } from "../../../utils/options";
 import {
   expiryIsoDate, findListedExpiry, formatDaysToExpiry, daysToExpiry, missingExpiryMessage, missingExpiryText, readOptionExpiration,
@@ -76,7 +77,10 @@ import { useIvRank } from "../iv-history/rank";
 import { useOptionsSessionOpen, useThrottledValue } from "../shared/volatility/live-session";
 import { useRemoteUiNode } from "../../../remote/semantic-tree";
 import { optionCarry, optionCostOfSpot } from "./carry";
-import { formatModelSpotPrice, modelSpotLabel, optionModelSpot } from "./model-spot";
+import {
+  formatModelSpotPrice, modelSpotExtendedPrint, modelSpotLabel, modelSpotStamp, modelSpotStampVariants, optionModelSpot,
+  type OptionModelSpot,
+} from "./model-spot";
 import { chainOpenInterestAsOf, loadListedOpenInterest, openInterestAsOfLabel, statedOpenInterestAsOf } from "./open-interest-as-of";
 import { useAsyncResource } from "../../../react/async-resource";
 import {
@@ -113,13 +117,35 @@ function transientTicker(symbol: string, exchange: string, currency: string): Ti
 }
 
 /**
- * The underlying's price and day change: the level every strike is read
- * against. A stale quote stays on screen, muted, while the footer says why.
+ * The underlying's price: the level every strike is read against. A chain
+ * priced at a session's close or an extended-session print shows that spot
+ * with its stamp (`modelSpotStamp`), and any extended print after it named by
+ * its session; the regular session's live price shows its day change. A stale
+ * quote stays on screen, muted, while the footer says why.
  */
-function spotItem(underlying: TickerFinancials | null | undefined, assetCategory: string | undefined): StatItem {
+function spotItem(
+  underlying: TickerFinancials | null | undefined,
+  assetCategory: string | undefined,
+  modelSpot: OptionModelSpot | null,
+): StatItem {
   const quote = underlying?.quote;
   if (!quote || !Number.isFinite(quote.price)) return { id: "spot", label: "Spot", value: "--" };
   const options = liveQuoteFormatOptions(quote, quote.currency, assetCategory, underlying?.quoteMetadata?.instrumentType);
+  const stamp = modelSpot ? modelSpotStamp(modelSpot) : null;
+  if (modelSpot && stamp) {
+    const move = modelSpot.basis === "close" ? getRegularSessionDisplay(quote)?.change : quote.change;
+    const extended = modelSpotExtendedPrint(quote, modelSpot, (price) => formatMarketPrice(price, options));
+    // The band keeps its columns: the extended print, then the stamp's day, give way first.
+    const shorter = modelSpotStampVariants(modelSpot);
+    return {
+      id: "spot",
+      label: "Spot",
+      value: formatMarketPrice(modelSpot.price, options),
+      detail: extended ? `${stamp} · ${extended}` : stamp,
+      detailVariants: extended ? [stamp, ...shorter] : shorter,
+      color: quote.stale ? colors.textDim : priceColor(Number.isFinite(move) ? move! : 0),
+    };
+  }
   const change = Number.isFinite(quote.change) ? quote.change : 0;
   return {
     id: "spot",
@@ -552,10 +578,10 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
       putGreeks: volatilities ? calculateOptionGreeks(put, "put", greeksSpot, dividendYield, volatilities) : undefined,
       callExtrinsicPerYear: call && volatilities ? optionCarry(call, "call", greeksSpot, volatilities.valuationTime)?.extrinsicPerYear ?? null : null,
       putExtrinsicPerYear: put && volatilities ? optionCarry(put, "put", greeksSpot, volatilities.valuationTime)?.extrinsicPerYear ?? null : null,
-      putCostOfSpot: put ? optionCostOfSpot(put, spot) : null,
+      putCostOfSpot: put ? optionCostOfSpot(put, greeksSpot) : null,
       isPositionStrike: !!parsed && strike === parsed.strike,
     };
-  }), [callsByStrike, dividendYield, greeksSpot, parsed, putsByStrike, spot, strikes, volatilities]);
+  }), [callsByStrike, dividendYield, greeksSpot, parsed, putsByStrike, strikes, volatilities]);
   // The open interest's session: the chain's own, or for a chain that does not say, OPX's listing of the
   // same expiry, stated only when the counts are OPX's.
   const statedOpenInterest = useMemo(() => strikeChain ? statedOpenInterestAsOf(strikeChain) : undefined, [strikeChain]);
@@ -584,10 +610,12 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   } : null);
   // What IV and the Greeks are valued at, and the open interest's date. In a
   // crowded footer it shortens, then gives way to the contract under the cursor.
-  const basisText = [modelSpot ? `spot ${formatModelSpotPrice(modelSpot.price)} ${modelSpotLabel(modelSpot)}` : null,
+  // A stamped spot (a close, an extended print) is already the Spot figure's.
+  const footerSpot = modelSpot && !modelSpotStamp(modelSpot) ? modelSpot : null;
+  const basisText = [footerSpot ? `spot ${formatModelSpotPrice(footerSpot.price)} ${modelSpotLabel(footerSpot)}` : null,
     strikeChain && !listedOpenInterest.loading ? openInterestAsOfLabel(openInterestAsOf) : null].filter(Boolean).join(" · ");
-  const shortBasisText = [modelSpot ? `${formatModelSpotPrice(modelSpot.price)} ${modelSpot.basis === "close" ? "close" : modelSpot.session ?? "last"} `
-    + `${new Date(modelSpot.observedAt).toISOString().slice(11, 16)} UTC` : null,
+  const shortBasisText = [footerSpot ? `${formatModelSpotPrice(footerSpot.price)} last `
+    + `${new Date(footerSpot.observedAt).toISOString().slice(11, 16)} UTC` : null,
   strikeChain && !listedOpenInterest.loading ? openInterestAsOf?.date ? `OI ${openInterestAsOf.date.slice(5)}` : "OI undated" : null]
     .filter(Boolean).join(" · ");
   usePaneFooter("options-basis", () => ({ info: basisText ? [{ id: "greeks-basis",
@@ -597,9 +625,9 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   // busy stream reads as a steady strip rather than flicker.
   // A new expiry, a refreshed snapshot or the underlying price arriving or
   // going stale shows at once; only the stream itself is paced.
-  const summaryResetKey = useMemo(() => ({}), [strikeSelectionKey, strikeChain, spot == null]);
+  const summaryResetKey = useMemo(() => ({}), [strikeSelectionKey, strikeChain, greeksSpot == null]);
   const summaryInput = useThrottledValue(
-    useMemo(() => ({ chain: liveChain, spot, volatilities }), [liveChain, spot, volatilities]),
+    useMemo(() => ({ chain: liveChain, spot: greeksSpot, volatilities }), [liveChain, greeksSpot, volatilities]),
     OPTIONS_SUMMARY_THROTTLE_MS,
     summaryResetKey,
   );
@@ -613,7 +641,7 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
     instrument: baseRequest?.instrument ?? null, expiration: selectedExpiration,
     selectedEntry: strikeChain === expirationChain ? expirationChainEntry
       : strikeChain === initialChain ? initialChainEntry : null,
-    catalogue: availableExpirations, spot, spotAsOf: underlying?.quote?.lastUpdated,
+    catalogue: availableExpirations, spot: greeksSpot, spotAsOf: modelSpot?.observedAt,
     liveChain: liveChain !== strikeChain ? liveChain : null,
   });
   const enrichment = expirationUnavailable ? null : enrichmentState.snapshot;
@@ -901,7 +929,7 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   // The root insets the terminal body, so the band gets the width inside it.
   const statWidth = Math.max(1, width - (nativePaneChrome ? 0 : 2));
   const figures = optionsSummaryItems({
-    spot: spotItem(underlying, isOpt ? undefined : ticker.metadata.assetCategory),
+    spot: spotItem(underlying, isOpt ? undefined : ticker.metadata.assetCategory, modelSpot),
     summary, enrichment, currency: underlying?.quote?.currency || ticker.metadata.currency || "",
     ivRank: showIvRank ? { stats: ivRank } : null,
   });
