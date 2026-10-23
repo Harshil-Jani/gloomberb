@@ -221,7 +221,7 @@ When Gloom Cloud is too busy to search, the list says `Search is busy` rather th
 | `RIPL [tickers]` | Earnings Ripple: customers and suppliers of your holdings (or the named tickers) reporting in the next 30 days, with the disclosed revenue share. Pro adds companies two hops away |
 | `RDCF <ticker>` | Reverse DCF: the ten-year free cash flow growth the enterprise value prices in, against past growth, by discount rate |
 | `PEB <ticker>` | P/E band: weekly price against round multiples of trailing EPS, today's P/E and its percentile |
-| `MDAY <ticker>` | Macro-day reaction: average absolute and signed move and up share on CPI, jobs and FOMC days against a normal day |
+| `MDAY <ticker>` | Macro-day reaction: average absolute and signed move and up share on CPI, jobs, FOMC and Brazil IPCA days against a normal day, with each day's actual, forecast and prior |
 | `HIVG <ticker>` | Implied volatility history against realized, with IV rank and percentile |
 | `VCA [tickers]` | Rich/cheap implied volatility across a list: IV rank, percentile, term slope, skew, IV/HV |
 | `OSA <ticker>` | Multi-leg option positions, scenario P&L, payoff charts and aggregate Greeks, with a hedge budget, a collar or a cash-secured put |
@@ -985,9 +985,16 @@ The FUT board's codes work wherever a symbol is typed (`quote`, `history`, `tick
 - `--tail <n>` without `--from` keeps the last n events of the whole calendar, the past week's too.
 - When the calendar stops less than a week past its first day, text ends with `No events listed after <date>` (`--json` carries the last day as `metadata.listedThrough`, and the ECO pane says it in its footer).
 
+**Times**
+
+- Rows are listed by their UTC day and time; a release its publisher times also shows its own clock (`09:00 Sao Paulo`).
+- `--tz <zone>` adds a column on another clock, named by its city: `econ --country BR --tz America/New_York` shows the IPCA at `08:00` under `New York`, with the weekday first when that clock is on another day (`Tue 21:30`). `--json` has `viewerDate`, `viewerTime` and `metadata.timeZone`; an unknown zone fails with `Unknown time zone`.
+- With `config set timezone`, the ECO pane shows the same column for your zone beside `TIME (UTC)` when it is wide enough.
+
 **Countries**
 
 - `--country` takes the ECO pane's regions (`US`, `G7`, `EU`, `all`) or any country by its ISO two-letter code, several comma separated. `UK` reads as `GB`, and `G7,MX` adds Mexico to the G7. `econ --country TR` lists Türkiye's CPI releases, and `ECO MX,BR` and `fn ECO --country MX,BR` open the pane on the same countries.
+- `econ --country BR` lists IBGE's IPCA and IPCA-15 as `IPCA CPI m/m` and `IPCA-15 Mid-Month CPI m/m`: the actual and prior from the central bank's SGS series 433 and 7478 once the release time has passed, the forecast where the calendar has a consensus. The series chart as `FRED:BRAIPCAMOM` and `FRED:BRAIPCA15MOM`; `catalog IPCA` finds them.
 - A national release in the euro area is its member's: the calendar shows the German Ifo as `DE`. The ECB's and the euro area's own releases stay `EU`, and `EU` still lists the members' releases.
 - A country with nothing in the window says `No scheduled releases for MX in this window.` A code that is no country (`TUR`, `XQ`) fails with `Unknown country`.
 
