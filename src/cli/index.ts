@@ -24,7 +24,7 @@ import { checkCliCommandOptions, foldCommandArgs } from "./command-options";
 import { foldTypedText } from "../utils/typed-text";
 import { CLI_EXIT_CODES } from "./exit-codes";
 import { asUsageError, fail, inferCliErrorOptions, printCliError } from "./errors";
-import { cliStyles, setCliColorEnabledOverride, setCliWidthOverride } from "../utils/cli-output";
+import { cliStyles, setCliColorEnabledOverride, setCliPlainOverride, setCliWidthOverride } from "../utils/cli-output";
 import { setDisplayTimeZone } from "../utils/utc-time";
 import { collectSavedCopies } from "../data/saved-copies";
 import { search, searchCandidatesForCli, buildSearchReport } from "./commands/search";
@@ -446,6 +446,8 @@ export async function dispatchCli(args: string[], options: DispatchCliOptions = 
   }
   setCliColorEnabledOverride(parsed.options.color);
   setCliWidthOverride(parsed.options.width ?? null);
+  // The CLI entry sets plain output for a pipe or NO_COLOR (entry.ts); `--plain` and `--no-plain` decide it either way.
+  if (parsed.options.plain != null) setCliPlainOverride(parsed.options.plain);
   const command = parsed.args[0] ?? (parsed.help ? "help" : undefined);
   if (!command) {
     return { kind: "unhandled" };

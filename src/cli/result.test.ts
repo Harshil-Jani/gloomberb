@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { serializeCliError, serializeCliResult, type CliResultRenderOptions } from "./result";
+import { printCliResult, serializeCliError, serializeCliResult, type CliResultRenderOptions } from "./result";
+import { printCliError } from "./errors";
+import { captureConsole } from "../test-support/console";
+import { setCliColorEnabledOverride, setCliPlainOverride } from "../utils/cli-output";
 import type { CliGlobalOptions } from "./options";
 import type { ReportFreshness } from "./pane-functions/freshness";
 
@@ -7,6 +10,7 @@ const baseOptions: CliGlobalOptions = {
   format: "text",
   quiet: false,
   color: null,
+  plain: null,
   refresh: false,
   dryRun: false,
   yes: false,
@@ -194,6 +198,56 @@ describe("serializeCliResult", () => {
     expect(JSON.parse(serializeCliResult(cited, { ...baseOptions, format: "json" }))).toEqual({ ok: true, data: { rows: [] }, source });
     expect(serializeCliResult(cited, baseOptions, { text: () => "Report" })).toBe("Report");
   });
+});
+
+test("plain text keeps every column with a dash in the empty cells, and JSON, CSV and NDJSON are the same bytes plain or not", () => {
+  // Two econ queries: the second fills no Forecast, which a decorated table leaves out.
+  const columns = [
+    { key: "event", header: "Event" },
+    { key: "forecast", header: "Forecast" },
+    { key: "prior", header: "Prior" },
+  ];
+  const rows = [{ event: "Banxico Interest Rate Decision", forecast: null, prior: "6.50%" }];
+  const render = { columns, rows: (data: typeof rows) => data };
+  const result = { data: rows, freshness: { source: "Gloom Cloud", asOf: "2026-10-23T15:48:00Z", status: "not-a-feed", basis: "calendar" } as ReportFreshness };
+  const print = (plain: boolean, format: CliGlobalOptions["format"]) => {
+    setCliPlainOverride(plain);
+    setCliColorEnabledOverride(false);
+    try {
+      return serializeCliResult(result, { ...baseOptions, format }, render);
+    } finally {
+      setCliPlainOverride(null);
+      setCliColorEnabledOverride(null);
+    }
+  };
+  expect(print(false, "text").split("\n").slice(0, 3)).toEqual([
+    "Event                           Prior",
+    "──────────────────────────────  ─────",
+    "Banxico Interest Rate Decision  6.50%",
+  ]);
+  expect(print(true, "text").split("\n").slice(0, 2)).toEqual([
+    "Event                           Forecast  Prior",
+    "Banxico Interest Rate Decision  —         6.50%",
+  ]);
+  for (const format of ["json", "csv", "ndjson"] as const) expect(print(true, format)).toBe(print(false, format));
+});
+
+test("plain output words the arrows of its tables and nothing else: a note, an answer or an error prints as written", async () => {
+  setCliPlainOverride(true);
+  setCliColorEnabledOverride(false);
+  try {
+    const note = "margin ↑ → buy\n→ keep ←/→ in mind";
+    const { stdout, stderr } = await captureConsole(() => {
+      printCliResult({ data: { text: note }, warnings: ["Read as typed: a ↓ b"] }, baseOptions, { text: (data) => data.text });
+      printCliResult({ data: [{ move: "+25bp ↑", text: "a → b" }] }, baseOptions);
+      printCliError(new Error("Not found: x → y"), baseOptions);
+    });
+    expect(stdout.split("\n")).toEqual(["margin ↑ → buy", "→ keep ←/→ in mind", "Move      Text", "+25bp up  a to b"]);
+    expect(stderr).toBe("warning: Read as typed: a ↓ b\nerror: Not found: x → y");
+  } finally {
+    setCliPlainOverride(null);
+    setCliColorEnabledOverride(null);
+  }
 });
 
 describe("serializeCliError", () => {
