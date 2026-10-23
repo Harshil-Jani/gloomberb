@@ -306,7 +306,24 @@ test("a past window reads its own dates' bars, in the size its span takes, with 
   }
 });
 
-// 244 symbols were 244 calls and as many files whose headers changed with the market's state. (GLO-1263)
+test("history reads a Bloomberg code as its listing: VOD LN Equity is Vodafone in London", async () => {
+  const asked: string[] = [];
+  const cli = createTestCliContext({
+    config: createDefaultConfig("/tmp/gloom-history-command-fixture"),
+    dataProvider: createTestDataProvider({
+      getQuote: async () => createTestQuote({ symbol: "VOD", currency: "GBP" }),
+      getPriceHistoryWithMetadata: async (symbol, exchange) => {
+        asked.push(`${symbol}@${exchange}`);
+        return { resolution: "1d", points: [{ date: new Date("2026-10-16"), open: 1.1, high: 1.2, low: 1.0, close: 1.15, volume: 1000 }] };
+      },
+    }),
+  }, { format: "json" });
+  await history.execute(["VOD LN Equity"], cli.context);
+  expect(asked).toEqual(["VOD:LSE@LSE"]);
+  expect(cli.printed[0]!.result.warnings).toContain('Read "VOD LN Equity" as VOD:LSE.');
+});
+
+// 244 symbols were 244 calls and as many files whose headers changed with the market's state.
 test("history of several symbols is one long table with the single-symbol header, each row naming its symbol and currency, a symbol with none a row with its reason", async () => {
   // Fri 23 Oct 2026, 15:00 UTC: Nasdaq trades, so AAPL's day is a partial bar; KRX has closed.
   setSystemTime(new Date("2026-10-23T15:00:00Z"));
