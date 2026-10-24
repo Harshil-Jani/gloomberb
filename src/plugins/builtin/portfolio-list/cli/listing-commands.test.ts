@@ -11,6 +11,7 @@ import { loadConfig, saveConfig } from "../../../../data/config/store";
 import { createDefaultConfig } from "../../../../types/config";
 import { setCliColorEnabledOverride } from "../../../../utils/cli-output";
 import type { CliCommandDef } from "../../../../types/plugin";
+import type { DataProvider } from "../../../../types/data-provider";
 import type { TickerChanges } from "../../../../types/ticker-changes";
 import { LookupUnansweredError } from "../../../../cli/ticker-resolution";
 import { connectionHealth, GLOOM_CLOUD_HTTP_CONNECTION_ID } from "../../../../core/connection-health";
@@ -533,4 +534,127 @@ test("a list of more than ten symbols checks each one's history, and one symbol 
     expect(saved).toEqual([]);
   }
   expect((await add(["FSBC"], false)).saved).toEqual(["FSBC"]);
+});
+
+/** The listings abroad the saver's quotes know, each its symbol's only one. */
+const ABROAD: Record<string, { name: string; exchange: string; currency: string }> = {
+  GARAN: { name: "Turkiye Garanti Bankasi A.S.", exchange: "BIST", currency: "TRY" },
+  AKBNK: { name: "Akbank T.A.S.", exchange: "BIST", currency: "TRY" },
+  APPL: { name: "Aptus Pharma Limited", exchange: "BSE", currency: "INR" },
+  MXN: { name: "MIXI, Inc.", exchange: "FWB2", currency: "EUR" },
+};
+
+/** A saver's profile with Istanbul's banks as Gloom Cloud quotes them: GARAN and AKBNK trade on BIST only. */
+async function bistSaver(search: DataProvider["search"]) {
+  const persistence = new AppPersistence(":memory:");
+  persistences.push(persistence);
+  const store = new TickerRepository(persistence.tickers);
+  const dataDir = await mkdtemp(join(tmpdir(), "gloomberb-bist-"));
+  dataDirs.push(dataDir);
+  await saveConfig({
+    ...createDefaultConfig(dataDir),
+    portfolios: [{ id: "savings", name: "Savings", currency: "TRY" }],
+    watchlists: [{ id: "banks", name: "Banks" }],
+  });
+  const dataProvider = createTestDataProvider({
+    search,
+    // Asked as GARAN, or by its key GARAN:BIST.
+    getQuote: async (asked, exchange) => {
+      const [symbol, venue = exchange] = asked.split(":");
+      const listing = ABROAD[symbol!];
+      if (!listing || (venue && venue !== listing.exchange)) throw new Error(`Not a ticker: ${asked}.`);
+      return createTestQuote({ symbol: symbol!, name: listing.name, currency: listing.currency, listingExchangeName: listing.exchange, exchangeName: listing.exchange, lastUpdated: Date.now() });
+    },
+  });
+  const exec = async (options: { dryRun?: boolean }, command: CliCommandDef, ...args: string[]) => {
+    const cli = hintedContext({ config: await loadConfig(dataDir), store, dataProvider }, { color: false, ...options });
+    await command.execute(args, cli.context);
+    const { result, options: printed } = cli.printed[0] ?? { result: { data: null } };
+    return { data: result.data as Record<string, unknown> & Array<Record<string, unknown>>, warnings: result.warnings ?? [], text: printed?.text?.(result.data) ?? "" };
+  };
+  const run = (command: CliCommandDef, ...args: string[]) => exec({}, command, ...args);
+  return { store, dataDir, run, exec, keys: async () => (await store.loadAllTickers()).map((ticker) => ticker.metadata.ticker).sort() };
+}
+
+test("a BIST bank typed GARAN.IS, GARAN:BIST or GARAN is one GARAN:BIST row on every path, found from its quote while search is busy", async () => {
+  const saver = await bistSaver(async () => { throw new ProviderBusyError(); });
+  const abroad = "GARAN has no US listing; it trades on BIST, in TRY.";
+
+  expect((await saver.run(portfolioCliCommand, "add", "Savings", "GARAN.IS")).data).toMatchObject({ listing: "GARAN:BIST", changed: true });
+  const bare = await saver.run(portfolioCliCommand, "add", "Savings", "GARAN");
+  expect(bare.data).toMatchObject({ listing: "GARAN:BIST", changed: false });
+  expect(bare.warnings).toContain(abroad);
+  expect((await saver.run(portfolioCliCommand, "add", "Savings", "GARAN:BIST")).data).toMatchObject({ changed: false });
+
+  // A typed list and a pasted file read the suffix the same way.
+  const typed = await saver.run(watchlistCliCommand, "add", "Banks", "GARAN.IS, AKBNK");
+  expect(typed.data.map((row) => [row.status, row.listing, row.abroad ?? null])).toEqual([
+    ["added", "GARAN:BIST", null], ["added", "AKBNK:BIST", "AKBNK has no US listing; it trades on BIST, in TRY."],
+  ]);
+  const file = join(saver.dataDir, "banks.txt");
+  await Bun.write(file, "GARAN.IS\nAKBNK.IS\n");
+  expect((await saver.run(portfolioCliCommand, "add", "Savings", "--file", file)).data.map((row) => [row.status, row.listing]))
+    .toEqual([["already_listed", "GARAN:BIST"], ["added", "AKBNK:BIST"]]);
+
+  const position = await saver.run(portfolioCliCommand, "position", "set", "Savings", "GARAN.IS", "100", "120", "TRY");
+  expect(position.data).toMatchObject({ listing: "GARAN:BIST", shares: 100, avgCost: 120 });
+  expect(await saver.keys()).toEqual(["AKBNK", "GARAN"]);
+  expect((await saver.store.loadTicker("GARAN"))!.metadata).toMatchObject({ portfolios: ["savings"], watchlists: ["banks"], positions: [{ shares: 100 }] });
+
+  expect((await saver.run(watchlistCliCommand, "remove", "Banks", "AKBNK.IS")).data).toMatchObject({ changed: true, listing: "AKBNK:BIST" });
+  expect((await saver.store.loadTicker("AKBNK"))!.metadata.watchlists).toEqual([]);
+});
+
+test("a symbol listed only abroad is still refused when it is more likely a slip for a US ticker or a currency", async () => {
+  const saver = await bistSaver(async (query) => query === "AAPL"
+    ? [{ providerId: "test", symbol: "AAPL", name: "Apple Inc.", exchange: "NASDAQ", type: "Common Stock", currency: "USD" }]
+    : []);
+  const refusal = async (symbol: string) => (await caught(saver.run(watchlistCliCommand, "add", "Banks", symbol)))?.message;
+  expect(await refusal("APPL")).toBe("APPL matched APPL:BSE (Aptus Pharma Limited), a listing abroad; APPL is one slip from AAPL (Apple Inc.).");
+  expect(await refusal("MXN")).toBe("MXN matched MXN:FWB2 (MIXI, Inc.), a listing abroad; MXN is also a currency.");
+  expect(await saver.keys()).toEqual([]);
+});
+
+test("rows saved under a suffix merge when a list command is about to save, never on a dry run or a read, and an add finds the merged row", async () => {
+  const saver = await bistSaver(async () => { throw new ProviderBusyError(); });
+  const held = { portfolio: "savings", shares: 50, avgCost: 100, currency: "TRY", broker: "manual" };
+  await saver.store.saveTicker(createTestTicker("GARAN.IS:BIST", "Turkiye Garanti Bankasi A.S.", {
+    exchange: "BIST", currency: "TRY", portfolios: ["savings"], watchlists: ["banks"], positions: [held],
+  }));
+  const before = (await saver.store.loadAllTickers()).map((ticker) => ticker.metadata);
+
+  await saver.run(watchlistCliCommand, "list");
+  await saver.exec({ dryRun: true }, watchlistCliCommand, "add", "Banks", "AKBNK");
+  expect((await saver.store.loadAllTickers()).map((ticker) => ticker.metadata)).toEqual(before);
+
+  // The merge takes GARAN:BIST, leaving the bare key free; a bare GARAN then reads as that row.
+  expect((await saver.run(portfolioCliCommand, "add", "Savings", "GARAN")).data).toMatchObject({ listing: "GARAN:BIST", changed: false });
+  expect(await saver.keys()).toEqual(["GARAN.IS:BIST", "GARAN:BIST"]);
+  expect((await saver.store.loadTicker("GARAN:BIST"))!.metadata).toMatchObject({ watchlists: ["banks"], positions: [held] });
+  expect((await saver.store.loadTicker("GARAN.IS:BIST"))!.metadata).toMatchObject({ portfolios: [], watchlists: [], positions: [] });
+});
+
+test("a suffixed symbol removes its venue's row, else the row saved under the suffixed key: a broker's, or a US class the suffix only looks like", async () => {
+  const saver = await bistSaver(async () => []);
+  await saver.store.saveTickers([
+    createTestTicker("VOD:XLON", "Vodafone Group Plc", { exchange: "LSE", currency: "GBP", watchlists: ["banks"] }),
+    createTestTicker("7203.T:XTKS", "Toyota Motor Corporation", {
+      exchange: "JPX", currency: "JPY", watchlists: ["banks"], broker_contracts: [{ brokerId: "ibkr", brokerInstanceId: "ib", conId: 1, symbol: "7203" }],
+    }),
+    createTestTicker("MKC.V", "McCormick & Company", { exchange: "NYSE", watchlists: ["banks"] }),
+  ]);
+  // A one-letter suffix is read as its venue where a row is saved there, without a lookup.
+  expect((await saver.run(watchlistCliCommand, "add", "Banks", "VOD.L")).data).toMatchObject({ listing: "VOD:LSE", changed: false });
+  expect((await saver.run(watchlistCliCommand, "remove", "Banks", "7203.T")).data).toMatchObject({ changed: true });
+  const listed = await saver.run(watchlistCliCommand, "remove", "Banks", "MKC.V", "VOD.L");
+  expect(listed.data.map((row) => [row.status, row.listing])).toEqual([["removed", "MKC.V:NYSE"], ["removed", "VOD:LSE"]]);
+  expect((await saver.store.loadAllTickers()).filter((ticker) => ticker.metadata.watchlists.length > 0)).toEqual([]);
+  expect(await saver.keys()).toEqual(["7203.T:XTKS", "MKC.V", "VOD:XLON"]);
+});
+
+test("a bare symbol saved on its listing abroad still needs a choice when search lists it in the US too", async () => {
+  const shopify = (exchange: string, currency: string) => ({ providerId: "test", symbol: "SHOP", name: "Shopify Inc.", exchange, currency, type: "Common Stock" });
+  const saver = await bistSaver(async (query) => query.startsWith("SHOP") ? [shopify("NYSE", "USD"), shopify("TSX", "CAD")] : []);
+  await saver.store.saveTicker(createTestTicker("SHOP", "Shopify Inc.", { exchange: "TSX", currency: "CAD" }));
+  expect((await caught(saver.run(watchlistCliCommand, "add", "Banks", "SHOP")))?.message).toBe("SHOP matched SHOP:TSX (Shopify Inc.), a listing abroad.");
 });
