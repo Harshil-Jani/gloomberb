@@ -17,7 +17,7 @@ import { futuresSessionRefreshInterval } from "../shared/futures-session";
 import { useResearchCloudSession } from "../shared/research-cloud-session";
 import { useQuoteBoard } from "../shared/use-quote-board";
 import { getCachedFuturesCurve, loadCurveSpotBars, loadFuturesCurve, loadFuturesCurveAsOf } from "./client";
-import { BASIS_CONVENTION, basisSpotSymbol, blankBasisNote, curveAsOfDate, curveAxisPrice, curveBasisPercent, curveBasisRows, curveChangeText, curveContractChanges, curveContractCode, curvePrice, curveRank, curveSpot, curveSpotLabel, curveSpotSource, curveSpreadLabel, curveTimestamp, curveTitle, curveUnitLabel, DEFAULT_CURVE_HORIZON, futuresCurveSeries, newestQuote, noTradeChangeNote, normalizeCurveRoot, paneCurveRoot, shortDatedBasis, shortDatedBasisNote, sortCurveContracts, unsupportedCurveRootMessage, type CurveContractChanges, type CurveSpot } from "./model";
+import { BASIS_CONVENTION, basisSpotSymbol, blankBasisNote, curveAsOfDate, curveAxisPrice, curveBasisPercent, curveBasisRows, curveChangeText, curveContractChanges, curveContractCode, curvePrice, curveRank, curveSpot, curveSpotLabel, curveSpotSource, curveSpreadBasis, curveSpreadLabel, curveTimestamp, curveTitle, curveUnitLabel, DEFAULT_CURVE_HORIZON, futuresCurveSeries, newestQuote, noTradeChangeNote, normalizeCurveRoot, paneCurveRoot, shortDatedBasis, shortDatedBasisNote, sortCurveContracts, thinSpreadNotice, unsupportedCurveRootMessage, type CurveContractChanges, type CurveSpot } from "./model";
 
 const TABS = [{ value: "curve", label: "Curve" }, { value: "contracts", label: "Contracts" }];
 // One column order for every root. SETTLE is the exchange settlement for the
@@ -164,13 +164,20 @@ function FuturesCurveView({ width, height, focused, root, ownsTitle }: PaneProps
   useChartTableSelection({ rows: curveRows, getId: contractKey, getDate: contractDate, selectedId, onSelect: setSelected,
     focused, enabled: curveTab });
   // The highlighted row carries the selected contract's price and rank.
-  const slopeDate = data?.slope.asOf && curveTimestamp(data.slope.asOf) !== curveTimestamp(newest) ? curveTimestamp(data.slope.asOf) : null;
+  // The spread says which prices it subtracts (settlements or two last trades made together); a server that does not say is dated.
+  const spreadBasis = data ? curveSpreadBasis(data.slope, newest) : null;
+  const slopeDate = !spreadBasis && data?.slope.asOf && curveTimestamp(data.slope.asOf) !== curveTimestamp(newest) ? curveTimestamp(data.slope.asOf) : null;
+  // A thin spread makes no curve call: it and the roll yield read from it take the warning tone and give no rank.
+  const thin = data?.slope.state === "thin";
+  const spreadRank = data && !thin ? curveRank(data.slope.percentile, data.slope.samples) : null;
+  const thinSpread = data ? thinSpreadNotice(data) : null;
   const statItems: StatItem[] = data ? [
     { id: "roll", label: "Ann. roll yield", value: signedPercent(data.slope.annualizedRollYield),
-      detail: curveRank(data.slope.rollPercentile, data.slope.samples) },
+      ...thin ? { tone: "warning" as const } : { detail: curveRank(data.slope.rollPercentile, data.slope.samples) } },
     // Named by the contracts it subtracts: the front is the first month the market trades, not always the first row.
     { id: "spread", label: curveSpreadLabel(data.slope), value: data.slope.value == null ? "--" : curvePrice(data.slope.value, root),
-      detail: [data.slope.state, curveRank(data.slope.percentile, data.slope.samples), slopeDate].filter(Boolean).join(" · ") },
+      ...thin ? { tone: "warning" as const } : {},
+      detail: [data.slope.state, spreadBasis, spreadRank, slopeDate].filter(Boolean).join(" · ") },
     ...data.spec ? [{ id: "contract", label: "Contract", value: data.spec.size, detail: `tick ${futuresTickText(data.spec)}` }] : [],
   ] : [];
   const { strip: tabStrip, rows: tabRows } = usePaneTabs({ tabs: TABS, activeValue: tab, onSelect: setTab, focused, dense: true, queryBarWidth: width });
@@ -235,7 +242,7 @@ function FuturesCurveView({ width, height, focused, root, ownsTitle }: PaneProps
   const untraded = data && !requestedDate && columns.some((entry) => entry.id === "change")
     ? noTradeChangeNote(tableRows, data, { count: true }) : null;
   usePaneNoticeFooter({ registrationId: "futures-curve:notices", focused,
-    notices: emptyPast ? [] : [...data?.gaps ?? [], ...basisNotes, ...untraded ? [untraded] : [],
+    notices: emptyPast ? [] : [...data?.gaps ?? [], ...thinSpread ? [thinSpread] : [], ...basisNotes, ...untraded ? [untraded] : [],
       ...delivering.length ? [`${delivering.join(", ")} ${delivering.length === 1 ? "is" : "are"} past first notice.`] : []] });
   const delay = Math.max(0, ...(data?.contracts.map((row) => row.delayMinutes ?? 0) ?? []));
   usePaneStatusFooter({ registrationId: "futures-curve", loading: resource.loading, error: resource.error,
