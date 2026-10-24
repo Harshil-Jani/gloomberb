@@ -287,7 +287,7 @@ import {
 } from "../../plugins/builtin/holders/report-rows";
 import { fetchBeneficialOwners } from "../../plugins/builtin/holders/beneficial-client";
 import { centralBankEventsMessage } from "../central-bank-events";
-import { classSharesToday } from "../../plugins/builtin/holders/client";
+import { classSharesAsOf, classSharesToday } from "../../plugins/builtin/holders/client";
 import { filingFormMatches, SEC_FILING_FETCH_LIMIT } from "../../plugins/builtin/sec/forms";
 import { currentReportItemsLabel } from "../../utils/sec-filings";
 import { INSIDER_REPORT_FILINGS, loadParsedInsiderFilings } from "../../plugins/builtin/insider/client";
@@ -2292,7 +2292,8 @@ async function printBeneficialOwners(
   const sharesOutstanding = classSharesToday(financials);
   const rows = buildBeneficialReportRows(payload, { history, holders, sharesOutstanding });
   const notices = beneficialCoverageNotices(payload.coverage);
-  const legend = beneficialReportLegend(rows, sharesOutstanding);
+  const sharesOutstandingAsOf = classSharesAsOf(financials);
+  const legend = beneficialReportLegend(rows, sharesOutstanding, sharesOutstandingAsOf);
   ctx.printResult({
     data: rows,
     ...(notices.length ? { warnings: notices } : {}),
@@ -2306,6 +2307,7 @@ async function printBeneficialOwners(
       coverage: payload.coverage,
       complete: beneficialListComplete(payload),
       sharesOutstanding,
+      ...(sharesOutstandingAsOf ? { sharesOutstandingAsOf } : {}),
     },
   }, {
     heading: `${listingHeading(identity)}${cliStyles.muted(beneficialListFacts(payload, form, rows.length, history).map((fact) => `  ·  ${fact}`).join(""))}`,
@@ -3098,7 +3100,7 @@ export const marketDataCliCommands: BuiltinCliCommandDef[] = [
         title: "Long history",
         lines: [
           "ZAR has daily FRED data from 1980: gloom fred DEXSFUS --start 1980 --sort asc --csv",
-          "NGN, SAR and ILS have no FRED series. Their daily bars cover the last five years (gloom fn G USDNGN=X --rangePreset 5Y --chartResolution 1d --csv); before that there are monthly bars only (gloom history USDNGN=X --range ALL).",
+          "NGN, SAR and ILS have no FRED series. Their daily bars cover the last five years (gloom fn G USDNGN=X --range-preset 5Y --chart-resolution 1d --csv); before that there are monthly bars only (gloom history USDNGN=X --range ALL).",
         ],
       }],
       examples: [
