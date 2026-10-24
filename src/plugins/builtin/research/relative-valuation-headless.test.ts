@@ -338,7 +338,7 @@ test("--peers on a word that is no ticker says so, with the search to run, befor
   const failure = await relativeValuationHeadless.expandArgument!(args, ctx).then(() => null, (error: Error) => error.message);
   expect(failure).toBe("Not a ticker: DUOLINGO.");
   // The CLI reads it as it reads `fn RV duolingo lrn`'s.
-  expect(withSearchHints(failure!, ["RV", "duolingo", "--peers"])).toBe("Not a ticker: DUOLINGO. Try `gloomberb search duolingo`.");
+  expect(withSearchHints(failure!, ["RV", "duolingo", "--peers"])).toBe("Not a ticker: DUOLINGO. Try `gloom search duolingo`.");
   expect(screened).toBe(false);
 });
 

@@ -191,7 +191,7 @@ export const relativeValuationHeadless: HeadlessPaneDefinition<"rows"> = {
       ...extraColumnsBasis(extraIds, rows),
     ].filter(Boolean).join(" · ");
     const notes = [
-      ...selection ? [`Peers chosen automatically: ${selection.basis}. To choose your own: gloomberb fn RV ${selection.subject} <tickers>.`] : [],
+      ...selection ? [`Peers chosen automatically: ${selection.basis}. To choose your own: gloom fn RV ${selection.subject} <tickers>.`] : [],
       ...extra.notes,
     ];
     // Last and Chg% are the regular session; an extended print gets a column only when a peer has one.
