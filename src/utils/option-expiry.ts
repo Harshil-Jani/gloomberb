@@ -6,7 +6,9 @@
 
 import type { OptionsChain } from "../types/financials";
 import { hasRegularCloseHour, latestRegularSessionClose, sessionCalendarTimeZone } from "../market-data/market/freshness";
+import { listedCoinOptions } from "../market-data/options-alternatives";
 import { dateOptionHint, readCalendarDate } from "./calendar-date";
+import { isRoundTheClockCoin } from "./crypto-pair";
 import { canonicalExchange, isUsListingExchange } from "./exchanges";
 import { zonedWallClockToUtcMs } from "./zoned-date-time";
 
@@ -19,6 +21,23 @@ const DAY_MS = 86_400_000;
 export const OPTION_EXPIRATION_FORMAT = "YYYY-MM-DD (2028-01-21), DD.MM.YYYY, Jan 21 2028, 21 January 2028 or Unix seconds (1832025600)";
 /** The value's name in a catalog flag, `--expiration <date|unix>`. */
 export const OPTION_EXPIRATION_PLACEHOLDER = "date|unix";
+
+/** Seconds into its UTC day that Deribit stamps each expiry at: its 08:00 UTC settlement. */
+const UTC_SETTLEMENT_SECONDS = 8 * 3600;
+
+/**
+ * Whether an expiry stamp is the settlement instant itself, as Deribit stamps
+ * its BTC and ETH expiries (08:00 UTC), rather than a listed option's date. No
+ * US listing is stamped at that hour: they carry the date's midnight or its close.
+ */
+export function isSettlementStamp(seconds: number): boolean {
+  return Number.isFinite(seconds) && ((seconds % 86_400) + 86_400) % 86_400 === UTC_SETTLEMENT_SECONDS;
+}
+
+/** `08:00 UTC` for a settlement stamp (`isSettlementStamp`); null for a dated one. */
+export function settlementStampTime(seconds: number): string | null {
+  return isSettlementStamp(seconds) ? `${new Date(seconds * 1000).toISOString().slice(11, 16)} UTC` : null;
+}
 
 /** The expiry's calendar date, `2028-01-21`; empty for a stamp that is not a time. */
 export function expiryIsoDate(seconds: number): string {
@@ -89,6 +108,9 @@ export function formatDaysToExpiry(expiration: number, asOfMs: number, exchange?
   return isLiveOptionExpiry(expiration, asOfMs, exchange) ? `${Math.max(0, daysToExpiry(expiration, asOfMs))}d` : "expired";
 }
 
+/** The coin board's venue code, which a coin pair's listing carries. */
+const COIN_OPTIONS_VENUE = "CCC";
+
 /** Listed US options trade on the US equity calendar, NYSE's published one. */
 const US_OPTIONS_CALENDAR = "NYSE";
 const lastSessions = new Map<string, { date: string; close: number } | null>();
@@ -105,10 +127,33 @@ function expiryCalendarVenue(exchange: string | undefined): string {
     ? venue : US_OPTIONS_CALENDAR;
 }
 
+/**
+ * The venue to read an expiry's close on for a listing: the coin board for a
+ * coin whose options are listed (BTC-USD, ETH-USD, even when it carries no
+ * venue), else the listing's own.
+ */
+export function optionExpiryVenue(symbol: string | undefined, exchange: string | undefined): string | undefined {
+  return symbol && listedCoinOptions(symbol) ? COIN_OPTIONS_VENUE : exchange;
+}
+
+/**
+ * When a settlement-priced expiry settles (Deribit's BTC and ETH options): its
+ * stamp when it carries the 08:00 UTC settlement, or 08:00 UTC on a typed
+ * date's day for a coin listing. Any day of the week, weekends included: the
+ * US calendar does not apply. Null for a listed US option, whatever its venue.
+ */
+function settlementCloseMs(expiration: number, exchange: string | undefined): number | null {
+  if (isSettlementStamp(expiration)) return expiration * 1000;
+  if (!isRoundTheClockCoin(undefined, exchange)) return null;
+  return Math.floor(expiration / 86_400) * 86_400_000 + UTC_SETTLEMENT_SECONDS * 1000;
+}
+
 /** The expiry's last trading session, on or before its date, on its venue's calendar: the date and when it closed. */
 function expiryLastSession(expiration: number, exchange: string | undefined): { date: string; close: number } | null {
   const date = expiryIsoDate(expiration);
   if (!date) return null;
+  const settles = settlementCloseMs(expiration, exchange);
+  if (settles != null) return { date, close: settles };
   const venue = expiryCalendarVenue(exchange);
   const key = `${venue}:${date}`;
   const known = lastSessions.get(key);
@@ -128,7 +173,9 @@ function expiryLastSession(expiration: number, exchange: string | undefined): { 
  * listing venue's last trading day on or before the expiry's date, on that
  * venue's clock and calendar. A US expiry closes at 16:00 New York, at 13:00
  * on a published early close, and one dated on a holiday or a weekend closed
- * with the session before it. Null for a stamp that is not a date.
+ * with the session before it. A Deribit expiry (BTC-USD, ETH-USD) settles at
+ * 08:00 UTC on its own date, a Saturday or Sunday too. Null for a stamp that
+ * is not a date.
  */
 export function optionExpiryCloseMs(expiration: number, exchange?: string): number | null {
   return expiryLastSession(expiration, exchange)?.close ?? null;

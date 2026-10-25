@@ -6,12 +6,15 @@ import { isPlainKey } from "../../../utils/keyboard";
 import { formatCompact, formatPercentRaw } from "../../../utils/format";
 import { formatMarketPrice, formatSignedMarketPrice, liveQuoteFormatOptions } from "../../../market-data/market/format";
 import { getRegularSessionDisplay } from "../../../market-data/market/status";
-import { chainOptionContract, formatExpDate, optionContractName, resolveOptionsTarget } from "../../../utils/options";
+import { chainOptionContract, formatExpDate, formatStrikeLabel, optionContractName, resolveOptionsTarget } from "../../../utils/options";
 import {
-  expiryIsoDate, findListedExpiry, formatDaysToExpiry, daysToExpiry, isLiveOptionExpiry, missingExpiryMessage, missingExpiryText, readOptionExpiration,
+  expiryIsoDate, findListedExpiry, formatDaysToExpiry, daysToExpiry, isLiveOptionExpiry, missingExpiryMessage, missingExpiryText, optionExpiryVenue,
+  readOptionExpiration,
 } from "../../../utils/option-expiry";
 import { canonicalTickerKey } from "../../../utils/exchanges";
-import { isOptionsUnavailableError, listedOptionsAlternative, optionsUnavailableTitle } from "../../../market-data/options-alternatives";
+import {
+  COIN_OPTIONS_HINT, isCoinWithoutOptions, isOptionsUnavailableError, listedOptionsAlternative, optionsUnavailableTitle,
+} from "../../../market-data/options-alternatives";
 import { useChartQueries, useOptionsQuery, useResolvedEntryValue, useTickerFinancials } from "../../../market-data/hooks";
 import {
   Button,
@@ -48,7 +51,6 @@ import {
   createOptionColumns,
   findNearestStrikeIndex,
   formatIv,
-  formatStrikeLabel,
   optionColumnColor,
   renderOptionCell,
   resolveDefaultStrikeTarget,
@@ -272,7 +274,9 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   // A listing can still carry a date whose last session has closed. The chain
   // never opens there, nor on a saved date that has since passed: it takes the nearest live one.
   const now = Date.now();
-  const liveExpiration = (expiration: number) => isLiveOptionExpiry(expiration, now, effectiveExchange);
+  // Expiries close on the listing's clock: a coin's options (Deribit) settle at 08:00 UTC on any day.
+  const expiryVenue = optionExpiryVenue(effectiveTicker, effectiveExchange);
+  const liveExpiration = (expiration: number) => isLiveOptionExpiry(expiration, now, expiryVenue);
   const listedExpirations = initialChain?.expirationDates ?? [];
   const openingExpirations = listedExpirations.some(liveExpiration) ? listedExpirations.filter(liveExpiration) : listedExpirations;
   const initialExpiration = openingExpirations.length === 0 ? undefined : openingExpirations.reduce((best, expiration) => (
@@ -322,9 +326,9 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
     const listed = selectedExpirationMissing
       ? [...availableExpirations, selectedExpiration!].sort((left, right) => left - right) : availableExpirations;
     // A date whose last session has closed has no contracts left to show; the strip leaves it out, unless every date has.
-    const current = (expiration: number) => isLiveOptionExpiry(expiration, Date.now(), effectiveExchange);
+    const current = (expiration: number) => isLiveOptionExpiry(expiration, Date.now(), expiryVenue);
     return listed.some(current) ? listed.filter((expiration) => expiration === selectedExpiration || current(expiration)) : listed;
-  }, [availableExpirations, effectiveExchange, selectedExpiration, selectedExpirationMissing]);
+  }, [availableExpirations, expiryVenue, selectedExpiration, selectedExpirationMissing]);
   // Keep the date strip stable while a mouse press focuses this pane. A new
   // tab list asks the web host to reveal the active tab and can move the date
   // being clicked before mouse-up, cancelling selection of an offscreen expiry.
@@ -444,7 +448,7 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
   const chainAsOfMs = asOfChain?.asOf ? Date.parse(asOfChain.asOf) : Number.NaN;
   const expiryAsOfMs = Number.isFinite(chainAsOfMs) ? chainAsOfMs : Date.now();
   const expiryDate = selectedExpiration == null ? "" : expiryIsoDate(selectedExpiration);
-  const expiryDays = selectedExpiration == null ? "" : formatDaysToExpiry(selectedExpiration, expiryAsOfMs, effectiveExchange);
+  const expiryDays = selectedExpiration == null ? "" : formatDaysToExpiry(selectedExpiration, expiryAsOfMs, expiryVenue);
   useRemoteUiNode(expiryDate && chain && !expirationUnavailable ? {
     role: "report-notice",
     label: "Expiry",
@@ -904,6 +908,19 @@ export function OptionsView({ width, height, focused, nestedInTabs = false, ivRa
     return <EmptyState title="Select a ticker." />;
   }
   if (loading && !chain) return <Spinner label="Loading options chain..." />;
+  if (error && !chain && isOptionsUnavailableError(error) && isCoinWithoutOptions(effectiveTicker)) {
+    // A coin other than BTC and ETH: the coins that have options, and a bitcoin-linked fund's.
+    return (
+      <EmptyState
+        title={optionsUnavailableTitle(effectiveTicker)}
+        hint={COIN_OPTIONS_HINT}
+        actions={<>
+          <Button label="BTC-USD options" onPress={() => createPaneFromTemplate("options-pane", { symbol: "BTC-USD" })} />
+          <Button label="IBIT options" onPress={() => createPaneFromTemplate("options-pane", { symbol: "IBIT" })} />
+        </>}
+      />
+    );
+  }
   if (error && !chain && isOptionsUnavailableError(error)) {
     // A future or commodity with no chain of its own: the listed fund whose options stand in, and OSA on it.
     const alternative = listedOptionsAlternative(effectiveTicker);
