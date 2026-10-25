@@ -14,6 +14,7 @@ import {
 } from "./client";
 import { historyStartNotice } from "../shared/history-span";
 import { formatMoveRank } from "../shared/move-rank";
+import type { StatPoint } from "../shared/stat-transform";
 import { formatSigma } from "../shared/trend";
 import { STAT_CATEGORIES } from "./defs";
 import { DEFAULT_STAT_ID, resolveStatArg, STATS } from "./stats";
@@ -24,20 +25,26 @@ function reportFormat(stat: StatDef): (value: number) => string {
   return stat.basisPoints ? (value) => formatBasisPoints(value) : stat.formatValue;
 }
 
-/** `cutoffShown`: the status line names when in the day the reading was taken, so the period does not repeat it. */
-function detailEntries(view: StatViewModel, cutoffShown: boolean): HeadlessPaneEntry[] {
+/**
+ * `cutoffShown`: the status line names when in the day the reading was taken, so the period does not repeat it.
+ * `text` is the report's text lines, where Previous says its period beside it; exports give the period a line of its own.
+ */
+function detailEntries(view: StatViewModel, cutoffShown: boolean, text: boolean): HeadlessPaneEntry[] {
   const format = reportFormat(view.stat);
   return [
     { label: "Latest", value: view.latest.value, formatted: format(view.latest.value) },
     {
       label: "Previous",
       value: view.previous?.value ?? null,
-      formatted: view.previous ? format(view.previous.value) : "-",
+      formatted: view.previous ? `${format(view.previous.value)}${text && view.previousReading ? ` (${view.previousReading})` : ""}` : "-",
+      ...earlierDating(view, view.previous),
     },
+    ...!text && view.previous ? [{ label: "Previous period", value: view.previous.date, formatted: view.previousReading ?? view.previous.date, ...earlierDating(view, view.previous) }] : [],
     {
       label: "1Y ago",
       value: view.yearAgo?.value ?? null,
       formatted: view.yearAgo ? format(view.yearAgo.value) : "-",
+      ...earlierDating(view, view.yearAgo),
     },
     { label: "Mean", value: view.mean, formatted: format(view.mean) },
     {
@@ -84,6 +91,29 @@ const PERCENTILE_WINDOW: Record<StatRangeId, string> = {
   ALL: "the full history",
 };
 
+/**
+ * An earlier reading's own dating (previous, a year ago): its period, no release (the server dates only the
+ * latest print's), and its own day for as-of when the series is observed daily or weekly. A reading there is
+ * none of is of no period, never the latest's.
+ */
+function earlierDating(view: StatViewModel, point: StatPoint | null): Pick<HeadlessPaneEntry, "period" | "released" | "asOf"> {
+  return { period: point?.date ?? null, released: null, asOf: point && !view.periodicity ? point.date : null };
+}
+
+/** The period a statistic's lines cover and the day they were released, for the `period` and `released` of each exported line. */
+function exportDating(view: StatViewModel): { period: string; released?: string; asOf: string | null } {
+  return { period: view.latest.date, ...(view.releasedOn ? { released: view.releasedOn } : {}), asOf: exportAsOf(view) };
+}
+
+/**
+ * What an exported row is as of: the day its figure was released, else its own
+ * day when it is observed daily or weekly (a Treasury yield), and nothing when
+ * the date only starts the period it covers.
+ */
+function exportAsOf(view: StatViewModel): string | null {
+  return view.releasedOn ?? (view.periodicity ? null : view.latest.date);
+}
+
 export function projectStatsHeadlessBundle(
   bundle: StatsBundle,
   range: StatRangeId,
@@ -94,35 +124,45 @@ export function projectStatsHeadlessBundle(
   const sections = STAT_CATEGORIES.flatMap((category) => {
     const categoryViews = views.filter((view) => view.stat.category === category.id);
     if (categoryViews.length === 0) return [];
+    // The text table keeps the columns a terminal has room for; exports add what each figure is of.
+    const columns = (text: boolean) => [
+      { key: "indicator", header: "Indicator" },
+      {
+        key: "latest",
+        header: "Latest",
+        align: "right" as const,
+        format: (_value: unknown, row: Record<string, unknown>) => String(row.formattedLatest),
+      },
+      {
+        key: "previous",
+        header: "Previous",
+        align: "right" as const,
+        format: (_value: unknown, row: Record<string, unknown>) => String(row.formattedPrevious),
+      },
+      // Which period Previous is: exports carry it beside the figure, the text table has its Period column for the latest.
+      ...text ? [] : [{ key: "previousPeriod", header: "Previous period" }],
+      {
+        key: "percentile",
+        header: "%ile",
+        align: "right" as const,
+        format: (value: unknown) => formatNumber(Number(value), 0),
+      },
+      // `period` and `released` are the names every dated export gives these (`econ`, `fred`).
+      { key: "asOf", header: "period", literalHeader: true, textHeader: "Period", format: (_value: unknown, row: Record<string, unknown>) => String(row.reading) },
+      {
+        key: "releasedOn",
+        header: "released",
+        literalHeader: true,
+        textHeader: "Released",
+        format: (_value: unknown, row: Record<string, unknown>) => typeof row.released === "string" ? row.released.replace(/^released /, "") : "",
+      },
+    ];
     return [{
       title: category.label,
-      columns: [
-        { key: "indicator", header: "Indicator" },
-        {
-          key: "latest",
-          header: "Latest",
-          align: "right" as const,
-          format: (_value: unknown, row: Record<string, unknown>) => String(row.formattedLatest),
-        },
-        {
-          key: "previous",
-          header: "Previous",
-          align: "right" as const,
-          format: (_value: unknown, row: Record<string, unknown>) => String(row.formattedPrevious),
-        },
-        {
-          key: "percentile",
-          header: "%ile",
-          align: "right" as const,
-          format: (value: unknown) => formatNumber(Number(value), 0),
-        },
-        { key: "asOf", header: "Period", format: (_value: unknown, row: Record<string, unknown>) => String(row.reading) },
-        {
-          key: "releasedOn",
-          header: "Released",
-          format: (_value: unknown, row: Record<string, unknown>) => typeof row.released === "string" ? row.released.replace(/^released /, "") : "",
-        },
-      ],
+      columns: columns(false),
+      textColumns: columns(true),
+      // `as_of` is the release; a figure with none stated is as of its own day when it is observed daily or weekly, never its period's first day.
+      rowAsOfKey: "exportAsOf",
       rows: categoryViews.map((view) => ({
         id: view.stat.id,
         indicator: view.stat.shortLabel,
@@ -130,6 +170,7 @@ export function projectStatsHeadlessBundle(
         formattedLatest: reportFormat(view.stat)(view.latest.value),
         previous: view.previous?.value ?? null,
         formattedPrevious: view.previous ? reportFormat(view.stat)(view.previous.value) : "-",
+        previousPeriod: view.previous?.date ?? null,
         // A spread's values stay in percentage points; these carry the figures its text shows.
         ...(view.stat.basisPoints ? {
           latestBasisPoints: toBasisPoints(view.latest.value),
@@ -139,6 +180,7 @@ export function projectStatsHeadlessBundle(
         // The period the figure covers; `releasedOn` is when it was published, which the report is as of.
         asOf: view.latest.date,
         releasedOn: view.releasedOn,
+        exportAsOf: exportAsOf(view),
         ...(view.periodicity ? { periodicity: view.periodicity } : {}),
         reading: view.reading,
         released: view.released,
@@ -159,7 +201,12 @@ export function projectStatsHeadlessBundle(
     ...(cutoff ? { freshness: { ...ECST_FRESHNESS, schedule: cutoff } } : {}),
     sections: [
       ...sections,
-      ...(selected ? [{ title: selected.stat.label, entries: detailEntries(selected, cutoff != null) }] : []),
+      ...(selected ? [{
+        title: selected.stat.label,
+        entries: detailEntries(selected, cutoff != null, false),
+        textEntries: detailEntries(selected, cutoff != null, true),
+        ...exportDating(selected),
+      }] : []),
     ],
     errors: bundle.errors,
     notes: [
@@ -187,6 +234,7 @@ const ECST_FRESHNESS = { source: "FRED", status: "not-a-feed", basis: "published
 export const econStatisticsHeadless: HeadlessPaneDefinition<"bundle"> = {
   shape: "bundle",
   freshness: ECST_FRESHNESS,
+  exportDated: true,
   argument: {
     kind: "free-text",
     placeholder: "statistic",
