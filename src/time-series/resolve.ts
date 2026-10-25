@@ -23,7 +23,7 @@ import {
 import { aggregatePriceBars, futuresOpenMinuteOf, withBuiltBarSize } from "./bar-aggregation";
 import { TIME_RANGES, type TimeRange } from "./range";
 import type { DataProvider } from "../types/data-provider";
-import type { Quote, TickerFinancials } from "../types/financials";
+import type { EarningsAction, Quote, TickerFinancials } from "../types/financials";
 import { mergeQuoteMetadata, quoteMetadataFromQuote, quoteMetadataMatchesTarget } from "../market-data/quotes/metadata";
 import type { FredSeriesRequest } from "../sources/gloomberb-cloud/fred-series";
 import { fredCreditCoverageNotice } from "./economic";
@@ -300,9 +300,9 @@ async function resolveChartSpecPass(
     const fieldId = getTimeSeriesField(source.fieldId)?.id ?? source.fieldId;
     // Calendar-window research needs the same full source bundle as a period
     // count. The extended bundle also carries the estimate history behind the
-    // forward multiples; PEG alone has no historical series.
+    // forward multiples; daily PEG also needs consecutive trailing years.
     const statementHistory = /^(fundamental|valuation)\./.test(fieldId)
-      && fieldId !== "valuation.pegRatio"
+      && (fieldId !== "valuation.pegRatio" || source.period === "daily")
       ? "extended" as const : undefined;
     const key = `${instrumentKey(source)}|history:${statementHistory ?? "default"}`;
     let pending = cache.financialsByInstrument.get(key);
@@ -326,6 +326,33 @@ async function resolveChartSpecPass(
           return null;
         });
       cache.financialsByInstrument.set(key, pending);
+      cache.revision += 1;
+    }
+    return pending;
+  };
+  const loadEarningsReleases = (source: Extract<ChartSeriesSpec["source"], { kind: "security" }>) => {
+    const key = instrumentKey(source);
+    let pending = cache.earningsReleasesByInstrument.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const [events, history] = await Promise.allSettled([
+          sources.dataProvider?.getCorporateActions?.(source.instrument.symbol, source.instrument.exchange, requestContext(source)),
+          isUsListingExchange(source.instrument.exchange) ? sources.loadEarningsHistory?.(source.instrument.symbol) : undefined,
+        ]);
+        const releases: EarningsAction[] = [];
+        if (history.status === "fulfilled") for (const report of history.value?.reports ?? []) {
+          if (report.dateStatus !== "reported") continue;
+          releases.push({ date: report.date, dateType: "announcement", dateStatus: "reported",
+            fiscalPeriod: report.fiscalPeriod ?? undefined, reportedAt: report.reportedAt ?? undefined,
+            time: report.timingSource !== "history" ? report.timing ?? undefined : undefined });
+        }
+        else logFailure("time-series-resolve", "Loading earnings release history failed")(history.reason);
+        if (events.status === "fulfilled") releases.push(...events.value?.earnings ?? []);
+        else logFailure("time-series-resolve", "Loading earnings release events failed")(events.reason);
+        if (events.status === "rejected" || history.status === "rejected") cache.earningsReleasesByInstrument.delete(key);
+        return releases;
+      })();
+      cache.earningsReleasesByInstrument.set(key, pending);
       cache.revision += 1;
     }
     return pending;
@@ -496,7 +523,9 @@ async function resolveChartSpecPass(
     all = false,
   ) => {
     const support = await loadResolutionSupport(source, priceOnly);
-    const maxRange = getSupportMaxRange(support, initialResolution);
+    const dailyValuation = source.period === "daily" && source.fieldId.startsWith("valuation.");
+    const sourceResolution = dailyValuation ? "1d" : initialResolution;
+    const maxRange = getSupportMaxRange(support, sourceResolution);
     const ahead = movedWindow ? barsAhead(requestVisibleBounds, maxRange, referenceNow.getTime()) : 0;
     const durationEnd = rangeDurationBounds(spec, initialCalculationBounds).end;
     const historyBounds = clampHistoryBoundsToSupport(
@@ -517,8 +546,8 @@ async function resolveChartSpecPass(
       explicitWindow: hasExplicitWindow,
       authoredWindow: hasExplicitWindow && !movedWindow,
       fallbackRange,
-      resolution: initialResolution,
-      allowProviderDefaultFallback: spec.viewport.resolution === "auto",
+      resolution: sourceResolution,
+      allowProviderDefaultFallback: !dailyValuation && spec.viewport.resolution === "auto",
       support,
       requiredWarmupPoints: maxStudyWarmupPoints(spec.studies),
       ...(extendedHoursFor(source, initialResolution) ? { historySession: "extended" as const } : {}),
@@ -782,8 +811,9 @@ async function resolveChartSpecPass(
 
       const source = seriesSpec.source;
       const marketField = isMarketFieldId(source.fieldId);
+      const dailyValuation = source.period === "daily" && source.fieldId.startsWith("valuation.");
       const quoteDerivedValuation = valuationSeriesUsesLiveQuote(source.fieldId);
-      const historyPricedValuation = valuationSeriesUsesPriceHistory(source.fieldId);
+      const historyPricedValuation = valuationSeriesUsesPriceHistory(source.fieldId, source.period);
       // Forward P/E only prices a history when the bundle carries estimates;
       // otherwise the provider's single figure stands and history is not required.
       const forwardPE = getTimeSeriesField(source.fieldId)?.id === "valuation.forwardPE";
@@ -833,6 +863,10 @@ async function resolveChartSpecPass(
       let merged = financials ?? (history ? emptyFinancials() : null);
       if (merged && quoteOverride) merged = { ...merged, quote: latestQuote(merged.quote, quoteOverride) };
       if (!merged) throw new Error(`No financial data is available for ${instrumentLabel(source)}.`);
+      if (dailyValuation && source.fieldId !== "valuation.forwardPE" && source.fieldId !== "valuation.realizedNtmPE"
+        && merged.earningsReleases === undefined) {
+        merged = { ...merged, earningsReleases: await loadEarningsReleases(resolvedSource) };
+      }
       // Historical labels can retain listing facts after the live price is
       // unavailable. Reuse existing facts before requesting a price-free snapshot.
       const existingMetadata = merged.quoteMetadata && quoteMetadataMatchesTarget(merged.quoteMetadata, resolvedSource.instrument.symbol, resolvedSource.instrument.exchange)
@@ -883,10 +917,10 @@ async function resolveChartSpecPass(
       // Keep provider history separate from quote-extended display bars. A live
       // mark is not a daily closing observation, including on snapshot replay.
       const historical = history ? { ...merged, priceHistory: history.points } : merged;
-      sources.onSecurityData?.(resolvedSpec, history?.session || realizedVolInputs.has(seriesSpec.id) ? historical : sourceBars, history !== null);
+      sources.onSecurityData?.(resolvedSpec, dailyValuation || history?.session || realizedVolInputs.has(seriesSpec.id) ? historical : sourceBars, history !== null);
       const base = baseSecuritySeries(
         resolvedSpec,
-        merged,
+        dailyValuation ? historical : merged,
         index,
         history?.resolution,
         quoteMetadata,
@@ -909,7 +943,7 @@ async function resolveChartSpecPass(
         if (historicalResult) historicalPriceSeries.set(seriesSpec.id, historicalResult);
       }
       const reportedForwardPE = merged.fundamentals?.forwardPE;
-      if (source.fieldId === "valuation.forwardPE" && merged.epsEstimates) {
+      if (source.fieldId === "valuation.forwardPE" && merged.epsEstimates && !dailyValuation) {
         warnings.push(FORWARD_PE_BASIS_NOTICE);
       } else if (source.fieldId === "valuation.forwardPE" && reportedForwardPE != null
         && Number.isFinite(reportedForwardPE) && reportedForwardPE <= 0) {
@@ -918,7 +952,7 @@ async function resolveChartSpecPass(
       if (source.fieldId === "valuation.realizedNtmPE" && merged.epsEstimates) {
         warnings.push(REALIZED_NTM_PE_BASIS_NOTICE);
       }
-      if (isFundamentalFieldId(source.fieldId) && fundamentalSeriesUsesAvailabilityFallback(merged, source)) {
+      if (!dailyValuation && isFundamentalFieldId(source.fieldId) && fundamentalSeriesUsesAvailabilityFallback(merged, source)) {
         result.warning = [result.warning, "Publication dates are unavailable for some observations; period-end dates are used as a fallback."].filter(Boolean).join(" ");
       }
       return result;
@@ -943,9 +977,24 @@ async function resolveChartSpecPass(
     ? latestSessionView(primaryRaw, rawSeries.filter((entry) => entry.observationKind === "market"),
       extendedHistories.has(primaryRaw?.id ?? ""), quoteReferences.get(primaryRaw?.id ?? ""))
     : null;
+  const dailyValuationView = spec.series.filter((entry) => entry.visible !== false);
+  const shortDailyValuation = !hasExplicitWindow && (spec.viewport.range === "1D" || spec.viewport.range === "1W")
+    && rawSeries.every(series => series.nativeFrequency === "daily")
+    && dailyValuationView.length > 0 && dailyValuationView.every(({ source }) => source.kind === "security"
+      && source.period === "daily" && source.fieldId.startsWith("valuation."));
+  const dailyTimes = shortDailyValuation ? [...new Set(rawSeries.flatMap((entry) => entry.points.map((point) => point.date.getTime())))]
+    .filter(Number.isFinite).sort((a, b) => a - b) : [];
+  const latestDaily = dailyTimes.at(-1);
+  // A daily multiple has no intraday observations. The day tab compares its
+  // last two closes; the week tab ends at the last close even on a weekend.
+  const dailyBounds = latestDaily === undefined ? null : {
+    start: spec.viewport.range === "1D" ? dailyTimes.at(-2) ?? latestDaily - CHART_RESOLUTION_STEP_MS["1d"]
+      : latestDaily - 7 * CHART_RESOLUTION_STEP_MS["1d"],
+    end: latestDaily,
+  };
   const bounds = hasExplicitWindow
     ? requestVisibleBounds
-    : sessionView?.bounds ?? (isDatasetChart(spec)
+    : dailyBounds ?? sessionView?.bounds ?? (isDatasetChart(spec)
       ? endAtNewestObservation(initialVisibleBounds, rawSeries)
       : followLatestMarketObservation(initialVisibleBounds, rawSeries));
   if (sessionView?.priorClose != null && primaryRaw?.transform === "raw"
