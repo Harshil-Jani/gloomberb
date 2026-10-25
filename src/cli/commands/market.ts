@@ -15,7 +15,6 @@ import type {
 import { currencyPriceMinDigits, formatMarketPrice, formatMarketPriceWithCurrency, quoteFormatOptions, resolveAssetDisplayKind, withCurrencyMinorDigits } from "../../market-data/market/format";
 import { INDEX_POINTS_EXPORT_UNIT, isIndexLevel, reportedQuoteVolume } from "../../market-data/market/index-level";
 import { changeBasisJson, changeBasisLabel, changeBasisNote, quoteChangeBasis, quotePreviousCloseDate, quoteSettleText } from "../../market-data/market/change-basis";
-import { withDatedPreviousClose } from "../../market-data/market/dated-previous-close";
 import {
   EXTENDED_SESSION_LABELS,
   getExtendedSessionDisplay,
@@ -952,8 +951,6 @@ function earningsRows(events: ResolvedEarningsEvent[]) {
 
 /** Symbols at most whose venues a command looks up to name the company each bare one went to. */
 const MAX_CHOICE_LOOKUPS = 10;
-/** Daily histories read at once to date the previous closes no venue calendar dates. */
-const DATED_CLOSE_CONCURRENCY = 8;
 
 /**
  * The line `quote` prints beside a symbol that changed, as `history` and
@@ -1019,20 +1016,15 @@ async function runQuote(rawArgs: string[], ctx: Parameters<CliCommandDef["execut
       : listings.map((listing) => [listing, startTickerChangeLookup(market.dataProvider, listing.symbol, listing.exchange)] as const));
     // The service's quote of the moment, not each form's local copy from whenever it was last asked for:
     // BRK.B saved on NYSE, BRK-B and BRK.B:NYSE print one quote. A local copy answers only offline.
-    const results = await market.dataProvider.getQuotesBatch(targets, { forceRefresh: ctx.cliOptions.refresh, revalidate: true });
+    // Each row prints what its move is from (Chg Basis).
+    const results = await market.dataProvider.getQuotesBatch(targets, { forceRefresh: ctx.cliOptions.refresh, revalidate: true, datesChangeBasis: true });
     const listingOf = (result: QuoteBatchResult, index: number) => listings[targets.indexOf(result.target)] ?? listings[index]!;
     const asked = results.map(listingOf);
     const request = { command: commandName, noun: "quote" };
-    const answered = await Promise.all(results.map((result, index) => {
+    const answers = await Promise.all(results.map((result, index) => {
       const listing = asked[index]!;
-      return answerQuote(result, listing, market, request, ctx.cliOptions.refresh, venues.get(listing) ?? null);
+      return answerQuote(result, listing, market, request, ctx.cliOptions.refresh, venues.get(listing) ?? null, { datesChangeBasis: true });
     }));
-    // A venue whose holidays the app does not carry (LSE, Helsinki) dates the close each move is from by the listing's own daily closes.
-    const answers = await mapWithConcurrency(answered, DATED_CLOSE_CONCURRENCY, async (answer) => {
-      const { symbol, exchange = "" } = answer.result.target;
-      const quote = await withDatedPreviousClose(answer.result.quote ?? null, { symbol, exchange }, market.dataProvider);
-      return quote === (answer.result.quote ?? null) ? answer : { ...answer, result: { ...answer.result, quote } };
-    });
     const now = Date.now();
     const symbolChanges = await Promise.all(answers.map(async ({ result }, index) => {
       const listing = asked[index]!;

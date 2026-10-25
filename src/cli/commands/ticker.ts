@@ -39,7 +39,6 @@ import {
 } from "../../market-data/market/status";
 import type { FuturesContractTermsPayload } from "../../api-client/futures-curve";
 import { changeBasisJson, quoteChangeBasis, quotePreviousCloseDate, quoteSettleText } from "../../market-data/market/change-basis";
-import { withDatedPreviousClose } from "../../market-data/market/dated-previous-close";
 import {
   futuresContractLines, futuresPricePer, isFuturesInstrument, loadFuturesContractTerms, loadUsdPerMmbtu, usdPerMmbtuText, type UsdPerMmbtu,
 } from "../../market-data/futures-contract";
@@ -1495,7 +1494,8 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
 
     let financials: TickerFinancials | null = null;
     try {
-      financials = await dataProvider.getTickerFinancials(requestSymbol, exchange);
+      // The Change line says what the move is from.
+      financials = await dataProvider.getTickerFinancials(requestSymbol, exchange, { datesChangeBasis: true });
     } catch (error) {
       // A known exchange the symbol is not listed on: say where it is.
       await failIfNotTraded(listing, { store, dataProvider }, { fail: failCommand });
@@ -1523,9 +1523,7 @@ export async function ticker(symbol: string, dependencies: TickerCommandDependen
       await failIfMovedAway();
       failCommand(`No research data available for ${normalized}.`);
     }
-    // A venue whose holidays the app does not carry (LSE, Helsinki) dates the close the move is from by the listing's own daily closes.
-    const datedQuote = await withDatedPreviousClose(financials!.quote ?? null, { symbol: requestSymbol, exchange }, dataProvider);
-    const resolvedFinancials = (datedQuote && datedQuote !== financials!.quote ? { ...financials, quote: datedQuote } : financials) as TickerFinancials;
+    const resolvedFinancials = financials as TickerFinancials;
     const quote = resolvedFinancials.quote;
     // The quote is the old line's (stopped, or named for the company that left): the profile and figures are another security's.
     researchQuote.resolve(quote ?? null);

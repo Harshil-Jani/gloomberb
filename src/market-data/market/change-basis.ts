@@ -7,7 +7,7 @@ import { formatUtcDayTime } from "../../utils/utc-time";
 import { zonedDateKey } from "../../utils/zoned-date-time";
 import { futuresChangeBasis, futuresSettleText, isFuturesInstrument } from "../futures-contract";
 import { quoteTradingDay } from "../quotes/day-range";
-import { previousPublishedSession } from "./freshness";
+import { hasPublishedSessionCalendar, previousPublishedSession } from "./freshness";
 import { getActiveQuoteDisplay, getRegularSessionDisplay, regularSessionDisplayDate } from "./status";
 
 const DAY_MS = 86_400_000;
@@ -120,7 +120,7 @@ function previousIndexSession(quote: Quote, date: string): string | null {
  * calendar, with the closures in between (an index's, the venue whose days it
  * follows); otherwise for an index from its own sessions; for a currency pair
  * the weekday before; for any other listing the day its own daily closes date
- * its previous close to (`previousCloseDate`, withDatedPreviousClose). Null
+ * its previous close to (`previousCloseDate`, PreviousCloseDates). Null
  * when nothing dates it.
  */
 function previousSession(quote: Quote, sessionDate: string): DatedChangeBasis | null {
@@ -133,6 +133,19 @@ function previousSession(quote: Quote, sessionDate: string): DatedChangeBasis | 
   const dated = quote.previousCloseDate;
   if (dated && ISO_DATE.test(dated) && dated < sessionDate) return { kind: "close", date: dated };
   return null;
+}
+
+/**
+ * Whether something other than the listing's own daily closes dates every
+ * move of the quote: a future's terms, a coin's UTC day, a perpetual's 24
+ * hours, a currency pair's weekday, or its venue's calendar for the year of
+ * `now`. A few lookups, for a caller that runs on every tick before it asks
+ * quoteChangeBasis.
+ */
+export function isChangeBasisDatedWithoutCloses(quote: Quote, now = Date.now()): boolean {
+  if (isSpotCoin(quote) || isCurrencyPair(quote) || isFuturesInstrument(quote.symbol, quote.instrumentType)) return true;
+  if (isPerpetualExchange(quote.listingExchangeName || quote.exchangeName)) return true;
+  return hasPublishedSessionCalendar(calendarVenue(quote), new Date(now).toISOString().slice(0, 10));
 }
 
 /**
@@ -153,7 +166,7 @@ export function changeBasisSessionDate(quote: Quote): string | null {
  * on its venue's holiday calendar (futuresChangeBasis). Anything else is
  * the close of the session before the move's, dated by the venue's calendar;
  * on a venue without one, by the listing's own daily closes once they were
- * read (withDatedPreviousClose), and otherwise left undated, never guessed.
+ * read (PreviousCloseDates), and otherwise left undated, never guessed.
  * Null for a quote with no move: none reported, or a listing that no longer
  * trades.
  */
