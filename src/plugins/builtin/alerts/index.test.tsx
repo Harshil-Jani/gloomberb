@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { act, useReducer } from "react";
 import { createOpenTuiTestHarness } from "../../../renderers/opentui/test-utils";
 import { appReducer, createInitialState, type AppState } from "../../../state/app/context";
@@ -433,7 +433,7 @@ test("disposing alerts ignores an in-flight quote and does not schedule another 
   const ctx = {
     registerCommand() {}, registerPane() {}, registerPaneTemplate() {},
     configState: {
-      get: () => serializeAlerts([makeAlert("pending", "AAPL", "above", 200)]),
+      get: (key: string) => key === "alerts" ? serializeAlerts([makeAlert("pending", "AAPL", "above", 200)]) : null,
       set: () => { writes += 1; },
     },
     marketData: { getQuote: () => quote.promise },
@@ -450,6 +450,54 @@ test("disposing alerts ignores an in-flight quote and does not schedule another 
   } finally {
     alertsPlugin.dispose?.();
   }
+});
+
+test("a completed daily close persists one technical trigger and in-app history, leaving price rules intact", async () => {
+  const now = spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-23T20:30Z"));
+  const price = serializeAlerts([makeAlert("price", "AAPL", "above", 250, "triggered")]);
+  const store = new Map<string, unknown>([
+    ["alerts", price],
+    ["metricAlerts", serializeAlerts([{
+      ...makeAlert("daily", "TSLA", "below", 0),
+      exchange: "NASDAQ", metric: { kind: "close_ma", period: 2 },
+      armedAt: Date.parse("2026-10-23T19:00Z"),
+    }])],
+  ]);
+  const device = new Map<string, unknown>();
+  const notifications: string[] = [];
+  const saved = Promise.withResolvers<void>();
+  const ctx = {
+    registerCommand() {}, registerPane() {}, registerPaneTemplate() {},
+    configState: {
+      get: (key: string) => store.get(key),
+      set: (key: string, value: unknown) => { store.set(key, value); saved.resolve(); },
+    },
+    resume: { getState: (key: string) => device.get(key), setState: (key: string, value: unknown) => { device.set(key, value); } },
+    marketData: createTestDataProvider({
+      getTickerFinancials: async () => ({ symbol: "TSLA", annualStatements: [], quarterlyStatements: [], priceHistory: [] }),
+      getDetailedPriceHistory: async () => ["2026-10-21", "2026-10-22", "2026-10-23"].map((day, i) => ({
+        date: new Date(day), open: 100, high: 100, low: 90, close: i === 2 ? 90 : 100, volume: 1,
+      })),
+    }),
+    notify: (notification: { body: string }) => notifications.push(notification.body),
+    showPane() {}, log: { info() {}, warn() {} },
+  };
+  try {
+    await alertsPlugin.setup?.(ctx as any);
+    await saved.promise;
+    alertsPlugin.dispose?.();
+    expect(deserializeAlerts(store.get("metricAlerts"))[0]).toMatchObject({
+      status: "triggered", lastCheckedPrice: 90, lastCheckedTarget: 95, lastDailyClose: "2026-10-23",
+    });
+    expect(store.get("alerts")).toBe(price);
+    expect(device.get("firedLog")).toEqual([expect.objectContaining({
+      kind: "close_ma", ruleId: "daily", value: 90, source: "daily close",
+    })]);
+    await alertsPlugin.setup?.(ctx as any);
+    await Bun.sleep(0);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toContain("on daily close");
+  } finally { alertsPlugin.dispose?.(); now.mockRestore(); }
 });
 
 test("a streamed tick triggers a price alert once, and the poll leaves streaming symbols alone", async () => {
@@ -641,4 +689,51 @@ test("a delete confirmation uses the latest readable list and keeps alerts added
   await act(async () => { tui.setup().mockInput.pressEnter(); await tui.setup().renderOnce(); });
   await renderSettled();
   expect(storedAlerts()).toEqual([added]);
+});
+
+test("corrupt metric storage cannot pause a price trigger or be overwritten by its save", async () => {
+  const broken = "[{broken";
+  const store = new Map<string, unknown>([["alerts", serializeAlerts([makeAlert("healthy", "AAPL", "above", 200)])], ["metricAlerts", broken]]);
+  const saved = Promise.withResolvers<void>();
+  const notices: string[] = [];
+  const ctx = {
+    registerCommand() {}, registerPane() {}, registerPaneTemplate() {},
+    configState: { get: (key: string) => store.get(key), set: (key: string, value: unknown) => { store.set(key, value); saved.resolve(); } },
+    marketData: { getQuote: async () => ({ symbol: "AAPL", price: 201, change: 1, changePercent: 1, lastUpdated: Date.now() }) },
+    notify: (notice: { body: string }) => notices.push(notice.body),
+    log: { info() {}, warn() {} },
+  };
+  try {
+    await alertsPlugin.setup?.(ctx as any);
+    await saved.promise;
+    expect(deserializeAlerts(store.get("alerts"))[0]?.status).toBe("triggered");
+    expect(notices).toHaveLength(1);
+    expect(store.get("metricAlerts")).toBe(broken);
+  } finally { alertsPlugin.dispose?.(); }
+});
+
+test("a slow valuation read leaves price delivery independent and cannot overwrite its persisted trigger", async () => {
+  const financials = Promise.withResolvers<any>();
+  const metric = { ...makeAlert("slow-metric", "AAPL", "below", 25), metric: { kind: "pe" as const } };
+  const store = new Map<string, unknown>([["alerts", serializeAlerts([makeAlert("fast-price", "AAPL", "above", 200)])], ["metricAlerts", serializeAlerts([metric])]]);
+  const priceSaved = Promise.withResolvers<void>(), metricSaved = Promise.withResolvers<void>();
+  const ctx = {
+    registerCommand() {}, registerPane() {}, registerPaneTemplate() {},
+    configState: { get: (key: string) => store.get(key), set: (key: string, value: unknown) => { store.set(key, value); (key === "alerts" ? priceSaved : metricSaved).resolve(); } },
+    marketData: createTestDataProvider({
+      getQuote: async () => ({ symbol: "AAPL", price: 240, currency: "USD", change: 1, changePercent: 1, lastUpdated: Date.now() }),
+      getTickerFinancials: () => financials.promise,
+    }),
+    notify() {}, log: { info() {}, warn() {} },
+  };
+  try {
+    await alertsPlugin.setup?.(ctx as any);
+    await priceSaved.promise;
+    expect(deserializeAlerts(store.get("alerts"))[0]?.status).toBe("triggered");
+    expect(deserializeAlerts(store.get("metricAlerts"))[0]?.status).toBe("active");
+    financials.resolve({ quote: { price: 240, lastUpdated: Date.now(), marketState: "REGULAR" }, fundamentals: { trailingPE: 24, eps: 10 } });
+    await metricSaved.promise;
+    expect(deserializeAlerts(store.get("alerts"))[0]?.status).toBe("triggered");
+    expect(deserializeAlerts(store.get("metricAlerts"))[0]?.status).toBe("triggered");
+  } finally { alertsPlugin.dispose?.(); financials.resolve({}); }
 });
