@@ -2,8 +2,8 @@ import type { HeadlessPaneDefinition } from "../../../types/plugin";
 import { resolveHeadlessInstrument } from "../shared/headless-market-data";
 import { createRealizedVolatilityDependencies, loadRealizedVolatilityHistory } from "../realized-vol/client";
 import { createHvDependencies, loadIvHistory, loadIvScreen, loadScreenVolatilities } from "./client";
-import { formatPoints, formatRank, formatSpot, formatStat, formatVol, IMPLIED_VOL_WORDS, readingLabel, sharedDates, skewHeader, VCA_DEFINITIONS, verdictLabel } from "./format";
-import { HV_WINDOWS, type HvWindow, type IvLookback, type IvStatRow, projectIvHistory, projectRichCheap, type RichCheapRow, richCheapDates, screenCoverage, VCA_LIMIT, VCA_PRESETS } from "./model";
+import { formatPoints, formatRank, formatSpot, formatStat, formatVol, IMPLIED_VOL_WORDS, readingLabel, sharedDates, skewHeader, statSource, vcaDefinitions, verdictLabel } from "./format";
+import { HV_WINDOWS, type HvWindow, type IvLookback, type IvStatRow, projectIvHistory, projectRichCheap, type RichCheapRow, richCheapDates, screenCoverage, screenStaleNote, VCA_LIMIT, VCA_PRESETS } from "./model";
 import { vcaUniverse } from "./universe";
 import { offsetText, releaseOffsetRows } from "./events";
 import { loadMacroReleases } from "../macro-day/client";
@@ -79,7 +79,7 @@ export const ivHistoryHeadless: HeadlessPaneDefinition<"bundle"> = {
     // With nothing served, the fate is why: no "not a ticker" or missing-history errors beside it.
     const { notes: fateNotes, errors } = listingFateReport(fate, { served },
       [prices.error, ...model.warnings].filter((value): value is string => !!value));
-    const notes = [...fateNotes, ...[model.oneYearNote, model.skewNote].filter((note): note is string => !!note)];
+    const notes = [...fateNotes, ...[model.oneYearNote, model.skewNote, model.staleNote].filter((note): note is string => !!note)];
     if (event && releases) {
       const lookback = String(args.options.lookback) as IvLookback;
       const label = MACRO_EVENT_LABELS[event];
@@ -117,18 +117,27 @@ export const ivHistoryHeadless: HeadlessPaneDefinition<"bundle"> = {
           releaseSource: MACRO_RELEASE_SOURCES[event], unit: "decimal annualized volatility", methodology: METHODOLOGY },
       };
     }
+    // The text report dates a stale measure "stale"; exports keep the bare date and say it in `stale`.
+    const statColumns = [
+      { key: "label", header: "Measure" },
+      { key: "value", header: "Current", format: (value: unknown, row?: unknown) => formatStat(value as number | null, (row as IvStatRow).unit) },
+      { key: "date", header: "As of" }, { key: "method", header: "Method" },
+      { key: "low", header: "52w low", format: (value: unknown, row?: unknown) => formatStat(value as number | null, (row as IvStatRow).unit) },
+      { key: "high", header: "52w high", format: (value: unknown, row?: unknown) => formatStat(value as number | null, (row as IvStatRow).unit) },
+      { key: "rank", header: "Rank", format: (value: unknown) => formatRank(value as number | null) },
+      { key: "percentile", header: "Pctl", format: (value: unknown) => formatRank(value as number | null) },
+      { key: "samples", header: "Sessions" },
+    ];
+    const statTextColumns = statColumns.map((column) => column.key === "date"
+      ? { ...column, textFormat: (value: unknown, row: unknown) => typeof value !== "string" ? "-" : (row as IvStatRow).stale ? `${value} stale` : value }
+      : column.key === "method"
+        // The wording the pane's source column uses; exports keep the raw method and carry the basis.
+        ? { ...column, textFormat: (value: unknown, row: unknown) => typeof value !== "string" ? "-" : statSource(row as IvStatRow) }
+        : column);
     return {
       sections: [
-        { title: "Statistics", columns: [
-          { key: "label", header: "Measure" },
-          { key: "value", header: "Current", format: (value: unknown, row?: unknown) => formatStat(value as number | null, (row as IvStatRow).unit) },
-          { key: "date", header: "As of" }, { key: "method", header: "Method" },
-          { key: "low", header: "52w low", format: (value: unknown, row?: unknown) => formatStat(value as number | null, (row as IvStatRow).unit) },
-          { key: "high", header: "52w high", format: (value: unknown, row?: unknown) => formatStat(value as number | null, (row as IvStatRow).unit) },
-          { key: "rank", header: "Rank", format: (value: unknown) => formatRank(value as number | null) },
-          { key: "percentile", header: "Pctl", format: (value: unknown) => formatRank(value as number | null) },
-          { key: "samples", header: "Sessions" },
-        ], rows: model.stats.map((row) => ({ ...row })) },
+        { title: "Statistics", columns: [...statColumns, { key: "basis", header: "Basis" }, { key: "stale", header: "Stale" }], textColumns: statTextColumns,
+          rows: model.stats.map((row) => ({ ...row })) },
         // Exports always carry the skew columns, so a script's header never moves; the text table drops them when none has a value.
         { title: "Daily history", columns: [...historyColumns, ...skewColumns], rows,
           ...(rows.some((row) => row.skew25d != null) ? {} : { textColumns: historyColumns }) },
@@ -187,7 +196,8 @@ export const ivScreenHeadless: HeadlessPaneDefinition<"bundle"> = {
       sections: [{ title: ["Rich/cheap", universe.label, ...sharedDates(dates)].join(" · "), columns: [
         { key: "symbol", header: "Symbol" }, { key: "iv30", header: "IV30", format: percent },
         ...(dates.reading ? [] : [{ key: "date", header: "As of", format: (value: unknown, row?: unknown) =>
-          typeof value === "string" ? readingLabel(value, (row as RichCheapRow).method) : "--" }]),
+          typeof value === "string" ? readingLabel(value, (row as RichCheapRow).method, false,
+            { basis: (row as RichCheapRow).basis, stale: (row as RichCheapRow).stale }) : "--" }]),
         // The underlying price each reading was taken at, on the date the title or the As of column gives.
         { key: "spot", header: "Spot", format: (value: unknown) => typeof value === "number" ? formatSpot(value) : "--" },
         ...(dates.rankApart ? [{ key: "rankDate", header: "Rank as of", format: (value: unknown) => typeof value === "string" ? `${value} close` : "--" }] : []),
@@ -200,13 +210,15 @@ export const ivScreenHeadless: HeadlessPaneDefinition<"bundle"> = {
         ...(hasSkew ? [{ key: "skew", header: skewHeader("25D skew", "put-call"), format: (value: unknown) => formatPoints(value as number | null) }] : []),
         ...(hasSkew && dates.skewApart ? [{ key: "skewDate", header: "Skew as of", format: dated }] : []),
         { key: "hv", header: "HV20", format: percent },
+        // Said only where an HV is not the one of its IV's date: a stale reading's, or one a few sessions off.
+        ...(dates.hvApart ? [{ key: "hvDate", header: "HV as of", format: dated }] : []),
         { key: "ivHv", header: "IV/HV", format: (value: unknown) => typeof value === "number" ? value.toFixed(2) : "--" },
         ...(noted.size > 0 ? [{ key: "note", header: "Note", underRow: true }] : []),
       ], rows: rows.map((row) => ({ ...row, ...noted.has(row.symbol) ? { note: noted.get(row.symbol)!.note } : {} })) }],
       // A symbol with no options history is final; only history still to come leaves the screen incomplete.
       complete: !coverage.pending.length && !universe.error, unavailableSymbols: coverage.missing,
       errors: [universe.error].filter((value): value is string => !!value),
-      notes: [...coverage.notes, ...VCA_DEFINITIONS],
+      notes: [...coverage.notes, ...[screenStaleNote(rows)].filter((note): note is string => !!note), ...vcaDefinitions({ skew: hasSkew })],
       metadata: { presets: VCA_PRESETS, methodology: METHODOLOGY },
     };
   },
