@@ -115,6 +115,7 @@ import {
   closedPeriodBarDay,
   formingPeriodBar,
   historyBarStatusNote,
+  venueTradingDay,
   historyCoverageWarning,
   historyFacts,
   historyFlagNote,
@@ -1436,7 +1437,7 @@ async function loadListingHistory(
     // The status line says how far a bar still forming runs; the note is for the bars it does not name.
     gaps ?? [], historyJumpNote(data) ?? [], historyFlagNote(data) ?? [], historyMissingVolumeNote(data) ?? [],
     historyVenueVolumeNote(data) ?? [],
-    historyBarStatusNote(forming ? served : data) ?? [],
+    historyBarStatusNote(forming ? served : data, { tradingDay: venueTradingDay(venue, Date.now()) }) ?? [],
   ].flat();
   return {
     listing, identity, unit, data, resolution, interval, intraday, volume, freshness, notes,
