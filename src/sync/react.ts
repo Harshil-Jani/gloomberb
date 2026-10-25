@@ -39,6 +39,8 @@ export function useCloudSyncRuntime({
       dispatch,
       tickerRepository,
       baselineStore,
+      getSessionIdentity: () => apiClient.getVerifiedSessionIdentity(),
+      getAccountId: () => apiClient.getVerifiedSessionIdentity() ? apiClient.getCurrentUser()?.id ?? null : null,
       getContributors: () => pluginRegistry.getEnabledSyncContributors(),
       getTransport: () => pluginRegistry.getActiveSyncTransport(),
       isLocalMarketData: (providerId) => {
@@ -69,7 +71,8 @@ export function useCloudSyncRuntime({
     // Email verification makes the Cloud transport available. Force the first
     // sync so a workspace completed before verification is uploaded promptly.
     void cloudSyncController.requestSync({ reason: "session-verified", force: true });
-  }), [initialized]);
+  }, (accountId) => cloudSyncController.resetAccount(accountId),
+  () => cloudSyncController.retireSession()), [initialized]);
 
   useEffect(() => {
     if (!initialized) return;
