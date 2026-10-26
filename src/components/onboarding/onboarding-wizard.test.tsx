@@ -136,7 +136,6 @@ function WizardHarness({
     tickerRepository: pluginRegistry.tickerRepository,
     existingTickers: tickerMap,
     resources: pluginRegistry.persistence.resources,
-    persistResolvedBrokerConfig: options?.persistResolvedBrokerConfig,
     signal: options?.signal,
   }));
   return (

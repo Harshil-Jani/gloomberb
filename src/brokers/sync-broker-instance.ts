@@ -32,7 +32,6 @@ export interface SyncBrokerInstanceArgs {
   tickerRepository: AppTickerRepositoryPort;
   existingTickers?: Map<string, TickerRecord>;
   resources?: AppResourceStorePort;
-  persistResolvedBrokerConfig?: boolean;
   signal?: AbortSignal;
   deferPersistence?: boolean;
 }
@@ -69,7 +68,6 @@ export interface SyncBrokerInstancesArgs {
   tickerRepository: AppTickerRepositoryPort;
   existingTickers: Map<string, TickerRecord>;
   resources?: AppResourceStorePort;
-  persistResolvedBrokerConfig?: boolean;
   /** Leave each result's ticker writes to `onResult`, which calls `result.commit()`. */
   deferPersistence?: boolean;
   onResult?: (result: SyncBrokerInstanceResult, instance: BrokerInstanceConfig, previousConfig: AppConfig) => void | Promise<void>;
@@ -168,9 +166,8 @@ async function maybePersistResolvedBrokerConfig(
   config: AppConfig,
   instance: BrokerInstanceConfig,
   broker: BrokerAdapter,
-  persistResolvedBrokerConfig: boolean,
 ): Promise<AppConfig> {
-  if (!persistResolvedBrokerConfig || !broker.getPersistedConfigUpdate) {
+  if (!broker.getPersistedConfigUpdate) {
     return config;
   }
 
@@ -203,7 +200,6 @@ export async function syncBrokerInstance({
   tickerRepository,
   existingTickers,
   resources,
-  persistResolvedBrokerConfig = false,
   signal,
   deferPersistence = false,
 }: SyncBrokerInstanceArgs): Promise<SyncBrokerInstanceResult> {
@@ -336,7 +332,7 @@ export async function syncBrokerInstance({
     : []);
 
   nextConfig = removeStaleBrokerPortfolios(nextConfig, instance.id, currentPortfolioIds);
-  nextConfig = await maybePersistResolvedBrokerConfig(nextConfig, instance, broker, persistResolvedBrokerConfig);
+  nextConfig = await maybePersistResolvedBrokerConfig(nextConfig, instance, broker);
   throwIfBrokerImportCancelled(signal);
   nextConfig = markBrokerInstanceSynced(nextConfig, instance.id, syncedAt);
   const syncedConfig = nextConfig;
@@ -436,7 +432,6 @@ export async function syncBrokerInstances({
   tickerRepository,
   existingTickers,
   resources,
-  persistResolvedBrokerConfig = false,
   deferPersistence = false,
   onResult,
 }: SyncBrokerInstancesArgs): Promise<SyncBrokerInstancesResult> {
@@ -457,7 +452,6 @@ export async function syncBrokerInstances({
         tickerRepository,
         existingTickers: nextTickers,
         resources,
-        persistResolvedBrokerConfig,
         deferPersistence,
       });
 

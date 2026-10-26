@@ -28,7 +28,6 @@ export interface AppBrokerImportRuntime {
 interface BrokerImportOptions {
   refreshImportedTickers?: boolean;
   config?: AppConfig;
-  persistResolvedBrokerConfig?: boolean;
   signal?: AbortSignal;
   onCommitStart?: () => void;
   onCommitEnd?: () => void;
@@ -122,7 +121,6 @@ export function useBrokerImportRuntime({
         tickerRepository,
         existingTickers: tickerMap ?? new Map(stateRef.current.tickers),
         resources: pluginRegistry.persistence.resources,
-        persistResolvedBrokerConfig: options?.persistResolvedBrokerConfig,
         signal: options?.signal,
         deferPersistence: true,
       });

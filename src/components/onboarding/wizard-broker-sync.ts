@@ -160,7 +160,6 @@ export function useOnboardingBrokerSync({
     draftConfig?: AppConfig,
   ) => importBrokerPositions(instanceId, undefined, {
     config: draftConfig,
-    persistResolvedBrokerConfig: true,
     signal,
     onCommitStart: () => {
       if (brokerSyncAttemptRef.current !== attemptId) return;
