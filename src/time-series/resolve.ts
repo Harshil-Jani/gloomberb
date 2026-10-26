@@ -23,7 +23,7 @@ import {
 import { aggregatePriceBars, futuresOpenMinuteOf, withBuiltBarSize } from "./bar-aggregation";
 import { TIME_RANGES, type TimeRange } from "./range";
 import type { DataProvider } from "../types/data-provider";
-import type { EarningsAction, Quote, TickerFinancials } from "../types/financials";
+import type { CorporateActionsData, EarningsAction, Quote, TickerFinancials } from "../types/financials";
 import { mergeQuoteMetadata, quoteMetadataFromQuote, quoteMetadataMatchesTarget } from "../market-data/quotes/metadata";
 import type { FredSeriesRequest } from "../sources/gloomberb-cloud/fred-series";
 import { fredCreditCoverageNotice } from "./economic";
@@ -44,12 +44,14 @@ import { VALUATION_CURRENCY_WARNING_PREFIX } from "./valuation-currency";
 import { chartPriceHistoryIntegrityNotices } from "./market";
 import { maxStudyWarmupPoints, resolveStudies } from "./studies";
 import { clipSeriesToWindow } from "./alignment";
+import { totalReturnSeries } from "./total-return";
 import {
   bufferPriceComparison,
   clipPriceComparison,
   priceComparisonBoundsForSeries,
   priceComparisonSeriesIds,
   resolvePriceComparison,
+  totalReturnLevelsNotice,
 } from "./price-comparison";
 import { chartQuoteOverrideKeyForSource } from "./live-quotes";
 import { chartSeriesSourceKey } from "../capabilities/chart-series";
@@ -266,6 +268,13 @@ export async function resolveChartSpecData(
   return result;
 }
 
+/** The price fields whose returns a distribution adds to. */
+function totalReturnFieldId(fieldId: string): boolean {
+  const canonical = getTimeSeriesField(fieldId)?.id ?? fieldId;
+  return canonical === "market.ohlcv" || canonical === "market.close" || canonical === "market.open"
+    || canonical === "market.high" || canonical === "market.low";
+}
+
 async function resolveChartSpecPass(
   spec: ChartSpec,
   sources: ChartResolveSources,
@@ -277,6 +286,7 @@ async function resolveChartSpecPass(
     && entry.source.kind === "security" && isFundamentalFieldId(entry.source.fieldId))
     ? [FINANCIAL_VINTAGE_NOTICE] : [];
   const priorityWarnings: string[] = [];
+  const coverageNotices: string[] = [];
   const delistings = new Map<string, { symbol: string; label: string; notice: string }>();
   const baseSeriesIds = new Set(spec.series.map((entry) => entry.id));
   const visibleSeriesIds = new Set(spec.series
@@ -353,6 +363,26 @@ async function resolveChartSpecPass(
         return releases;
       })();
       cache.earningsReleasesByInstrument.set(key, pending);
+      cache.revision += 1;
+    }
+    return pending;
+  };
+  // Total returns reinvest the cash a listing paid; each listing's history is read once per chart.
+  const loadDistributions = (source: Extract<ChartSeriesSpec["source"], { kind: "security" }>) => {
+    const key = instrumentKey(source);
+    let pending = cache.distributionsByInstrument.get(key);
+    if (!pending) {
+      pending = (async (): Promise<CorporateActionsData | null> => {
+        const read = sources.dataProvider?.getCorporateActions;
+        if (!read) return null;
+        try {
+          return await read.call(sources.dataProvider, source.instrument.symbol, source.instrument.exchange, requestContext(source));
+        } catch (error) {
+          cache.distributionsByInstrument.delete(key);
+          throw error;
+        }
+      })();
+      cache.distributionsByInstrument.set(key, pending);
       cache.revision += 1;
     }
     return pending;
@@ -803,7 +833,10 @@ async function resolveChartSpecPass(
         const result = baseEconomicSeries(seriesSpec, fred, index);
         const coverageNotice = fredCreditCoverageNotice(seriesSpec.source.seriesId, fred.data.info,
           requestVisibleBounds.start, fred.data.observations);
-        if (result && coverageNotice) priorityWarnings.push(`${result.label}: ${coverageNotice}`);
+        if (result && coverageNotice) {
+          priorityWarnings.push(`${result.label}: ${coverageNotice}`);
+          coverageNotices.push(`${result.label}: ${coverageNotice}`);
+        }
         const freshnessWarning = staleFredWarning(fred);
         if (result && freshnessWarning) priorityWarnings.push(`${result.label}: ${freshnessWarning}`);
         return result;
@@ -927,7 +960,13 @@ async function resolveChartSpecPass(
         contractUnit,
       );
       if (!base) throw new Error(`Unknown field ${source.fieldId}.`);
-      const result = builtBars ? withBuiltBarSize(base, builtBars) : base;
+      let result = builtBars ? withBuiltBarSize(base, builtBars) : base;
+      if (spec.viewport.totalReturn === true && totalReturnFieldId(source.fieldId)) {
+        const outcome = await totalReturnSeries(result, () => loadDistributions(resolvedSource),
+          merged.quote?.currency || quoteMetadata?.currency, referenceNow);
+        result = outcome.series;
+        if (outcome.notice) warnings.push(`${instrumentLabel(resolvedSource)}: ${outcome.notice}`);
+      }
       if (marketField && history?.historyStart !== undefined && Number.isFinite(history.historyStart)) {
         result.historyStart = new Date(history.historyStart);
       }
@@ -1073,6 +1112,9 @@ async function resolveChartSpecPass(
     bounds, comparisonResolution, requestBounds ? null : spec.viewport.dateWindow ?? null,
   );
   if (priceComparison) warnings.push(priceComparison.notice);
+  // A raw-price chart of total returns is no comparison, and its levels say what they are instead.
+  const returnBasisNotice = priceComparison ? null : totalReturnLevelsNotice(spec, rawSeries);
+  if (returnBasisNotice) warnings.push(returnBasisNotice);
   warnings.push(...chartPriceHistoryIntegrityNotices(priceHistoryIntegrity));
   warnings.push(...financialPeriodCoverageWarnings(financialPeriodCoverage(spec, resolved)));
   const resolvedById = new Map(resolved.map((entry) => [entry.id, entry] as const));
@@ -1130,6 +1172,8 @@ async function resolveChartSpecPass(
     loading: false,
     errors,
     warnings: [...new Set([...priorityWarnings, ...warnings])],
+    ...(coverageNotices.length ? { coverageNotices: [...new Set(coverageNotices)] } : {}),
+    ...(returnBasisNotice ? { returnBasisNotice } : {}),
     ...(delistings.size ? { delistings: [...delistings.values()] } : {}),
     viewport,
     resolution,
