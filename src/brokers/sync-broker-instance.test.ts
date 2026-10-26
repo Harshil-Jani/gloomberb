@@ -110,6 +110,24 @@ function createMultiAccountDemoBroker(): BrokerAdapter {
 }
 
 describe("syncBrokerInstance", () => {
+  test("keeps what the broker resolved during any sync, so a spent setup token is not needed again", async () => {
+    const adapter = createDemoBroker();
+    let resolved: Record<string, unknown> | null = { apiKey: "", accessUrl: "https://user:pass@bridge.example/simplefin" };
+    adapter.getPersistedConfigUpdate = () => {
+      const update = resolved;
+      resolved = null;
+      return update;
+    };
+    const config = { ...createDefaultConfig("/unused-resolved-config"), portfolios: [], brokerInstances: [createBrokerInstance()] };
+    const brokers = new Map([["demo", adapter]]);
+    const first = await syncBrokerInstance({ config, instanceId: "demo-broker", brokers, tickerRepository: new JsonTickerRepository() });
+    expect(first.config.brokerInstances[0]!.config).toEqual({ apiKey: "", accessUrl: "https://user:pass@bridge.example/simplefin" });
+
+    // A later sync with nothing new to keep leaves the saved value alone.
+    const second = await syncBrokerInstance({ config: first.config, instanceId: "demo-broker", brokers, tickerRepository: new JsonTickerRepository() });
+    expect(second.config.brokerInstances[0]!.config.accessUrl).toBe("https://user:pass@bridge.example/simplefin");
+  });
+
   test("preserves unavailable imported cost across serialization and replaces it only on source recovery", async () => {
     const repository = new JsonTickerRepository();
     let sourceCost: number | undefined;
