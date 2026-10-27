@@ -412,6 +412,25 @@ export interface NearMissListing {
   symbol: string;
 }
 
+/**
+ * `BP.`, `RR.`: London's code for a company with a two-letter symbol, which
+ * the exchange writes with a dot to make three. No other venue writes a
+ * trailing dot, though one can trail a US ticker by slip (`GE.`).
+ */
+const LONDON_DOTTED = /^([A-Z]{2})\.$/;
+
+/**
+ * A two-letter symbol written with London's trailing dot (`BP.`): what was
+ * typed and the symbol (BP). Whether it is London's line (BP:LSE) or a US
+ * ticker with a stray dot (`GE.`) is for where London lists it to say
+ * (`resolveCliListing`). Null for anything else.
+ */
+export function readLondonDottedSymbol(raw: string): NearMissListing | null {
+  const typed = raw.trim();
+  const london = LONDON_DOTTED.exec(typed.toUpperCase());
+  return london ? { typed, symbol: london[1]! } : null;
+}
+
 /** `BRK/B`: a US share class after a slash, as a broker writes it. One letter before the slash is a ratio or an abbreviation (P/E, N/A). */
 const SLASH_CLASS = /^([A-Z]{2,5})\/([A-Z])$/;
 /** `700.HK`: a Hong Kong code without its leading zeros. */

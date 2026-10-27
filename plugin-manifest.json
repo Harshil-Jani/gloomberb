@@ -1493,7 +1493,7 @@
           {
             "code": "FLOW",
             "name": "Options Flow",
-            "description": "Unusual options activity: sweeps, blocks, and large premium prints.",
+            "description": "Unusual options activity: sweeps, blocks, large premium prints, and the net premium tide.",
             "access": "pro"
           },
           {

@@ -474,7 +474,7 @@ date,value
 
 #### Series and panels
 
-Open **Series** to add, remove, reorder or hide series and choose each one's field, chart style, transform, axis, panel, period and panel scale. Price data supports candles, hollow candles, Heikin Ashi, OHLC, HLC, line and area. Heikin Ashi bars average each bar with the one before, so its legend reads those averages while the last price marker keeps the traded close. Scalar data supports line, area, step, column and point. Panels can use independent left/right axes and linear or logarithmic scales.
+Open **Series** to add, remove, reorder or hide series and choose each one's field, chart style, transform, axis, panel, period and panel scale. Price data supports candles, hollow candles, Heikin Ashi, OHLC, HLC, line and area. Heikin Ashi bars average each bar with the one before, so its legend reads those averages while the last price marker keeps the traded close. Rising candles take their series' colour; Candle Colours in pane settings (`Ctrl+,`) switches them to Gains & losses, the theme's gain colour against its loss colour (green and red, or blue and vermillion in the Colorblind themes). Scalar data supports line, area, step, column and point. Panels can use independent left/right axes and linear or logarithmic scales.
 
 #### Financial periods
 
@@ -581,7 +581,7 @@ A zero or negative price is kept for a futures instrument. For any other instrum
 | `MOST` | Top gainers, losers, most active, and trending tickers |
 | `HILO` | Session new highs and new lows with 30s/1m/5m momentum |
 | `SCAN` | Your own live intraday scan of US stocks: moves, volume spikes, new highs and lows, VWAP crosses and gaps, with alerts ([Live scanner](#live-scanner)) |
-| `FLOW` | Unusual options activity: sweeps, blocks and large premium. Vol/OI divides the contract's day volume by its latest open interest |
+| `FLOW [ticker]` | Unusual options activity: sweeps, blocks and large premium, and the net premium tide ([Options flow](#options-flow)). Vol/OI divides the contract's day volume by its latest open interest |
 | `PM <query>` | Polymarket and Kalshi prediction data ([Prediction Markets plugin](https://github.com/gloom-sh/gloom-prediction-markets)) |
 | `N` | News feed |
 | `CN <ticker>` | Ticker news |
@@ -602,7 +602,7 @@ A zero or negative price is kept for a futures instrument. For any other instrum
 | `FUT` | Futures quote aliases across index, equity sectors, rates, energy, metals, grains and softs, livestock, and FX |
 | `RRG` / `GRR` | Weekly relative rotation of sectors or a watchlist against a benchmark, with dated trails |
 | `BT <ticker>` / `BTST <ticker>` | Backtest a long-only indicator rule on daily history against buy-and-hold |
-| `EQS` | Equity screener over the stored Cloud universe: valuation, growth, margins, technicals, short interest, insider and 13F criteria, ready technical screens, saved screens and export |
+| `EQS` | Equity screener over the stored Cloud universe: valuation, growth, margins, technicals, option volatility, short interest, insider and 13F criteria, ready technical screens, saved screens and export |
 | `PERP [market]` | Perpetual funding, open interest and premiums: a board, rankings and one asset across venues (Pro history; free preview) |
 | `CRYP` | Top crypto assets by market cap with live prices, 7D, 30D and 1Y returns, 24h volume and market cap. Stablecoins have their own tab |
 | `ETFF` | Daily net flows of the US spot bitcoin and ether ETFs, fund by fund in US$ millions, with the last 5 and 20 days and the running total since launch |
@@ -615,7 +615,7 @@ A zero or negative price is kept for a futures instrument. For any other instrum
 | `TRACE [issuer, symbol or CUSIP]` | FINRA corporate and agency bond last sales. Alone, the latest prints market-wide |
 | `CBR` / `ECFC` / `CBRT` | Policy rates of the G20, SNB, Norges Bank, Riksbank and RBNZ, last observed moves and one-year history |
 | `CTM [root]` | Futures contract curve, historical ghosts, roll yield and open interest, including `CTM VX` and CME crypto (`CTM BTC` adds each contract's premium to spot and annualised basis, `(Last / spot - 1) × 365 / days to expiry`) |
-| `COT [code or name]` / `CFTC [code or name]` | CFTC positioning extremes, weekly changes and historical percentiles, by root or commodity name (`COT KC`, `COT coffee`), including CME crypto (`COT BTC`) |
+| `COT [code or name]` / `CFTC [code or name]` | CFTC positioning extremes, weekly changes and historical percentiles, by root or commodity name (`COT KC`, `COT coffee`), including CME crypto (`COT BTC`). Tabs pick the Legacy, Disaggregated or Financial (TFF) report and `p` picks futures only or futures + options; `fn COT --report tff --positions combined` reads the same |
 | `AUCT [search]` | Treasury auction results: auction rate (a TIPS rate is a real yield and an FRN's a spread in bp), stop-out versus average, bid-to-cover, indirect, direct and dealer takedown, and size |
 | `VIX` | VIX 9D through 1Y cash-tenor curve, VIX and VIX 3M history and the 3M/30D ratio |
 | `VOLS` | Cross-asset volatility indices, daily changes and one-year percentiles |
@@ -938,6 +938,10 @@ Signed in, they also merge in the alerts Gloom Cloud delivered to your phone or 
 **Alerts.** Turn on **Alerts** in the query bar and each symbol that newly matches alerts once a session. A refresh's new symbols make one notification on this device (it stays in **Unread**, and opening it brings back the scanner) and one line in ALRT's **History**. A scan sounds and reaches the desktop at most once a minute; new symbols in between are still told in the app. Live scans keep at most 100 lines of the history between them, so price and event alerts are never pushed out. What already matched when alerts were turned on, the scan changed or the app started does not alert, nor does the first list after the scanner starts. A scan with alerts on keeps running while its pane is covered or the app is in the background, but only while the pane is in the open layout.
 
 `gloom fn SCAN` runs the default scan once (`--universe sp500` or a sector, `--scan` with conditions and floors as JSON).
+
+### Options flow
+
+`FLOW` (Pro) lists sweeps, blocks and large premium prints under the query bar's filters; `FLOW NVDA` narrows it to one name. **Tide** charts the session's net premium: call premium at the ask less call premium at the bid, minus the same for puts. Mid or unknown prints count as neither. With a ticker, **Strikes** sums its premium by expiry and strike. `gloom fn FLOW [ticker] --tab prints|tide|strikes` reads the same.
 
 ## Live prices and refresh cadence
 
@@ -1288,11 +1292,11 @@ A terminal's code is the listing it names, and a line such as `Read WFC.N as WFC
 - **A listing abroad saved first** never takes the bare symbol from its US listing. With `SHEL.L` saved under `SHEL`, `SHEL` is still `SHEL:NYSE` in the CLI, the command bar and a list's quick-add, saved as a row of its own beside `SHEL:LSE`; `watchlist remove` takes the US row first unless only the London one is on the list. The saved listing abroad answers for the bare symbol only when the symbol has no US listing (`GARAN`).
 - **One slip from a US ticker.** A bare symbol read abroad that is one slip from a US ticker you are likely to mean says so under the table: `quote APPL` (Aptus Pharma on BSE) adds `APPL is not a US ticker: it is Aptus Pharma Limited on BSE (INR). Did you mean AAPL (Apple Inc.)?` (`usSuggestion` in `--json`). A named venue (`APPL:BSE`), a code with its suffix (`7203.T`) and a symbol you saved say nothing.
 - **A currency code.** A three-letter currency code read on a listing abroad (`quote MXN` is mixi Inc on a German exchange) still prints that listing and adds `MXN is also a currency: fx MXN, quote USD/MXN`.
-- **That several companies list** and that has a quote of its own goes where it always did, and the commands that read it say which company: `CAR = Avis Budget Group, NASDAQ (also XETRA, ASX, JSE, LSE, WSE)`. A search by name (`search lufthansa`) makes the company's own line the primary listing.
+- **That several companies list** and that has a quote of its own goes where it always did, and the commands that read it say which company and where different companies use the symbol: `CAR = Avis Budget Group, NASDAQ (different companies on XETRA, ASX, JSE, WSE, LSE)`. A symbol only one company or fund lists, with its receipts abroad (`XLK` and its CEDEAR in Buenos Aires), says nothing. A search by name (`search lufthansa`) makes the company's own line the primary listing.
   - A company's primary listing is its common stock on its home exchange, whatever matched the query: `search Toyota` leads with 7203 on JPX, `search LVMH` with MC on EPA and `search Sony` with 6758 on JPX. Its depositary receipts follow, typed as receipts, so TM on NYSE and the LVMH receipt on TSX are under Other. A named venue (`SONY:NYSE`) is still read as written.
   - Each result is named by its own listing: `028050` on KRX is Samsung E&A even when a data source files it under Samsung Electronics.
 - **A code several different companies list,** such as `2222` (Kotobuki Spirits in Tokyo, Saudi Arabian Oil in Riyadh), is not guessed. Every command asks which one, with `Choose an exchange for 2222.` and each listing with its retry command (`2222:TADAWUL Saudi Arabian Oil Co. (try: gloom history 2222:TADAWUL)`). `quote` and `compare` fail only that symbol's row, and so does `history`, whether it was given a range or a window of dates (`history FP --start 2024`): in a list the symbol is one row with its reason in `status`, and the others are still served.
-- **What counts as one company.** Listings count as one company when, ignoring case, punctuation, legal forms (`Co.`, `Ltd.`, `S.A.`, `plc`), share wording (`Common Stock`) and depositary-receipt wording (`ADR`, `CEDEAR`, `CDR`), one name's words are all in the other's.
+- **What counts as one company.** Listings count as one company when, ignoring case, punctuation, legal forms (`Co.`, `Ltd.`, `S.A.`, `plc`), share wording (`Common Stock`) and depositary-receipt wording (`ADR`, `CEDEAR`, `CDR`), one name's words are all in the other's. For the line naming different companies, a fund's wording (`ETF`, `Index Fund`, `Trust`, `UCITS`) is ignored too, so `iShares MSCI Germany ETF` in Mexico is the same fund as `iShares MSCI Germany Index Fund` in New York, and a listing whose name says nothing certain (none at all, or a receipt named unlike the company) is left out rather than called another company's.
 
 #### Index roots
 
@@ -1409,7 +1413,7 @@ In short DVD panes, Page Up/Down scroll the summary, arrows or j/k navigate hist
 - A commodity name (`coffee`, `arabica`, `sugar`, `wheat`, `crude oil`, `natural gas`) also lists the stories filed under its future, and a commodity's future (`news KC=F`) lists the stories of its commodity. A metal's future, name or board code (`news GC=F`, `news SI=F`, `news gold`, `news GC`) lists that metal's market news (stories tagged `METALS`).
 - Text that matches no story says `No stories match "<text>"`, with the commodity's future (`gloom news SB=F`) when the text names one whose news has stories.
 
-**The others.** `13f` is the holders list without insiders (`fn 13F` has 13F filings). `holders --form 13d|13g|all` lists 13D/13G beneficial owners. `filings --form <form>` keeps one form, with an Items column naming each 8-K's items (`2.02 Results of operations`). `--json` and `--csv` keep the codes in `items` (`Items`) and add the names as `itemsLabel` (`Item names`).
+**The others.** `13f` is the holders list without insiders (`fn 13F` has 13F filings). A fund (`holders XLE`, `13f SPY`, `fn HDS EWJ`) has no ownership breakdown: they say so and fail with code `no_data`, naming for a US-listed fund `fn 13F` for the 13F filers that hold it, `fn MEMB` for what it holds when MEMB covers it, and `fn ETF` for its fund facts. `holders --form 13d|13g|all` lists 13D/13G beneficial owners. `filings --form <form>` keeps one form, with an Items column naming each 8-K's items (`2.02 Results of operations`). `--json` and `--csv` keep the codes in `items` (`Items`) and add the names as `itemsLabel` (`Item names`).
 
 ### `options`
 
@@ -1587,7 +1591,7 @@ The free routes the wall names, only when they have data for the ticker:
 | `fn RISK NEM` | `filings NEM --form 10-K`, the 10-Ks it reads with each filing's date and a link (not the analysis). `fn RISK ASML` points at the 20-F |
 | `fn CALLS NEM` | `events NEM`, the earnings dates with the EPS reported at each |
 | `fn JOBS NEM` | `fn HIRE NEM`, the free preview of the same hiring data |
-| `fn FLOW` | `options <ticker>`, a chain with each contract's volume and open interest |
+| `fn FLOW [ticker]` | `options <ticker>`, a chain with each contract's volume and open interest |
 
 `gloom config set telemetry.crashReports false` turns off automatic crash reports, and `gloom config set telemetry.usage false` turns off anonymous usage counts and the command bar search log; see [Crash reports and usage counts](telemetry.md) for what each contains.
 
@@ -2333,7 +2337,7 @@ gloom shot OVME --model american --side put --spot 100 --strike 100 --days 30 --
 
 `RRG` or `GRR` opens US sector ETFs versus SPY. `RRG AAPL:NASDAQ,MSFT:NASDAQ` uses an explicit universe. Pane settings choose the benchmark, a linked watchlist or portfolio, custom symbols and a 2-12-week trail (six by default). The maximum is 24 instruments.
 
-Select a coloured table row to locate its trail, and open it for dated strength and momentum history. Click column headers to sort. CSV export is in the pane menu. `gloom fn RRG --benchmark SPY:NYSEARCA --trail 6 --json` returns metrics, dated trails, rank sample counts and data limitations.
+Select a coloured table row to locate its trail, and open it for dated strength and momentum history. Click column headers to sort. CSV export is in the pane menu. `gloom fn RRG --benchmark SPY:NYSEARCA --trail 6 --json` returns metrics, dated trails, rank sample counts and data limitations. A benchmark without its exchange is read as `quote` reads it (`--benchmark ACWI` is `ACWI:NASDAQ`), and its weeks are dated by that venue's calendar, which covers US listings. A benchmark that cannot be used is one error, not one per row.
 
 ## Position sizing: KELLY
 
@@ -2403,6 +2407,12 @@ Besides valuation, growth, margins, short interest, insider and 13F activity and
 - **EPS REV 30D%**: change in the current fiscal year's consensus EPS over 30 days, unavailable when the fiscal year rolled in between.
 - **UPSIDE%**: mean analyst price target over the price.
 - **IV RANK** and **IV/HV**, for optionable US names: 30-day implied volatility between its 52-week low (0) and high (100), and over the realized volatility of the last 21 daily closes. IV rank is a rank, not an IV percentile.
+- **Option volatility**, for screening premium to sell:
+  - **IV30%** (`iv30Percent`) and **IV PCTL** (`ivPercentile`), for optionable US names: the latest 30-day implied volatility at the options close, and the share of the past 52 weeks' sessions it closed below (90: nine sessions in ten were lower), as `HIVG` and `VCA` show it. A percentile counts days, so one spike in the year does not hold it down the way it holds down IV RANK.
+  - **IV30 CHG 1D** and **IV30 CHG 5D** (`iv30Change1d`, `iv30Change5d`): IV30 less its close one and five sessions before, in volatility points (25% to 27% is +2.0 vol pts). Unavailable when that session has no close.
+  - **HV20%** (`hv20Percent`) and **HV RANK** (`hvRank`), US listings: realized volatility of the last 20 daily closes, annualized, and where it sits between its 52-week low (0) and high (100).
+
+  An IV with no close in the last five days leaves the IV fields unavailable with its date, rather than screening an old premium. `ivPercentile gte 80` with `iv30Change5d gte 0` finds names whose volatility is high for them and still rising.
 - **FY PAYOUT%** (`payoutRatioPercent`): common dividends paid in the latest fiscal year over net income attributable to the parent, from SEC filings, so US filers only; unavailable when the income is zero or negative.
 - **DIV GR 1Y%** and **DIV CAGR 3Y%** (`dividendGrowth1YPercent`, `dividendGrowth3YPercent`): trailing twelve-month cash per share against one and three years before, the growth `DVD` shows, compounded yearly for 3Y. A payer that stopped reads -100%; a company with too short a history or none paid in the base year has none. Distribution history is stored for most large USD payers and fewer elsewhere.
 
