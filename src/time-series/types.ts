@@ -10,7 +10,7 @@ export type SeriesPeriod = "auto" | "daily" | "weekly" | "monthly" | "quarterly"
  * "band" draws a line through each point's value inside a shaded range from
  * its `low` to its `high`: an average within its historical range.
  */
-export type SeriesStyle = "line" | "area" | "step" | "columns" | "points" | "candles" | "ohlc" | "hlc" | "band";
+export type SeriesStyle = "line" | "area" | "step" | "columns" | "points" | "candles" | "hollow" | "heikin-ashi" | "ohlc" | "hlc" | "band";
 export type SeriesTransform = "raw" | "percent" | "index100" | "yoy" | "qoq" | "log";
 export type SeriesAxis = "auto" | "left" | "right";
 export type SeriesInterpolation = "none" | "step-after";

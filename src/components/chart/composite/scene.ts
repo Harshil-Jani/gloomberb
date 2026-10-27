@@ -36,6 +36,35 @@ function resolveTimeSeriesPointValue(point: TimeSeriesPoint): number | null {
   return null;
 }
 
+/**
+ * Heikin Ashi bars in place of a series' own: each close averages the bar's
+ * four prices and each open sits halfway along the previous Heikin Ashi body,
+ * so the chain runs from the first loaded bar, before any viewport cut. The
+ * real close stays in `rawValue` for the last price marker.
+ */
+export function heikinAshiPoints(points: readonly TimeSeriesPoint[]): TimeSeriesPoint[] {
+  let previous: { open: number; close: number } | null = null;
+  return points.map((point) => {
+    const close = point.close ?? point.value;
+    if (!isFiniteNumber(close)) return point;
+    const open = isFiniteNumber(point.open) ? point.open : close;
+    const high = isFiniteNumber(point.high) ? point.high : Math.max(open, close);
+    const low = isFiniteNumber(point.low) ? point.low : Math.min(open, close);
+    const haClose = (open + high + low + close) / 4;
+    const haOpen = previous ? (previous.open + previous.close) / 2 : (open + close) / 2;
+    previous = { open: haOpen, close: haClose };
+    return {
+      ...point,
+      value: haClose,
+      rawValue: close,
+      open: haOpen,
+      high: Math.max(high, haOpen, haClose),
+      low: Math.min(low, haOpen, haClose),
+      close: haClose,
+    };
+  });
+}
+
 function pointTime(point: TimeSeriesPoint): number | null {
   const time = point.date instanceof Date ? point.date.getTime() : new Date(point.date).getTime();
   return Number.isFinite(time) ? time : null;
@@ -502,9 +531,11 @@ function primaryPriceSeries(series: readonly ResolvedSeries[]): ResolvedSeries |
   )) ?? null;
 }
 
-function lastCloseOf(points: readonly CompositeProjectedPoint[]): number | null {
+function lastCloseOf(points: readonly CompositeProjectedPoint[], heikinAshi = false): number | null {
   const last = points.at(-1);
   if (!last) return null;
+  // A Heikin Ashi close is an average; the marker names the price that traded.
+  if (heikinAshi && isFiniteNumber(last.point.rawValue)) return last.point.rawValue;
   return isFiniteNumber(last.point.close) ? last.point.close : last.value;
 }
 
@@ -522,7 +553,7 @@ function attachLastPriceMarker(
   // A rejected or missing latest bar cannot make an older close current.
   const latest = normalizedSourcePoints(primary).at(-1);
   if (latest?.point.provenance?.priceHistoryIntegrity || latest?.value === null) return;
-  const value = lastCloseOf(projected.points);
+  const value = lastCloseOf(projected.points, primary.style === "heikin-ashi");
   if (value === null) return;
   const yRatio = projectCompositeValue(value, domain);
   // An axis scaled by hand can leave the last close off the panel.
@@ -764,7 +795,9 @@ export function buildCompositeChartScene(
   panels: ChartPanelSpec[],
   options: BuildCompositeChartSceneOptions,
 ): CompositeChartScene | null {
-  const dataSeries = series.filter((entry) => normalizedPoints(entry).length > 0);
+  const dataSeries = series
+    .map((entry) => entry.style === "heikin-ashi" ? { ...entry, points: heikinAshiPoints(entry.points) } : entry)
+    .filter((entry) => normalizedPoints(entry).length > 0);
   if (dataSeries.length === 0) return null;
 
   // A known missing observation owns a date even though it has no drawable

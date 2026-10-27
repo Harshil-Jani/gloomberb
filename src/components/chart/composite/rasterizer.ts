@@ -487,20 +487,27 @@ function drawOhlc(
     const closeY = pixelY(close, domain, height);
     if (highY === null || lowY === null || closeY === null) continue;
     const candleColor = close >= open ? color : negative;
-    drawLine(data, width, height, x, highY, x, lowY, candleColor, 1.1);
-    if (series.source.style === "candles" && openY !== null) {
-      fillRect(
-        data,
-        width,
-        height,
-        x - candleWidth / 2,
-        Math.min(openY, closeY),
-        x + candleWidth / 2,
-        Math.max(openY, closeY) + 1,
-        candleColor,
-      );
+    const style = series.source.style;
+    if (style !== "ohlc" && style !== "hlc" && openY !== null) {
+      const left = x - candleWidth / 2;
+      const right = x + candleWidth / 2;
+      const top = Math.min(openY, closeY);
+      const bottom = Math.max(openY, closeY) + 1;
+      // A hollow rising candle is an outline the wick stops at, as on other terminals.
+      if (style === "hollow" && close >= open) {
+        drawLine(data, width, height, x, highY, x, top, candleColor, 1.1);
+        drawLine(data, width, height, x, bottom, x, lowY, candleColor, 1.1);
+        drawLine(data, width, height, left, top, right, top, candleColor, 1.1);
+        drawLine(data, width, height, left, bottom, right, bottom, candleColor, 1.1);
+        drawLine(data, width, height, left, top, left, bottom, candleColor, 1.1);
+        drawLine(data, width, height, right, top, right, bottom, candleColor, 1.1);
+        continue;
+      }
+      drawLine(data, width, height, x, highY, x, lowY, candleColor, 1.1);
+      fillRect(data, width, height, left, top, right, bottom, candleColor);
       continue;
     }
+    drawLine(data, width, height, x, highY, x, lowY, candleColor, 1.1);
     if (series.source.style === "ohlc" && openY !== null) {
       drawLine(data, width, height, x - candleWidth / 2, openY, x, openY, candleColor, 1.2);
     }
@@ -615,6 +622,8 @@ export function renderCompositePanelBitmap(
         break;
       }
       case "candles":
+      case "hollow":
+      case "heikin-ashi":
       case "ohlc":
       case "hlc":
         drawOhlc(data, width, height, series, domain, color, negative);
