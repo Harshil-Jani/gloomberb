@@ -474,7 +474,7 @@ date,value
 
 #### Series and panels
 
-Open **Series** to add, remove, reorder or hide series and choose each one's field, chart style, transform, axis, panel, period and panel scale. Price data supports candles, OHLC, HLC, line and area. Scalar data supports line, area, step, column and point. Panels can use independent left/right axes and linear or logarithmic scales.
+Open **Series** to add, remove, reorder or hide series and choose each one's field, chart style, transform, axis, panel, period and panel scale. Price data supports candles, OHLC, HLC, line and area. Rising candles take their series' colour; Candle Colours in pane settings (`Ctrl+,`) switches them to Gains & losses, the theme's gain colour against its loss colour (green and red, or blue and vermillion in the Colorblind themes). Scalar data supports line, area, step, column and point. Panels can use independent left/right axes and linear or logarithmic scales.
 
 #### Financial periods
 
