@@ -579,7 +579,7 @@ A zero or negative price is kept for a futures instrument. For any other instrum
 | `MOST` | Top gainers, losers, most active, and trending tickers |
 | `HILO` | Session new highs and new lows with 30s/1m/5m momentum |
 | `SCAN` | Your own live intraday scan of US stocks: moves, volume spikes, new highs and lows, VWAP crosses and gaps, with alerts ([Live scanner](#live-scanner)) |
-| `FLOW` | Unusual options activity: sweeps, blocks and large premium. Vol/OI divides the contract's day volume by its latest open interest |
+| `FLOW [ticker]` | Unusual options activity: sweeps, blocks and large premium, and the net premium tide ([Options flow](#options-flow)). Vol/OI divides the contract's day volume by its latest open interest |
 | `PM <query>` | Polymarket and Kalshi prediction data ([Prediction Markets plugin](https://github.com/gloom-sh/gloom-prediction-markets)) |
 | `N` | News feed |
 | `CN <ticker>` | Ticker news |
@@ -936,6 +936,10 @@ Signed in, they also merge in the alerts Gloom Cloud delivered to your phone or 
 **Alerts.** Turn on **Alerts** in the query bar and each symbol that newly matches alerts once a session. A refresh's new symbols make one notification on this device (it stays in **Unread**, and opening it brings back the scanner) and one line in ALRT's **History**. A scan sounds and reaches the desktop at most once a minute; new symbols in between are still told in the app. Live scans keep at most 100 lines of the history between them, so price and event alerts are never pushed out. What already matched when alerts were turned on, the scan changed or the app started does not alert, nor does the first list after the scanner starts. A scan with alerts on keeps running while its pane is covered or the app is in the background, but only while the pane is in the open layout.
 
 `gloom fn SCAN` runs the default scan once (`--universe sp500` or a sector, `--scan` with conditions and floors as JSON).
+
+### Options flow
+
+`FLOW` (Pro) lists sweeps, blocks and large premium prints under the query bar's filters; `FLOW NVDA` narrows it to one name. **Tide** charts the session's net premium: call premium at the ask less call premium at the bid, minus the same for puts. Mid or unknown prints count as neither. With a ticker, **Strikes** sums its premium by expiry and strike. `gloom fn FLOW [ticker] --tab prints|tide|strikes` reads the same.
 
 ## Live prices and refresh cadence
 
@@ -1585,7 +1589,7 @@ The free routes the wall names, only when they have data for the ticker:
 | `fn RISK NEM` | `filings NEM --form 10-K`, the 10-Ks it reads with each filing's date and a link (not the analysis). `fn RISK ASML` points at the 20-F |
 | `fn CALLS NEM` | `events NEM`, the earnings dates with the EPS reported at each |
 | `fn JOBS NEM` | `fn HIRE NEM`, the free preview of the same hiring data |
-| `fn FLOW` | `options <ticker>`, a chain with each contract's volume and open interest |
+| `fn FLOW [ticker]` | `options <ticker>`, a chain with each contract's volume and open interest |
 
 `gloom config set telemetry.crashReports false` turns off automatic crash reports, and `gloom config set telemetry.usage false` turns off anonymous usage counts and the command bar search log; see [Crash reports and usage counts](telemetry.md) for what each contains.
 
