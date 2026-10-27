@@ -533,6 +533,7 @@ Ctrl with the scroll wheel and a trackpad pinch on desktop and web zoom time aro
 - **Resize:** on desktop and web, drag the line between two panels (a double-click restores the split). On a focused chart, `Shift+Up` and `Shift+Down` make the top panel a row taller or shorter (the terminal too), and the pane menu has Reset Panel Heights.
 - **One panel full size:** a double-click on a panel's plot gives it the whole chart (two quick presses in the terminal). A double-click again, or the `All panels` button, shows the rest.
 - **Drawing tools:** `Shift+T`, Hide Drawing Tools in the pane menu, or the chevron at the end of the tool bar folds the bar to one button.
+- **Shapes:** besides the trend line (`Shift+D`) and freehand (`Shift+P`), `Shift+J` places a horizontal ray from a clicked price to the right edge, `Shift+B` drags a rectangle, and `Shift+F` drags a Fib retracement whose 0, 23.6, 38.2, 50, 61.8, 78.6 and 100% levels are labelled with their prices on desktop and web. Each is anchored to prices and times like the other drawings, and a build from before these tools shows them as plain lines.
 - **Legend:** `Shift+L`, Collapse Legend in the pane menu, or the chevron in the legend's left margin folds it to the first series and a count (`+5`). A folded series still draws.
 
 These are kept with the pane.
