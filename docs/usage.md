@@ -521,7 +521,7 @@ Charts with an x axis of their own (curves, smiles, scatter plots), the overview
 
 #### Pan and zoom
 
-Dragging the plot, the scroll wheel or trackpad, and `a`/`d` or Shift with the arrow keys pan the chart, loading older bars as it moves. Where a listing's bars at the chosen interval run out, the pan stops at the first one and the footer says where they start. Choosing the range already selected, by its number key or a click, returns a panned or zoomed chart to that range, as `0` does.
+Dragging the plot, the scroll wheel or trackpad, and `a`/`d` or Shift with the arrow keys pan the chart, loading older bars as it moves. On desktop and web a flick keeps gliding after the release and slows to a stop, while an ordinary drag stays where it was let go; any press, key or scroll stops the glide, and there is none when the system asks for reduced motion. Where a listing's bars at the chosen interval run out, the pan stops at the first one and the footer says where they start. Choosing the range already selected, by its number key or a click, returns a panned or zoomed chart to that range, as `0` does.
 
 Ctrl with the scroll wheel and a trackpad pinch on desktop and web zoom time around the pointer. `+`/`-` zoom from the newest bar in view. Dragging the time axis zooms the same way (left in, right out, double-click to fit).
 
