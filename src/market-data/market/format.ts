@@ -628,6 +628,31 @@ function currencyMarks(currency: string, normalizedCurrency: string, code = fals
   return code ? { prefix: "", suffix: ` ${normalizedCurrency}` } : { prefix: getCurrencySymbol(normalizedCurrency), suffix: "" };
 }
 
+/**
+ * A London line shown in pounds and served in the pence it trades in. The
+ * code is compared in its own case: `GBp` (and `GBX`) is a price already in
+ * pence, which says so itself (630.8p) and needs no pence figure beside it.
+ */
+export function isPenceQuotedLine(quote: Pick<Quote, "currency" | "providerPriceDivisor"> | null | undefined): boolean {
+  return quote?.currency?.trim() === "GBP" && quote.providerPriceDivisor === 100;
+}
+
+/**
+ * A London line's price in the pence it trades in, as the exchange and its
+ * announcements write it: `630.8p` for £6.308, with the decimals of a penny
+ * the pounds are shown to (`poundDecimals`) beyond two. Null for a price not
+ * quoted in pence.
+ */
+export function penceFigure(
+  value: number | null | undefined,
+  quote: Pick<Quote, "currency" | "providerPriceDivisor"> | null | undefined,
+  poundDecimals: number,
+): string | null {
+  if (value == null || !Number.isFinite(value) || !isPenceQuotedLine(quote)) return null;
+  const digits = Math.max(0, Math.min(4, poundDecimals - 2));
+  return `${getNumberFormatter(digits, digits, true).format(value * 100)}${minorUnitSign("GBp")}`;
+}
+
 export function formatMarketPriceWithCurrency(
   value: number | undefined,
   currency = "USD",

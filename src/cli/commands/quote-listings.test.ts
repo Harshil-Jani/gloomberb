@@ -101,10 +101,29 @@ test("a bare symbol with no quote is asked on the venue it resolved to, then its
   expect((await runQuote(["CSPX"], quotedBare)).warnings).toEqual([]);
   expect(quotedBare.batches).toEqual([["CSPX"]]);
 
-  // With no quote anywhere, one company's listings name the venue it resolved to and the others to try.
+  // With no quote anywhere, the listings just asked are named as having none, never offered as one to try.
   const unquoted = await runQuote(["CSPX"], venueSource("CSPX", ["XETRA", "LSE"], {}));
   expect(unquoted.failure?.message).toBe("CSPX resolved to CSPX Fund (XETRA), which has no quote.");
-  expect(unquoted.failure?.details).toContain("CSPX:LSE CSPX Fund (try: gloom quote CSPX:LSE)");
+  expect(unquoted.failure?.details).toBe("No quote on its other listings either: CSPX:LSE.");
+});
+
+test("a listing whose quote request failed, rather than found none, is still one to try, under the symbol search lists it by", async () => {
+  // `BARC.` is London's way to write BARC: search lists it as BARC on each venue.
+  const listing = (exchange: string) => ({ providerId: "test", symbol: "BARC", name: "Barclays PLC", exchange, type: "Common Stock", currency: "GBP" });
+  const source = (answer: (symbol: string) => QuoteBatchResult["quote"] | "timeout") => createTestDataProvider({
+    search: async () => [listing("LSE"), listing("XETRA")],
+    getQuotesBatch: async (targets: QuoteSubscriptionTarget[]): Promise<QuoteBatchResult[]> => targets.map((target) => {
+      const quote = answer(target.symbol);
+      if (quote === "timeout") return { target, quote: null, error: "Request timed out" };
+      return quote ? { target, quote } : { target, quote: null, error: `No quote provider available for ${target.symbol}` };
+    }),
+  });
+  const failed = await runQuote(["BARC."], { dataProvider: source((symbol) => symbol === "BARC:XETRA" ? "timeout" : null), batches: [], searches: () => 0 });
+  expect(failed.failure?.details).toBe("Other listings: BARC:XETRA Barclays PLC (try: gloom quote BARC:XETRA)");
+
+  const quote = createTestQuote({ symbol: "BARC:LSE", currency: "GBP" });
+  const quoted = await runQuote(["BARC."], { dataProvider: source((symbol) => symbol === "BARC:LSE" ? quote : null), batches: [], searches: () => 0 });
+  expect(quoted.rows.map((row) => row.target.symbol)).toEqual(["BARC:LSE"]);
 });
 
 test("a code several companies list is never quoted on one of them: it asks for an exchange, and only its row fails", async () => {
@@ -657,6 +676,27 @@ test("700.HK, 6758.JP and BRK/B are quoted in the form that works", async () => 
     expect(failure).toBeNull();
     expect(rows.map((row) => row.target.symbol)).toEqual([symbol!]);
   }
+});
+
+test("London's BP. is its London line where London lists it; a stray dot after a US ticker (GE.) is the ticker", async () => {
+  // Search lists BP on NYSE and LSE, GE on NYSE only.
+  const listing = (symbol: string, exchange: string) => ({ providerId: "test", symbol, name: `${symbol} plc`, exchange, type: "Common Stock", currency: "USD" });
+  const asked: string[] = [];
+  const dataProvider = createTestDataProvider({
+    search: async (query: string) => query.toUpperCase().startsWith("BP") ? [listing("BP", "NYSE"), listing("BP", "LSE")] : [listing("GE", "NYSE")],
+    getQuotesBatch: async (targets: QuoteSubscriptionTarget[]): Promise<QuoteBatchResult[]> => targets.map((target) => {
+      asked.push(target.symbol);
+      return { target, quote: createTestQuote({ symbol: target.symbol }) };
+    }),
+  });
+  const source = { dataProvider, batches: [], searches: () => 0 };
+  const london = await runQuote(["BP."], source);
+  expect(london.rows.map((row) => row.target.symbol)).toEqual(["BP:LSE"]);
+  expect(london.warnings).toContain("Read BP. as BP:LSE.");
+  const us = await runQuote(["GE."], source);
+  expect(us.failure).toBeNull();
+  expect(us.rows.map((row) => row.target.symbol)).toEqual(["GE"]);
+  expect(asked).not.toContain("GE:LSE");
 });
 
 test("a file's line that is a company's name before its legal form is the company, beside codes on the lines around it", async () => {
