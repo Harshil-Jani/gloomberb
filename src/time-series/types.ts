@@ -146,6 +146,8 @@ export interface TimeSeriesPoint {
   low?: number | null;
   close?: number | null;
   volume?: number | null;
+  /** The bar this figure traded in closed below its open: volume draws it in the falling colour. */
+  fell?: boolean;
   periodLabel?: string;
   /**
    * A financial statement period as the FA columns name it: `FY2025`, `Q3 FY26`,
