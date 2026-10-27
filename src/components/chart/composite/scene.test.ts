@@ -848,6 +848,14 @@ test("Heikin Ashi chains each open off the bar before, and the last price stays 
   // Open halfway along the first body (11 + 11.25) / 2; the high reaches it, above the bar's own 13.
   expect(second).toMatchObject({ open: 11.125, close: 10.5, high: 13, low: 8 });
   expect(heikinAshiPoints([bar("2026-01-05", 10, 10, 6, 6), bar("2026-01-06", 20, 21, 20, 21)])[1]!.low).toBe(8);
+  // A superseded copy of a bar and out-of-order input chain as the drawn bars do.
+  const revised = heikinAshiPoints([
+    bar("2026-01-06", 12, 13, 8, 9),
+    bar("2026-01-05", 100, 100, 100, 100),
+    bar("2026-01-05", 10, 14, 9, 12),
+  ]);
+  expect(revised).toHaveLength(2);
+  expect(revised[1]).toMatchObject({ open: 11.125, close: 10.5 });
 
   const scene = buildCompositeChartScene([series({
     id: "price", style: "heikin-ashi", unitGroup: "price:USD", points: bars,

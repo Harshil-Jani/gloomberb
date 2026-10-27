@@ -4,7 +4,7 @@ import type {
   ResolvedSeries,
   TimeSeriesPoint,
 } from "../../../time-series/types";
-import { effectiveTimeSeriesPointTime, timeSeriesObservationKey } from "../../../time-series/alignment";
+import { effectiveTimeSeriesPointTime, sortedUniquePoints, timeSeriesObservationKey } from "../../../time-series/alignment";
 import type {
   BuildCompositeChartSceneOptions,
   CompositeAxisDomain,
@@ -44,7 +44,9 @@ function resolveTimeSeriesPointValue(point: TimeSeriesPoint): number | null {
  */
 export function heikinAshiPoints(points: readonly TimeSeriesPoint[]): TimeSeriesPoint[] {
   let previous: { open: number; close: number } | null = null;
-  return points.map((point) => {
+  // Chain over the bars the chart draws: one per observation, in time order,
+  // so a superseded copy of a bar never feeds the next open.
+  return sortedUniquePoints(points).map((point) => {
     const close = point.close ?? point.value;
     if (!isFiniteNumber(close)) return point;
     const open = isFiniteNumber(point.open) ? point.open : close;
