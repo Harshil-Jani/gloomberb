@@ -243,6 +243,24 @@ export function epsConversionNote(fundamentals: Pick<Fundamentals, "financialCur
   return eps && amounts && eps !== amounts ? `EPS (TTM) in ${eps}, converted from ${amounts} at report-date rates.` : undefined;
 }
 
+/** What a trailing EPS that is not the filed quarters' is called where it is shown (EE's TTM row). */
+export const SERVED_TRAILING_EPS = "Gloom Cloud's TTM";
+
+/**
+ * "EPS (TTM) and P/E (TTM) are Gloom Cloud's trailing figures, not the last four filed quarters'.": the headline EPS
+ * and P/E are the filed quarters' (time-series/filed-trailing-eps), so served ones say so, naming those `shown`
+ * ("P/E (TTM) is Gloom Cloud's trailing figure, ..." for a fund's P/E with no EPS). Undefined otherwise.
+ */
+export function trailingEpsSourceNote(
+  fundamentals: Pick<Fundamentals, "trailingEpsSource"> | undefined,
+  shown: { eps: boolean; pe: boolean },
+): string | undefined {
+  if (fundamentals?.trailingEpsSource !== "served" || (!shown.eps && !shown.pe)) return undefined;
+  const figures = shown.eps && shown.pe ? "EPS (TTM) and P/E (TTM) are Gloom Cloud's trailing figures"
+    : `${shown.eps ? "EPS (TTM)" : "P/E (TTM)"} is Gloom Cloud's trailing figure`;
+  return `${figures}, not the last four filed quarters'.`;
+}
+
 type PriceEarningsBasis = Pick<Fundamentals, "financialCurrency" | "ttmConversion" | "epsCurrency" | "trailingPEConversion">;
 
 /** The trailing EPS in the price's currency: converted at the rate the served P/E used when it says so. */
